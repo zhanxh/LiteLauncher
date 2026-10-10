@@ -24,10 +24,72 @@
   
   --capsule-bg: rgba(59, 130, 246, 0.12);
   --capsule-border: rgba(59, 130, 246, 0.35);
-  
+
+  --bg-solid: #1a1d24;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --keyhint-bg: rgba(255, 255, 255, 0.06);
+  --keyhint-border: rgba(255, 255, 255, 0.1);
+  --hover-overlay: rgba(255, 255, 255, 0.1);
+  --accent-text: #60a5fa;
+  --accent-badge-bg: rgba(96, 165, 250, 0.2);
+  --accent-badge-text: #93c5fd;
+  --accent-hint-bg: rgba(59, 130, 246, 0.2);
+  --accent-hint-border: rgba(59, 130, 246, 0.3);
+  --accent-active: #1d4ed8;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.16);
+  --toast-bg: rgba(17, 24, 39, 0.95);
+  --toast-border: rgba(59, 130, 246, 0.4);
+  --editor-bg: #1e1e24;
+  --editor-header-bg: #18181c;
+  --editor-preview-bg: #19191e;
+  --editor-text: #e5e7eb;
+  --md-body-text: #d1d5db;
+  --md-heading-text: #f9fafb;
+  --code-bg: rgba(255, 255, 255, 0.1);
+  --window-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08);
+
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --radius-window: 14px;
   --radius-item: 8px;
+}
+
+/* 亮色皮肤：仅在 documentElement 携带 data-theme="light" 时生效 */
+:root[data-theme="light"] {
+  --bg-launcher: rgba(255, 255, 255, 0.96);
+  --border-launcher: rgba(0, 0, 0, 0.1);
+
+  --text-main: #1f2328;
+  --text-secondary: #57606a;
+  --text-muted: #8b949e;
+
+  --item-bg-hover: rgba(0, 0, 0, 0.05);
+  --item-bg-active: rgba(59, 130, 246, 0.14);
+
+  --badge-bg: rgba(0, 0, 0, 0.06);
+  --badge-text: #424a53;
+
+  --capsule-bg: rgba(59, 130, 246, 0.08);
+  --capsule-border: rgba(59, 130, 246, 0.3);
+
+  --bg-solid: #f5f6fa;
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --keyhint-bg: rgba(0, 0, 0, 0.04);
+  --keyhint-border: rgba(0, 0, 0, 0.12);
+  --hover-overlay: rgba(0, 0, 0, 0.07);
+  --accent-text: #2563eb;
+  --accent-badge-bg: rgba(37, 99, 235, 0.12);
+  --accent-badge-text: #1d4ed8;
+  --accent-hint-bg: rgba(59, 130, 246, 0.12);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.2);
+  --toast-bg: rgba(255, 255, 255, 0.98);
+  --editor-bg: #ffffff;
+  --editor-header-bg: #f0f2f6;
+  --editor-preview-bg: #fafbfd;
+  --editor-text: #384250;
+  --md-body-text: #384250;
+  --md-heading-text: #111418;
+  --code-bg: rgba(0, 0, 0, 0.06);
+  --window-shadow: 0 16px 40px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.06);
 }
 
 * {
@@ -39,7 +101,7 @@
 
 html, body, #root {
   font-family: var(--font-family);
-  background-color: #1a1d24 !important;
+  background-color: var(--bg-solid) !important;
   color: var(--text-main);
   overflow: hidden !important;
   width: 100vw;
@@ -69,10 +131,10 @@ html, body, #root {
   width: 100%;
   height: 100%;
   box-sizing: border-box;
-  background-color: #1a1d24 !important;
+  background-color: var(--bg-solid) !important;
   border: 1px solid var(--border-launcher);
   border-radius: var(--radius-window);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  box-shadow: var(--window-shadow);
   overflow: hidden;
 }
 
@@ -90,7 +152,7 @@ html, body, #root {
 }
 
 .search-container.has-content {
-  border-bottom-color: rgba(255, 255, 255, 0.08);
+  border-bottom-color: var(--border-subtle);
 }
 
 .search-prefix-icon {
@@ -110,7 +172,7 @@ html, body, #root {
   background: transparent !important;
   border: none !important;
   outline: none !important;
-  color: #f3f4f6 !important;
+  color: var(--text-main) !important;
   font-size: 18px;
   font-family: inherit;
   font-weight: 500;
@@ -118,7 +180,7 @@ html, body, #root {
 }
 
 .search-input::placeholder {
-  color: #9ca3af !important;
+  color: var(--text-secondary) !important;
 }
 
 .search-actions {
@@ -131,8 +193,8 @@ html, body, #root {
 .key-hint {
   font-size: 11px;
   color: var(--text-muted);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--keyhint-bg);
+  border: 1px solid var(--keyhint-border);
   padding: 2px 6px;
   border-radius: 4px;
   line-height: 1.2;
@@ -151,7 +213,7 @@ html, body, #root {
 
 .clear-btn:hover {
   color: var(--text-main);
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--hover-overlay);
 }
 
 /* 实时语义预览胶囊（Action Preview Capsule） */
@@ -181,15 +243,15 @@ html, body, #root {
 .capsule-title {
   font-size: 14px;
   font-weight: 600;
-  color: #60a5fa;
+  color: var(--accent-text);
 }
 
 .capsule-badge {
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 4px;
-  background: rgba(96, 165, 250, 0.2);
-  color: #93c5fd;
+  background: var(--accent-badge-bg);
+  color: var(--accent-badge-text);
   font-weight: 500;
 }
 
@@ -206,13 +268,13 @@ html, body, #root {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #60a5fa;
-  background: rgba(59, 130, 246, 0.2);
+  color: var(--accent-text);
+  background: var(--accent-hint-bg);
   padding: 5px 10px;
   border-radius: 6px;
   font-weight: 500;
   white-space: nowrap;
-  border: 1px solid rgba(59, 130, 246, 0.3);
+  border: 1px solid var(--accent-hint-border);
 }
 
 /* 结果列表面板 */
@@ -228,7 +290,7 @@ html, body, #root {
 }
 
 .panel-container::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.16);
+  background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 
@@ -315,9 +377,9 @@ html, body, #root {
   bottom: 12px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(17, 24, 39, 0.95);
-  border: 1px solid rgba(59, 130, 246, 0.4);
-  color: #f3f4f6;
+  background: var(--toast-bg);
+  border: 1px solid var(--toast-border);
+  color: var(--text-main);
   padding: 7px 16px;
   border-radius: 20px;
   font-size: 12px;
@@ -354,8 +416,8 @@ html, body, #root {
   flex-direction: column;
   height: 100vh;
   width: 100vw;
-  background-color: #1e1e24;
-  color: #e5e7eb;
+  background-color: var(--editor-bg);
+  color: var(--editor-text);
 }
 
 .editor-header {
@@ -363,8 +425,8 @@ html, body, #root {
   align-items: center;
   justify-content: space-between;
   padding: 10px 18px;
-  background-color: #18181c;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background-color: var(--editor-header-bg);
+  border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
 }
 
@@ -381,7 +443,7 @@ html, body, #root {
 .editor-title {
   font-size: 15px;
   font-weight: 600;
-  color: #f3f4f6;
+  color: var(--text-main);
 }
 
 .editor-save-badge {
@@ -408,7 +470,7 @@ html, body, #root {
 
 .editor-tab-switch {
   display: flex;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--keyhint-bg);
   padding: 2px;
   border-radius: 6px;
 }
@@ -416,7 +478,7 @@ html, body, #root {
 .tab-btn {
   background: transparent;
   border: none;
-  color: #9ca3af;
+  color: var(--text-secondary);
   padding: 4px 10px;
   font-size: 12px;
   cursor: pointer;
@@ -425,12 +487,12 @@ html, body, #root {
 }
 
 .tab-btn.active {
-  background: #3b82f6;
+  background: var(--accent-color);
   color: #ffffff;
 }
 
 .editor-save-btn {
-  background: #2563eb;
+  background: var(--accent-hover);
   color: #ffffff;
   border: none;
   padding: 6px 14px;
@@ -442,7 +504,7 @@ html, body, #root {
 }
 
 .editor-save-btn:hover {
-  background: #1d4ed8;
+  background: var(--accent-active);
 }
 
 .editor-body {
@@ -458,7 +520,7 @@ html, body, #root {
 }
 
 .edit-pane {
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: 1px solid var(--border-subtle);
 }
 
 .mode-edit .edit-pane {
@@ -474,7 +536,7 @@ html, body, #root {
   width: 100%;
   height: 100%;
   background: transparent !important;
-  color: #f3f4f6 !important;
+  color: var(--text-main) !important;
   border: none !important;
   outline: none !important;
   resize: none;
@@ -510,13 +572,13 @@ html, body, #root {
 }
 
 .editor-pane::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18) !important;
+  background: var(--scrollbar-thumb) !important;
   border-radius: 4px !important;
 }
 
 .preview-pane {
   padding: 18px 24px;
-  background-color: #19191e;
+  background-color: var(--editor-preview-bg);
   user-select: text !important;
   -webkit-user-select: text !important;
 }
@@ -524,14 +586,14 @@ html, body, #root {
 .markdown-rendered-content {
   font-size: 14.5px;
   line-height: 1.7;
-  color: #d1d5db;
+  color: var(--md-body-text);
 }
 
 .markdown-rendered-content h1 {
   font-size: 24px;
   margin-bottom: 14px;
-  color: #f9fafb;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--md-heading-text);
+  border-bottom: 1px solid var(--border-subtle);
   padding-bottom: 8px;
 }
 
@@ -539,33 +601,33 @@ html, body, #root {
   font-size: 20px;
   margin-top: 18px;
   margin-bottom: 10px;
-  color: #f3f4f6;
+  color: var(--text-main);
 }
 
 .markdown-rendered-content h3 {
   font-size: 16px;
   margin-top: 14px;
   margin-bottom: 8px;
-  color: #e5e7eb;
+  color: var(--editor-text);
 }
 
 .markdown-rendered-content blockquote {
-  border-left: 4px solid #3b82f6;
+  border-left: 4px solid var(--accent-color);
   padding-left: 12px;
-  color: #9ca3af;
+  color: var(--text-secondary);
   margin: 12px 0;
-  background: rgba(59, 130, 246, 0.08);
+  background: var(--accent-light);
   padding-top: 4px;
   padding-bottom: 4px;
 }
 
 .markdown-rendered-content code {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--code-bg);
   padding: 2px 6px;
   border-radius: 4px;
   font-family: Consolas, monospace;
   font-size: 13px;
-  color: #93c5fd;
+  color: var(--accent-badge-text);
 }
 
 .markdown-rendered-content li {

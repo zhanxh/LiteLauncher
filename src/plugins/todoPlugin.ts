@@ -15,6 +15,31 @@ function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+/** 重复规则存储格式（every:N{min|hour|day|week|month}）→ 中文标签 */
+export function repeatLabel(rule?: string | null): string {
+  if (!rule) return '';
+  const m = rule.match(/^every:(\d+)(min|hour|day|week|month)$/);
+  if (!m) return rule;
+  const n = parseInt(m[1], 10);
+  const unit = m[2];
+  const single: Record<string, string> = {
+    day: '每天',
+    week: '每周',
+    month: '每月',
+    hour: '每小时',
+    min: '每分钟',
+  };
+  if (n === 1 && single[unit]) return single[unit];
+  const units: Record<string, string> = {
+    min: '分钟',
+    hour: '小时',
+    day: '天',
+    week: '周',
+    month: '个月',
+  };
+  return `每 ${n} ${units[unit] ?? unit}`;
+}
+
 // 供浏览器纯前端开发环境回退暂存
 const fallbackTodos: TodoBackend[] = [
   { id: '1', content: '团队下午技术周会', remind_at: '14:30', repeat_rule: null, completed: false, raw_input: '', created_at: Date.now() },
@@ -29,19 +54,28 @@ export const todoPlugin: CommandPlugin = {
   id: 'todo',
   trigger: '/todo',
   name: '待办事项',
-  description: '管理待办日程；/todo new "事项" 2026-10-11 14:30 或 HH:MM（到点弹系统通知）',
+  description:
+    '待办管理：/todo app 打开管理面板；/todo new "事项" 14:30 [every:30min] 到点弹窗+系统通知',
   icon: '✅',
 
   isAction(input: ParsedInput): boolean {
-    return input.subcommand === 'new';
+    return input.subcommand === 'new' || input.subcommand === 'app';
   },
 
   getPreview(input: ParsedInput): ActionPreviewCapsule | null {
+    if (input.subcommand === 'app') {
+      return {
+        title: '打开待办管理面板',
+        detail: '查看/编辑/完成待办，管理弹窗提醒倒计时时长',
+        badge: '即时动作',
+        hint: '按 Enter 回车打开面板窗口',
+      };
+    }
     if (input.subcommand !== 'new') return null;
 
     const content = input.args.length > 0 ? input.args.join(' ') : '（请输入待办内容）';
     const timeInfo = input.namedArgs['time'] ? `⏰ ${input.namedArgs['time']}` : '无提醒';
-    const repeatInfo = input.namedArgs['repeat'] ? ` 🔁 ${input.namedArgs['repeat']}` : '';
+    const repeatInfo = input.namedArgs['repeat'] ? ` 🔁 ${repeatLabel(input.namedArgs['repeat'])}` : '';
 
     return {
       title: '新建待办事项 (SQLite)',
@@ -52,6 +86,18 @@ export const todoPlugin: CommandPlugin = {
   },
 
   async execute(input: ParsedInput): Promise<{ success: boolean; message: string }> {
+    if (input.subcommand === 'app') {
+      if (isTauri()) {
+        try {
+          await invoke('open_todo_manager');
+          return { success: true, message: '已打开待办管理面板' };
+        } catch (err: any) {
+          return { success: false, message: `打开面板失败: ${err?.message || err}` };
+        }
+      }
+      return { success: true, message: '[预览模式] 打开待办管理面板' };
+    }
+
     const content = input.args.join(' ').trim();
     if (!content) {
       return { success: false, message: '待办内容不能为空，请用引号包裹如："买咖啡"' };
@@ -99,7 +145,7 @@ export const todoPlugin: CommandPlugin = {
 
         const items: PanelItem[] = todos.map((todo) => {
           const timeDesc = todo.remind_at
-            ? `提醒: ${todo.remind_at}${todo.repeat_rule ? ` (${todo.repeat_rule})` : ''}`
+            ? `提醒: ${todo.remind_at}${todo.repeat_rule ? ` (${repeatLabel(todo.repeat_rule)})` : ''}`
             : '无提醒';
           return {
             id: todo.id,

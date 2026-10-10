@@ -62,7 +62,10 @@ export function tokenizeInput(raw: string): string[] {
  * - `HH:MM`（或带秒 `HH:MM:SS`）
  * - `YYYY-MM-DD`（当天默认 09:00）
  * - `YYYY-MM-DD HH:MM`（日期与时间可为相邻两个 Token，或引号包裹为一个 Token）
- * 以及重复规则关键词（daily、weekly、fri 等）
+ * 以及重复规则：
+ * - 关键词：daily、weekly、fri、mon、tue、wed、thu、sat、sun
+ * - 间隔语法：`every:30min`、`every:2h`、`every:1d`、`every:1w`、`every:3month`
+ *   （也可用 repeat: 前缀；m/mo 按月，分钟请写 min）
  */
 export function extractTimeAndRule(args: string[]): {
   cleanArgs: string[];
@@ -72,6 +75,7 @@ export function extractTimeAndRule(args: string[]): {
   const timeRegex = /^([01]?[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/;
   const dateRegex = /^\d{4}-\d{1,2}-\d{1,2}$/;
   const dateTimeRegex = /^\d{4}-\d{1,2}-\d{1,2}[ T]([01]?[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/;
+  const intervalRegex = /^(?:every|repeat):(\d{1,3})(min(?:ute)?s?|h(?:our)?s?|d(?:ay)?s?|w(?:eek)?s?|mo(?:nth)?s?|m)$/i;
   const repeatKeywords = ['daily', 'weekly', 'fri', 'mon', 'tue', 'wed', 'thu', 'sat', 'sun'];
 
   let time: string | undefined;
@@ -82,7 +86,22 @@ export function extractTimeAndRule(args: string[]): {
     const arg = args[i];
     const lower = arg.toLowerCase();
 
-    if (dateTimeRegex.test(arg)) {
+    const intervalMatch = arg.match(intervalRegex);
+    if (intervalMatch) {
+      // 规范化为 every:N{min|hour|day|week|month}（与后端存储格式一致）
+      const n = intervalMatch[1];
+      const u = intervalMatch[2].toLowerCase();
+      const unit = u.startsWith('min')
+        ? 'min'
+        : u.startsWith('h')
+          ? 'hour'
+          : u.startsWith('d')
+            ? 'day'
+            : u.startsWith('w')
+              ? 'week'
+              : 'month';
+      repeatRule = `every:${n}${unit}`;
+    } else if (dateTimeRegex.test(arg)) {
       // 单 Token 的完整日期时间（如引号包裹 "2026-10-11 14:30"）
       time = arg.replace('T', ' ');
     } else if (dateRegex.test(arg)) {

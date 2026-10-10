@@ -4,6 +4,7 @@ pub mod todo;
 pub mod notes;
 pub mod history;
 pub mod reminder;
+pub mod settings;
 
 use db::DbState;
 use std::sync::Mutex;
@@ -196,6 +197,15 @@ pub fn run() {
             todo::list_todos,
             todo::toggle_todo,
             todo::delete_todo,
+            todo::update_todo,
+            todo::open_todo_manager,
+            reminder::get_popup_duration,
+            reminder::set_popup_duration,
+            reminder::test_reminder_popup,
+            settings::get_setting,
+            settings::set_setting,
+            settings::get_app_info,
+            settings::open_settings_window,
             notes::search_notes,
             notes::read_note_content,
             notes::save_note_content,

@@ -6,6 +6,9 @@ import { ResultPanel } from './components/ResultPanel';
 import { Toast } from './components/Toast';
 import { NoteEditor } from './components/NoteEditor';
 import { ReminderToast } from './components/ReminderToast';
+import { TodoManager } from './components/TodoManager';
+import { SettingsPanel } from './components/SettingsPanel';
+import { initTheme, listenThemeChange } from './theme';
 import { registerBuiltinPlugins } from './plugins';
 import { parseCommand } from './core/parser';
 import { ActionPreviewCapsule, PanelItem } from './types/command';
@@ -34,6 +37,9 @@ interface AppBackendItem {
 }
 
 export const App: Component = () => {
+  // 主题：每个窗口加载时读取设置并应用，同时监听其他窗口的主题切换广播
+  void initTheme().then(() => listenThemeChange());
+
   // 检查是否为独立编辑窗口模式 (index.html?view=editor&path=...&title=...)
   const urlParams = new URLSearchParams(window.location.search);
   const isEditorView = urlParams.get('view') === 'editor';
@@ -52,6 +58,16 @@ export const App: Component = () => {
         content={urlParams.get('content') || ''}
       />
     );
+  }
+
+  // 待办管理面板窗口 (index.html?view=todoapp)
+  if (urlParams.get('view') === 'todoapp') {
+    return <TodoManager />;
+  }
+
+  // 应用设置面板窗口 (index.html?view=settings)
+  if (urlParams.get('view') === 'settings') {
+    return <SettingsPanel />;
   }
 
   const [inputValue, setInputValue] = createSignal('');

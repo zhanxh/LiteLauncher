@@ -1,0 +1,272 @@
+/* 待办管理面板（独立窗口，view=todoapp）
+   body 重置与高度限定在 .todoapp-mode 作用域内，避免污染其他窗口 */
+
+body.todoapp-mode {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-solid);
+}
+
+.todoapp {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-solid);
+  color: var(--text-main);
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  overflow-y: auto;
+  padding: 18px 22px 60px;
+  box-sizing: border-box;
+}
+
+.todoapp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.todoapp-header h1 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.todoapp-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 通用按钮 */
+.todoapp .btn {
+  border: none;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  background: var(--keyhint-bg);
+  color: var(--text-main);
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.todoapp .btn:hover {
+  background: var(--hover-overlay);
+}
+
+.todoapp .btn.primary {
+  background: #3b7cff;
+  color: #fff;
+}
+
+.todoapp .btn.primary:hover {
+  background: #2f6ae8;
+}
+
+.todoapp .btn.ghost {
+  background: transparent;
+  border: 1px solid var(--keyhint-border);
+}
+
+.todoapp .btn.ghost:hover {
+  background: var(--keyhint-bg);
+}
+
+.todoapp .btn.danger {
+  color: #d0342c;
+}
+
+.todoapp .btn.small {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.todoapp .btn.active {
+  background: #3b7cff;
+  color: #fff;
+  border-color: #3b7cff;
+}
+
+/* 通用输入框 */
+.todoapp .ti {
+  flex: 1;
+  border: 1px solid var(--keyhint-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  outline: none;
+  background: var(--editor-bg);
+  min-width: 0;
+}
+
+.todoapp .ti:focus {
+  border-color: #3b7cff;
+}
+
+.todoapp .ti.small {
+  width: 90px;
+  flex: none;
+}
+
+/* 设置区 */
+.todoapp-settings {
+  background: var(--editor-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.setting-row label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.setting-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setting-controls .unit {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.setting-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* 快速添加 */
+.todoapp-add {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.todoapp-add .ti.time {
+  flex: 0 0 150px;
+}
+
+/* 列表 */
+.todoapp-list {
+  flex: 1;
+}
+
+.section-title {
+  font-size: 14px;
+  margin: 6px 0 10px;
+  color: var(--text-secondary);
+}
+
+.section-title .count {
+  display: inline-block;
+  min-width: 20px;
+  text-align: center;
+  background: var(--keyhint-bg);
+  border-radius: 10px;
+  font-size: 12px;
+  padding: 1px 6px;
+  margin-left: 6px;
+}
+
+.todoapp .empty {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 4px 0 14px;
+}
+
+/* 待办行 */
+.todo-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--editor-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+}
+
+.todo-row.done {
+  opacity: 0.62;
+}
+
+.todo-row.done .todo-content {
+  text-decoration: line-through;
+}
+
+.todo-check {
+  border: none;
+  background: transparent;
+  font-size: 17px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.todo-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.todo-content {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.todo-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* 编辑态 */
+.todo-row.editing {
+  display: block;
+}
+
+.todo-edit-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.todo-edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* 底部浮动提示 */
+.todoapp-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  background: var(--toast-bg);
+  color: var(--text-main);
+  font-size: 13px;
+  border-radius: 8px;
+  padding: 9px 18px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+  z-index: 10;
+}

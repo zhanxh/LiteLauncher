@@ -3,6 +3,7 @@ import { helpPlugin } from './helpPlugin';
 import { todoPlugin } from './todoPlugin';
 import { notesPlugin } from './notesPlugin';
 import { appPlugin } from './appPlugin';
+import { settingPlugin } from './settingPlugin';
 
 /**
  * 初始化并注册所有内置指令插件
@@ -12,4 +13,5 @@ export function registerBuiltinPlugins(): void {
   pluginRegistry.register(todoPlugin);
   pluginRegistry.register(notesPlugin);
   pluginRegistry.register(appPlugin);
+  pluginRegistry.register(settingPlugin);
 }

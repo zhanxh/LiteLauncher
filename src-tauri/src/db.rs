@@ -87,6 +87,15 @@ pub fn init_db() -> Result<Connection> {
         [],
     )?;
 
+    // 6. 初始化应用设置表 (app_settings)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+        [],
+    )?;
+
     // 3. 初始插入几个常用系统预置应用（若表为空）
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM app_shortcuts",

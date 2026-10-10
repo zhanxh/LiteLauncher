@@ -11,12 +11,16 @@ function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-/** 弹窗自动关闭时长（与 Rust 侧兜底关闭线程保持一致的前置量） */
-const AUTO_CLOSE_MS = 12000;
+/** 弹窗自动关闭时长（秒）：由 Rust 侧按设置注入 URL 的 dur 参数决定，缺省 12 秒 */
+const AUTO_CLOSE_SECS = (() => {
+  if (typeof window === 'undefined') return 12;
+  const dur = parseInt(new URLSearchParams(window.location.search).get('dur') || '', 10);
+  return Number.isFinite(dur) && dur >= 3 && dur <= 600 ? dur : 12;
+})();
 
 /**
  * 待办提醒桌面右下角弹窗（无边框置顶小窗口的内容视图）
- * 点击任意位置关闭；12 秒后自动消失
+ * 点击任意位置关闭；按设置时长自动消失
  */
 export const ReminderToast: Component<ReminderToastProps> = (props) => {
   let closed = false;
@@ -37,7 +41,7 @@ export const ReminderToast: Component<ReminderToastProps> = (props) => {
   onMount(() => {
     // 限定作用域：仅本弹窗窗口重置 body 背景/滚动（css 规则随主 bundle 全局加载）
     document.body.classList.add('reminder-mode');
-    const timer = setTimeout(() => void closeWindow(), AUTO_CLOSE_MS);
+    const timer = setTimeout(() => void closeWindow(), AUTO_CLOSE_SECS * 1000);
     onCleanup(() => {
       clearTimeout(timer);
       document.body.classList.remove('reminder-mode');
@@ -69,9 +73,12 @@ export const ReminderToast: Component<ReminderToastProps> = (props) => {
       </div>
       <div class="reminder-toast-body">{props.content}</div>
       <div class="reminder-toast-footer">
-        <span class="reminder-toast-hint">点击任意位置关闭 · 12 秒后自动消失</span>
+        <span class="reminder-toast-hint">点击任意位置关闭 · {AUTO_CLOSE_SECS} 秒后自动消失</span>
       </div>
-      <div class="reminder-toast-progress" />
+      <div
+        class="reminder-toast-progress"
+        style={{ 'animation-duration': `${AUTO_CLOSE_SECS}s` }}
+      />
     </div>
   );
 };
