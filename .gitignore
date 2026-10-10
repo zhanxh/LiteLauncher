@@ -5,3 +5,4 @@ src-tauri/target
 src-tauri/gen/schemas
 *.log
 screen_debug.png
+.qoder/
