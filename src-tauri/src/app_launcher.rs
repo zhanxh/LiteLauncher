@@ -1,6 +1,5 @@
 use crate::db::DbState;
 use serde::{Deserialize, Serialize};
-use std::os::windows::process::CommandExt;
 use std::process::Command;
 use tauri::{AppHandle, Manager, State};
 
@@ -13,7 +12,38 @@ pub struct AppItem {
     pub description: String,
 }
 
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+/// 以独立进程启动外部应用（各平台策略不同）
+fn spawn_app(clean_path: &str) -> std::io::Result<std::process::Child> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // Windows：通过 cmd.exe /c start "" "目标路径" 启动，确保目标程序
+        // 以完全独立的进程运行，并支持系统环境变量关联；CREATE_NO_WINDOW 隐藏 cmd 窗口
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        Command::new("cmd")
+            .args(["/c", "start", "", clean_path])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Linux/macOS：URL 与已存在的文件（文档、.desktop 等）交给系统默认打开器，
+        // 其余视为可执行命令直接 spawn，子进程天然独立运行
+        let is_url = ["http://", "https://", "file://"]
+            .iter()
+            .any(|prefix| clean_path.starts_with(prefix));
+        if is_url || std::path::Path::new(clean_path).exists() {
+            #[cfg(target_os = "macos")]
+            let opener = "open";
+            #[cfg(not(target_os = "macos"))]
+            let opener = "xdg-open";
+            Command::new(opener).arg(clean_path).spawn()
+        } else {
+            Command::new(clean_path).spawn()
+        }
+    }
+}
 
 /// 启动指定的外部应用程序，并立即隐藏启动器主窗口
 #[tauri::command]
@@ -29,13 +59,7 @@ pub fn launch_application(app: AppHandle, path: String) -> Result<(), String> {
         return Err("启动路径包含不安全的特殊字符".into());
     }
 
-    // 在 Windows 环境下，通过 cmd.exe /c start "" "目标路径" 启动外部应用
-    // 这样能确保目标程序以完全独立的进程运行，并支持系统环境变量关联
-    Command::new("cmd")
-        .args(["/c", "start", "", clean_path])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|e| format!("启动程序失败: {}", e))?;
+    spawn_app(clean_path).map_err(|e| format!("启动程序失败: {}", e))?;
 
     // Launcher 标准行为：启动目标程序后自动隐藏主窗口
     if let Some(window) = app.get_webview_window("main") {

@@ -91,13 +91,28 @@ export const appPlugin: CommandPlugin = {
       }
     }
 
-    // 浏览器预览回退数据
+    // 浏览器预览回退数据（按当前运行平台展示示例）
+    const isMac = /Mac|darwin/i.test(navigator.userAgent);
+    const isLinux = /Linux/i.test(navigator.userAgent) && !isMac;
+    const previewApps = isMac
+      ? [
+          { id: '1', title: 'Visual Studio Code', description: '应用: /Applications/Visual Studio Code.app', icon: '💻', badge: '应用', metadata: { path: '/Applications/Visual Studio Code.app' } },
+          { id: '2', title: 'Google Chrome', description: '应用: /Applications/Google Chrome.app', icon: '🌐', badge: '应用', metadata: { path: '/Applications/Google Chrome.app' } },
+          { id: '3', title: 'Terminal', description: '应用: /System/Applications/Utilities/Terminal.app', icon: '⚡', badge: '应用', metadata: { path: '/System/Applications/Utilities/Terminal.app' } },
+        ]
+      : isLinux
+        ? [
+            { id: '1', title: 'Visual Studio Code', description: '可执行程序: code', icon: '💻', badge: '应用', metadata: { path: 'code' } },
+            { id: '2', title: 'Google Chrome', description: '可执行程序: google-chrome', icon: '🌐', badge: '应用', metadata: { path: 'google-chrome' } },
+            { id: '3', title: '终端', description: '可执行程序: x-terminal-emulator', icon: '⚡', badge: '应用', metadata: { path: 'x-terminal-emulator' } },
+          ]
+        : [
+            { id: '1', title: 'Visual Studio Code', description: '可执行程序: code.exe', icon: '💻', badge: '应用', metadata: { path: 'code.exe' } },
+            { id: '2', title: 'Google Chrome', description: '可执行程序: chrome.exe', icon: '🌐', badge: '应用', metadata: { path: 'chrome.exe' } },
+            { id: '3', title: 'Windows Terminal', description: '可执行程序: wt.exe', icon: '⚡', badge: '应用', metadata: { path: 'wt.exe' } },
+          ];
     return {
-      items: [
-        { id: '1', title: 'Visual Studio Code', description: '可执行程序: code.exe', icon: '💻', badge: '应用', metadata: { path: 'code.exe' } },
-        { id: '2', title: 'Google Chrome', description: '可执行程序: chrome.exe', icon: '🌐', badge: '应用', metadata: { path: 'chrome.exe' } },
-        { id: '3', title: 'Windows Terminal', description: '可执行程序: wt.exe', icon: '⚡', badge: '应用', metadata: { path: 'wt.exe' } },
-      ],
+      items: previewApps,
       emptyText: '未检索到应用',
     };
   },

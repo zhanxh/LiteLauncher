@@ -89,6 +89,9 @@ pub fn init_db() -> Result<Connection> {
     ).unwrap_or(0);
 
     if count == 0 {
+        // 预置应用按平台区分：Windows 直接指向系统可执行文件，
+        // Linux 用 /usr/share/applications 的 .desktop 名称，macOS 走 /Applications
+        #[cfg(target_os = "windows")]
         let default_apps = [
             ("Visual Studio Code", "code.exe"),
             ("Google Chrome", "chrome.exe"),
@@ -97,6 +100,25 @@ pub fn init_db() -> Result<Connection> {
             ("计算器", "calc.exe"),
             ("记事本", "notepad.exe"),
             ("资源管理器", "explorer.exe"),
+        ];
+
+        #[cfg(target_os = "linux")]
+        let default_apps = [
+            ("Visual Studio Code", "code"),
+            ("Google Chrome", "google-chrome"),
+            ("Firefox", "firefox"),
+            ("终端", "x-terminal-emulator"),
+            ("文件管理器", "nautilus"),
+            ("文本编辑器", "gedit"),
+        ];
+
+        #[cfg(target_os = "macos")]
+        let default_apps = [
+            ("Visual Studio Code", "/Applications/Visual Studio Code.app"),
+            ("Google Chrome", "/Applications/Google Chrome.app"),
+            ("Safari", "/Applications/Safari.app"),
+            ("终端", "/System/Applications/Utilities/Terminal.app"),
+            ("访达", "/System/Library/CoreServices/Finder.app"),
         ];
 
         let now = chrono::Utc::now().timestamp();
