@@ -11,5 +11,5 @@ npx tauri build --no-bundle
 
 echo "[3/3] Copying to release/LiteLauncher..."
 mkdir -p release
-cp -f src-tauri/target/release/tauri-app release/LiteLauncher
+cp -f src-tauri/target/release/LiteLauncher release/LiteLauncher
 echo "Build and release completed successfully!"

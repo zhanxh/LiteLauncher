@@ -15,5 +15,5 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo [3/3] Copying to release\LiteLauncher.exe...
-copy /Y "src-tauri\target\release\tauri-app.exe" "release\LiteLauncher.exe"
+copy /Y "src-tauri\target\release\LiteLauncher.exe" "release\LiteLauncher.exe"
 echo Build and release completed successfully!
