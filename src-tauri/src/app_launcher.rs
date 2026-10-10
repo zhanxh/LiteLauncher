@@ -12,6 +12,32 @@ pub struct AppItem {
     pub description: String,
 }
 
+/// 是否应交给系统默认打开器打开（仅非 Windows 平台）
+///
+/// - URL、.desktop 桌面项、非可执行文档 → true（xdg-open / open）
+/// - 可执行文件（含绝对路径）与裸命令 → false（直接 spawn，走 PATH）
+///
+/// 注意：可执行文件绝不能交给 xdg-open——桌面环境对 application/x-executable
+/// 类型通常没有默认打开方式，会静默失败（GNOME 实测如此）
+#[cfg(not(target_os = "windows"))]
+fn should_use_opener(clean_path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let is_url = ["http://", "https://", "file://"]
+        .iter()
+        .any(|prefix| clean_path.starts_with(prefix));
+
+    let path = std::path::Path::new(clean_path);
+    let is_exec_file = path.is_file()
+        && path
+            .metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    let is_desktop_entry = path.extension().map_or(false, |ext| ext == "desktop");
+
+    is_url || (path.exists() && (is_desktop_entry || !is_exec_file))
+}
+
 /// 以独立进程启动外部应用（各平台策略不同）
 fn spawn_app(clean_path: &str) -> std::io::Result<std::process::Child> {
     #[cfg(target_os = "windows")]
@@ -28,12 +54,7 @@ fn spawn_app(clean_path: &str) -> std::io::Result<std::process::Child> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        // Linux/macOS：URL 与已存在的文件（文档、.desktop 等）交给系统默认打开器，
-        // 其余视为可执行命令直接 spawn，子进程天然独立运行
-        let is_url = ["http://", "https://", "file://"]
-            .iter()
-            .any(|prefix| clean_path.starts_with(prefix));
-        if is_url || std::path::Path::new(clean_path).exists() {
+        if should_use_opener(clean_path) {
             #[cfg(target_os = "macos")]
             let opener = "open";
             #[cfg(not(target_os = "macos"))]
@@ -144,4 +165,42 @@ pub fn add_custom_app(
         icon: "🚀".to_string(),
         description: format!("可执行程序: {}", path),
     })
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn opener_decision_by_file_type() {
+        let dir = std::env::temp_dir().join(format!("ll-opener-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        // 可执行文件（含绝对路径）→ 直接 spawn
+        let exec_file = dir.join("exec-tool");
+        fs::write(&exec_file, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&exec_file, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!should_use_opener(exec_file.to_str().unwrap()));
+        assert!(!should_use_opener("/bin/ls"));
+
+        // 文档 → 打开器
+        let doc = dir.join("doc.md");
+        fs::write(&doc, b"# doc\n").unwrap();
+        assert!(should_use_opener(doc.to_str().unwrap()));
+
+        // .desktop 桌面项 → 打开器（即使带可执行位）
+        let desktop = dir.join("app.desktop");
+        fs::write(&desktop, b"[Desktop Entry]\n").unwrap();
+        fs::set_permissions(&desktop, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(should_use_opener(desktop.to_str().unwrap()));
+
+        // URL → 打开器；裸命令（不存在于磁盘）→ 直接 spawn
+        assert!(should_use_opener("https://example.com"));
+        assert!(should_use_opener("file:///tmp/x.md"));
+        assert!(!should_use_opener("gnome-terminal"));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
