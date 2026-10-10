@@ -13,11 +13,18 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
+fn lifecycle_log_path() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("lifecycle.log")))
+        .unwrap_or_else(|| std::path::PathBuf::from("lifecycle.log"))
+}
+
 pub fn log_lifecycle(msg: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("F:\\codes\\LiteLauncher\\lifecycle.log")
+        .open(lifecycle_log_path())
     {
         use std::io::Write;
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
@@ -93,7 +100,7 @@ pub fn run() {
                     app.manage(DbState(Mutex::new(conn)));
                 }
                 Err(e) => {
-                    let _ = std::fs::write("F:\\codes\\LiteLauncher\\crash.log", format!("DB INIT ERROR: {:?}\n", e));
+                    let _ = std::fs::write("db_init_error.log", format!("DB INIT ERROR: {:?}\n", e));
                 }
             }
 
@@ -157,11 +164,7 @@ pub fn run() {
                 }
             }
 
-            // 4. 为主窗口开启 DevTools 支持（允许按 F12 调试）
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.open_devtools();
-            }
-
+            // 4. DevTools 支持由 Cargo `devtools` feature 提供（按 F12 打开），不再启动时自动展开
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -200,7 +203,11 @@ pub fn run() {
             match &event {
                 tauri::RunEvent::ExitRequested { code, api, .. } => {
                     log_lifecycle(&format!("RunEvent::ExitRequested code={:?}", code));
-                    api.prevent_exit();
+                    // 仅拦截"最后一个窗口被关闭"触发的退出（code=None）：启动器保留托盘常驻。
+                    // 对 app.exit(code) 的显式退出（code=Some）不再拦截，保证退出路径可用。
+                    if code.is_none() {
+                        api.prevent_exit();
+                    }
                 }
                 tauri::RunEvent::WindowEvent { label, event, .. } => {
                     log_lifecycle(&format!("RunEvent::WindowEvent label={} event={:?}", label, event));

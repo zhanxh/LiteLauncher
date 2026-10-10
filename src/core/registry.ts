@@ -42,7 +42,7 @@ class PluginRegistry {
 
   /**
    * 根据当前输入前缀模糊匹配候选插件
-   * 示例：输入 "/not" 匹配到 "/notes"
+   * 示例：输入 "/not" 匹配到 "/note"
    */
   matchCandidates(inputPrefix: string): CommandPlugin[] {
     const lower = inputPrefix.toLowerCase().trim();

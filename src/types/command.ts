@@ -8,7 +8,7 @@
 export interface ParsedInput {
   /** 原始未处理的完整输入文本 */
   raw: string;
-  /** 指令触发前缀，如 "/todo", "/notes", "/app", 或空字符串 */
+  /** 指令触发前缀，如 "/todo", "/note", "/app", 或空字符串 */
   trigger: string;
   /** 二级子指令，如 "new", "list", "add" */
   subcommand?: string;
@@ -64,7 +64,7 @@ export interface PanelData {
 export interface CommandPlugin {
   /** 插件唯一标识符 */
   id: string;
-  /** 触发关键词，以斜杠开头，如 "/todo", "/notes" */
+  /** 触发关键词，以斜杠开头，如 "/todo", "/note" */
   trigger: string;
   /** 插件中文名称 */
   name: string;
@@ -89,7 +89,7 @@ export interface CommandPlugin {
   execute?(input: ParsedInput): Promise<{ success: boolean; message: string }>;
 
   /**
-   * 查询模式：展开面板并返回匹配列表（如 /notes xxx, /todo）
+   * 查询模式：展开面板并返回匹配列表（如 /note xxx, /todo）
    */
   query?(input: ParsedInput): Promise<PanelData>;
 

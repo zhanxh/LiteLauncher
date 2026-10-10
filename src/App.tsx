@@ -183,7 +183,7 @@ export const App: Component = () => {
       return;
     }
 
-    // 3. 匹配到具体插件（例如 /todo, /notes, /app, /help）
+    // 3. 匹配到具体插件（例如 /todo, /note, /app, /help）
     if (result.plugin) {
       setPrefixIcon(result.plugin.icon);
 
@@ -423,7 +423,7 @@ export const App: Component = () => {
       return;
     }
 
-    // 5. 插件自身回调（如 /notes 弹出独立编辑窗口，或 /todo 切换完成状态）
+    // 5. 插件自身回调（如 /note 弹出独立编辑窗口，或 /todo 切换完成状态）
     const result = parseCommand(inputValue());
     if (result.plugin && result.plugin.onSelect) {
       await result.plugin.onSelect(item);

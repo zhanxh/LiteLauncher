@@ -3,6 +3,8 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -24,7 +26,7 @@ pub fn get_notes_dir() -> PathBuf {
         let intro_note = dir.join("LiteLauncher 快速入门指南.md");
         let _ = fs::write(
             &intro_note,
-            "# LiteLauncher 快速入门指南\n\n欢迎使用 LiteLauncher！这是一款以搜索框为唯一交互入口的生产力启动器。\n\n## 快捷指令\n- `/notes`：快速检索并阅读本地 Markdown 笔记文档\n- `/todo`：待办日程管理与即时提醒\n- `/app`：毫秒级应用唤起与快捷方式\n\n点击或回车即可在独立编辑窗口中实时修改保存本笔记（支持 Ctrl+S 保存）。\n",
+            "# LiteLauncher 快速入门指南\n\n欢迎使用 LiteLauncher！这是一款以搜索框为唯一交互入口的生产力启动器。\n\n## 快捷指令\n- `/note`：快速检索并阅读本地 Markdown 笔记文档\n- `/todo`：待办日程管理与即时提醒\n- `/app`：毫秒级应用唤起与快捷方式\n\n点击或回车即可在独立编辑窗口中实时修改保存本笔记（支持 Ctrl+S 保存）。\n",
         );
 
         let arch_note = dir.join("生产力与极简哲学.md");
@@ -216,25 +218,31 @@ pub fn save_note_content(
 }
 
 /// 动态创建并弹出独立 Markdown 编辑窗口
+///
+/// 必须声明为 async：Tauri v2 在 Windows 上同步命令运行于主线程，
+/// 在主线程里创建新 WebviewWindow 会阻塞事件循环造成死锁（窗口有标题无内容、整个进程无法响应）。
 #[tauri::command]
-pub fn open_editor_window(
+pub async fn open_editor_window(
     app: AppHandle,
     path: String,
     title: String,
 ) -> Result<(), String> {
+    // 基于文件路径的稳定 label（确定性哈希）：同一文件再次打开时聚焦既有窗口，而不是重复弹窗
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    let window_id = format!("editor-{:016x}", hasher.finish());
+
+    // 如果已有对应窗口则聚焦并返回（先于隐藏主窗口判断，避免无谓隐藏）
+    if let Some(existing) = app.get_webview_window(&window_id) {
+        let _ = existing.show();
+        let _ = existing.unminimize();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
     // 隐藏主搜索框，聚焦到编辑器
     if let Some(main_win) = app.get_webview_window("main") {
         let _ = main_win.hide();
-    }
-
-    // 生成基于文件路径的稳定 window label（防止同一文件重复弹窗）
-    let window_id = format!("editor-{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
-    
-    // 如果已有对应窗口则聚焦
-    if let Some(existing) = app.get_webview_window(&window_id) {
-        let _ = existing.show();
-        let _ = existing.set_focus();
-        return Ok(());
     }
 
     // 构造带参数的 URL 路由：index.html?view=editor&path=...&title=...

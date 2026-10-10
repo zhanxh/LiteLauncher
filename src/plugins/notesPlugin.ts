@@ -14,11 +14,11 @@ function isTauri(): boolean {
 }
 
 /**
- * 笔记指令插件：/notes
+ * 笔记指令插件：/note
  */
 export const notesPlugin: CommandPlugin = {
   id: 'notes',
-  trigger: '/notes',
+  trigger: '/note',
   name: 'Markdown 笔记',
   description: '搜索并浏览本地 Markdown 笔记文档（按回车弹出独立编辑窗口）',
   icon: '📝',
