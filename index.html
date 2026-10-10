@@ -5,7 +5,58 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#000000" />
     <link rel="icon" type="image/svg+xml" href="/src/assets/logo.svg" />
-    <title>Tauri + Solid + Typescript App</title>
+    <title>LiteLauncher</title>
+    <style>
+      html, body, #root {
+        width: 100vw;
+        height: 100vh;
+        margin: 0;
+        padding: 0;
+        overflow: hidden !important;
+        background-color: #1a1d24 !important;
+        color: #f3f4f6 !important;
+        box-sizing: border-box;
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+      }
+      * {
+        scrollbar-width: none !important;
+        -ms-overflow-style: none !important;
+      }
+      *::-webkit-scrollbar {
+        display: none !important;
+        width: 0 !important;
+        height: 0 !important;
+      }
+    </style>
+    <script>
+      function reportToRust(level, msg) {
+        try {
+          if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+            window.__TAURI_INTERNALS__.invoke('record_fe_log', { msg: '[' + level + '] ' + msg }).catch(function(){});
+          }
+        } catch (_) {}
+      }
+      var origLog = console.log;
+      console.log = function() {
+        var str = Array.from(arguments).join(' ');
+        reportToRust('LOG', str);
+        origLog.apply(console, arguments);
+      };
+      var origErr = console.error;
+      console.error = function() {
+        var str = Array.from(arguments).join(' ');
+        reportToRust('ERR', str);
+        origErr.apply(console, arguments);
+      };
+      window.addEventListener('error', function(e) {
+        var errInfo = 'Window Error: ' + e.message + ' at ' + e.filename + ':' + e.lineno;
+        reportToRust('UNCAUGHT', errInfo);
+      });
+      window.addEventListener('DOMContentLoaded', function() {
+        reportToRust('DOM', 'DOMContentLoaded fired, root element exists: ' + !!document.getElementById('root'));
+      });
+    </script>
   </head>
 
   <body>

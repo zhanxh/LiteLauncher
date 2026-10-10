@@ -22,6 +22,21 @@ export const SearchBar: Component<SearchBarProps> = (props) => {
   onMount(() => {
     // 组件挂载时默认获得焦点
     inputRef?.focus();
+    setTimeout(() => {
+      inputRef?.focus();
+    }, 50);
+
+    // 每次窗口重新获得焦点（如快捷键唤起）时，自动强制重定向光标到输入框
+    const handleWindowFocus = () => {
+      setTimeout(() => {
+        inputRef?.focus();
+      }, 30);
+    };
+
+    window.addEventListener('focus', handleWindowFocus);
+    return () => {
+      window.removeEventListener('focus', handleWindowFocus);
+    };
   });
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -41,12 +56,16 @@ export const SearchBar: Component<SearchBarProps> = (props) => {
   };
 
   return (
-    <div class={`search-container ${props.hasContent ? 'has-content' : ''}`}>
+    <div
+      class={`search-container ${props.hasContent ? 'has-content' : ''}`}
+      onClick={() => inputRef?.focus()}
+    >
       <div class="search-prefix-icon">{props.prefixIcon || '🔍'}</div>
       <input
         ref={inputRef}
         type="text"
         class="search-input"
+        autofocus
         placeholder={props.placeholder || '键入 / 查看支持的指令，或直接搜索与计算...'}
         value={props.value}
         onInput={(e) => props.onInput(e.currentTarget.value)}

@@ -91,11 +91,28 @@ export const NoteEditor: Component<NoteEditorProps> = (props) => {
     }
   };
 
-  // 监听键盘 Ctrl+S
+  // 关闭独立编辑器窗口
+  const handleClose = async () => {
+    if (isTauri()) {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        await getCurrentWindow().close();
+      } catch {
+        window.close();
+      }
+    } else {
+      window.close();
+    }
+  };
+
+  // 监听键盘快捷键：Ctrl+S 保存，Esc 关闭
   const handleKeyDown = (e: KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
       handleSave();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      handleClose();
     }
   };
 
@@ -150,6 +167,9 @@ export const NoteEditor: Component<NoteEditorProps> = (props) => {
 
           <button class="editor-save-btn" onClick={handleSave} title="保存 (Ctrl+S)">
             💾 保存 (Ctrl+S)
+          </button>
+          <button class="editor-close-btn" onClick={handleClose} title="关闭窗口 (Esc)">
+            ✕ 关闭 (Esc)
           </button>
         </div>
       </header>

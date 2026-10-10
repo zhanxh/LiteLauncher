@@ -14,14 +14,16 @@
       {
         "label": "main",
         "title": "LiteLauncher",
+        "url": "index.html",
         "width": 680,
-        "height": 64,
+        "height": 70,
         "decorations": false,
-        "transparent": true,
+        "transparent": false,
         "alwaysOnTop": true,
         "center": true,
+        "focus": true,
         "resizable": false,
-        "skipTaskbar": true,
+        "skipTaskbar": false,
         "shadow": true
       }
     ],
