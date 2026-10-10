@@ -272,7 +272,7 @@ pub async fn open_editor_window(
 }
 
 /// 轻量 URL 编码辅助
-fn urlencoding_simple(s: &str) -> String {
+pub(crate) fn urlencoding_simple(s: &str) -> String {
     let mut encoded = String::new();
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {

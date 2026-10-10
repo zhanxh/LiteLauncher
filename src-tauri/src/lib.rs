@@ -3,6 +3,7 @@ pub mod app_launcher;
 pub mod todo;
 pub mod notes;
 pub mod history;
+pub mod reminder;
 
 use db::DbState;
 use std::sync::Mutex;
@@ -93,6 +94,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // 1. 初始化 SQLite 数据库并注入应用状态
             match db::init_db() {
@@ -165,6 +167,10 @@ pub fn run() {
             }
 
             // 4. DevTools 支持由 Cargo `devtools` feature 提供（按 F12 打开），不再启动时自动展开
+
+            // 5. 启动待办提醒调度线程：每 20 秒扫描到期待办并弹系统通知（窗口隐藏时依然有效）
+            reminder::spawn_reminder_scheduler(app_handle.clone());
+
             Ok(())
         })
         .on_window_event(|window, event| {

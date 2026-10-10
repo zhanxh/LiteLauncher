@@ -29,7 +29,7 @@ export const todoPlugin: CommandPlugin = {
   id: 'todo',
   trigger: '/todo',
   name: '待办事项',
-  description: '管理待办日程；支持 /todo new "事项" [时间] [规则]',
+  description: '管理待办日程；/todo new "事项" 2026-10-11 14:30 或 HH:MM（到点弹系统通知）',
   icon: '✅',
 
   isAction(input: ParsedInput): boolean {
@@ -62,13 +62,13 @@ export const todoPlugin: CommandPlugin = {
 
     if (isTauri()) {
       try {
-        await invoke('create_todo', {
+        const saved = await invoke<TodoBackend>('create_todo', {
           content,
           remindAt: remind_at,
           repeatRule: repeat_rule,
           rawInput: input.raw,
         });
-        const timeDesc = remind_at ? ` (${remind_at})` : '';
+        const timeDesc = saved.remind_at ? ` (${saved.remind_at})` : '';
         return { success: true, message: `已成功保存待办: "${content}"${timeDesc}` };
       } catch (err: any) {
         return { success: false, message: `保存失败: ${err?.message || err}` };

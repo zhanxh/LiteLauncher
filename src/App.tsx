@@ -5,6 +5,7 @@ import { PreviewCapsule } from './components/PreviewCapsule';
 import { ResultPanel } from './components/ResultPanel';
 import { Toast } from './components/Toast';
 import { NoteEditor } from './components/NoteEditor';
+import { ReminderToast } from './components/ReminderToast';
 import { registerBuiltinPlugins } from './plugins';
 import { parseCommand } from './core/parser';
 import { ActionPreviewCapsule, PanelItem } from './types/command';
@@ -41,6 +42,16 @@ export const App: Component = () => {
 
   if (isEditorView) {
     return <NoteEditor filePath={editorPath} title={editorTitle} />;
+  }
+
+  // 检查是否为待办提醒弹窗模式 (index.html?view=reminder&id=...&content=...)
+  if (urlParams.get('view') === 'reminder') {
+    return (
+      <ReminderToast
+        id={urlParams.get('id') || ''}
+        content={urlParams.get('content') || ''}
+      />
+    );
   }
 
   const [inputValue, setInputValue] = createSignal('');

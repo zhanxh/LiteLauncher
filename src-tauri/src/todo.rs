@@ -1,4 +1,6 @@
 use crate::db::DbState;
+use crate::reminder::parse_remind_time;
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -11,6 +13,25 @@ pub struct TodoItem {
     pub completed: bool,
     pub raw_input: String,
     pub created_at: i64,
+}
+
+/// 规范化提醒时间输入：
+/// - `HH:MM` → 今天该时刻，已过则顺延明天
+/// - `YYYY-MM-DD` → 当天 09:00
+/// - `YYYY-MM-DD HH:MM` → 精确时刻（早于当前时间则报错）
+/// 返回标准存储格式 `YYYY-MM-DD HH:MM`
+fn normalize_remind_time(raw: &str) -> Result<Option<String>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+
+    let now = Local::now().naive_local();
+    match parse_remind_time(raw, now) {
+        Some(dt) if dt > now => Ok(Some(dt.format("%Y-%m-%d %H:%M").to_string())),
+        Some(_) => Err("提醒时间已过去，请指定将来的时间".into()),
+        None => Err("提醒时间格式无效，支持 HH:MM、YYYY-MM-DD 或 YYYY-MM-DD HH:MM".into()),
+    }
 }
 
 /// 创建新待办事项
@@ -31,9 +52,11 @@ pub fn create_todo(
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp();
 
+    let remind_at = normalize_remind_time(remind_at.as_deref().unwrap_or(""))?;
+
     conn.execute(
-        "INSERT INTO todos (id, content, remind_at, repeat_rule, completed, raw_input, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO todos (id, content, remind_at, repeat_rule, completed, raw_input, created_at, notified)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
         rusqlite::params![
             &id,
             clean_content,
@@ -141,4 +164,45 @@ pub fn delete_todo(state: State<'_, DbState>, id: String) -> Result<(), String> 
     conn.execute("DELETE FROM todos WHERE id = ?1", rusqlite::params![&id])
         .map_err(|e| format!("删除待办失败: {}", e))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_input_yields_none() {
+        assert!(normalize_remind_time("").unwrap().is_none());
+        assert!(normalize_remind_time("   ").unwrap().is_none());
+    }
+
+    #[test]
+    fn future_datetime_kept_normalized() {
+        let future = (chrono::Local::now() + chrono::Duration::hours(2))
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+        assert_eq!(normalize_remind_time(&future).unwrap().unwrap(), future);
+    }
+
+    #[test]
+    fn past_datetime_rejected() {
+        let past = (chrono::Local::now() - chrono::Duration::hours(2))
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+        assert!(normalize_remind_time(&past).is_err());
+    }
+
+    #[test]
+    fn bare_time_resolves_to_canonical_datetime() {
+        let out = normalize_remind_time("23:59").unwrap().unwrap();
+        assert_eq!(out.len(), "YYYY-MM-DD HH:MM".len());
+        assert!(chrono::NaiveDateTime::parse_from_str(&out, "%Y-%m-%d %H:%M").is_ok());
+    }
+
+    #[test]
+    fn invalid_format_rejected() {
+        assert!(normalize_remind_time("明天").is_err());
+        assert!(normalize_remind_time("25:00").is_err());
+        assert!(normalize_remind_time("2026-13-01").is_err());
+    }
 }

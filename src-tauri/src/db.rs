@@ -31,10 +31,16 @@ pub fn init_db() -> Result<Connection> {
             repeat_rule TEXT,
             completed   INTEGER NOT NULL DEFAULT 0,
             raw_input   TEXT,
-            created_at  INTEGER NOT NULL
+            created_at  INTEGER NOT NULL,
+            notified    INTEGER NOT NULL DEFAULT 0
         )",
         [],
     )?;
+    // 旧库迁移：为已存在的 todos 表补 notified 列（列已存在时报错可安全忽略）
+    let _ = conn.execute(
+        "ALTER TABLE todos ADD COLUMN notified INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
 
     // 2. 初始化应用快捷方式表 (app_shortcuts)
     conn.execute(
