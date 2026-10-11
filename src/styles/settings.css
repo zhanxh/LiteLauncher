@@ -198,9 +198,9 @@ body.settings-mode {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
-  border: 1px solid var(--ll-border, #2a2a35);
+  border: 1px solid var(--border-subtle);
   border-radius: 10px;
-  background: var(--ll-surface, rgba(255, 255, 255, 0.03));
+  background: var(--item-bg-hover);
 }
 .plugin-meta {
   display: flex;
@@ -222,6 +222,6 @@ body.settings-mode {
   opacity: 0.6;
 }
 .plugin-toggle.is-on {
-  border-color: var(--ll-accent, #6c8cff);
-  color: var(--ll-accent, #6c8cff);
+  border-color: var(--accent-color);
+  color: var(--accent-color);
 }

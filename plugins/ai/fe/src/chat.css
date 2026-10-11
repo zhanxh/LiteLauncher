@@ -3,8 +3,8 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: var(--ll-bg, #16161d);
-  color: var(--ll-text, #e8e8ee);
+  background: var(--bg-solid);
+  color: var(--text-main);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
@@ -13,7 +13,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--ll-border, #2a2a35);
+  border-bottom: 1px solid var(--border-subtle);
 }
 .ai-header h1 { font-size: 15px; margin: 0; font-weight: 600; }
 .ai-header-actions { display: flex; gap: 6px; }
@@ -21,20 +21,20 @@
 .ai-btn {
   padding: 6px 14px;
   border-radius: 8px;
-  border: 1px solid var(--ll-accent, #6c8cff);
-  background: var(--ll-accent, #6c8cff);
-  color: #fff;
+  border: 1px solid var(--accent-color);
+  background: var(--accent-color);
+  color: var(--accent-fg);
   font-size: 13px;
   cursor: pointer;
 }
 .ai-btn.ghost {
   background: transparent;
   color: inherit;
-  border-color: var(--ll-border, #2a2a35);
+  border-color: var(--border-subtle);
 }
 .ai-btn.danger {
-  background: #d9534f;
-  border-color: #d9534f;
+  background: var(--danger);
+  border-color: var(--danger);
 }
 
 .ai-config {
@@ -42,15 +42,15 @@
   flex-direction: column;
   gap: 8px;
   padding: 12px 14px;
-  border-bottom: 1px solid var(--ll-border, #2a2a35);
+  border-bottom: 1px solid var(--border-subtle);
   font-size: 12px;
 }
 .ai-config label { display: flex; flex-direction: column; gap: 4px; }
 .ai-config input {
   padding: 6px 10px;
   border-radius: 8px;
-  border: 1px solid var(--ll-border, #2a2a35);
-  background: var(--ll-surface, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border-subtle);
+  background: var(--item-bg-hover);
   color: inherit;
 }
 
@@ -58,7 +58,7 @@
   margin: auto;
   max-width: 420px;
   padding: 24px;
-  border: 1px solid var(--ll-border, #2a2a35);
+  border: 1px solid var(--border-subtle);
   border-radius: 14px;
   display: flex;
   flex-direction: column;
@@ -70,8 +70,8 @@
 .ai-keycard input {
   padding: 9px 12px;
   border-radius: 10px;
-  border: 1px solid var(--ll-border, #2a2a35);
-  background: var(--ll-surface, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border-subtle);
+  background: var(--item-bg-hover);
   color: inherit;
 }
 .ai-hint { opacity: 0.55; font-size: 11px; }
@@ -96,12 +96,12 @@
   word-break: break-word;
 }
 .ai-msg.user .ai-bubble {
-  background: var(--ll-accent, #6c8cff);
-  color: #fff;
+  background: var(--accent-color);
+  color: var(--accent-fg);
   border-bottom-right-radius: 4px;
 }
 .ai-msg.assistant .ai-bubble {
-  background: var(--ll-surface, rgba(255, 255, 255, 0.05));
+  background: var(--item-bg-hover);
   border-bottom-left-radius: 4px;
 }
 
@@ -109,8 +109,8 @@
   margin: 0 14px 8px;
   padding: 8px 12px;
   border-radius: 8px;
-  background: rgba(217, 83, 79, 0.15);
-  color: #ff9d9a;
+  background: var(--danger-soft);
+  color: var(--danger-text);
   font-size: 12px;
 }
 
@@ -125,9 +125,57 @@
   resize: none;
   padding: 9px 12px;
   border-radius: 10px;
-  border: 1px solid var(--ll-border, #2a2a35);
-  background: var(--ll-surface, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border-subtle);
+  background: var(--item-bg-hover);
   color: inherit;
   font-size: 13px;
   font-family: inherit;
+}
+
+/* ─── 模型下拉选择 ─── */
+.ai-model-select {
+  position: relative;
+}
+
+.ai-model-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 6;
+  padding: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  box-shadow: var(--pop-shadow);
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.ai-model-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  text-align: left;
+  font-size: 13px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.ai-model-item:hover {
+  background: var(--accent-light);
+}
+
+.ai-model-item.sel {
+  background: var(--accent-color);
+  color: var(--accent-fg);
+}
+
+.ai-model-item.custom {
+  opacity: 0.7;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0 0 7px 7px;
 }

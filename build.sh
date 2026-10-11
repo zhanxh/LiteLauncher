@@ -1,15 +1,43 @@
 #!/usr/bin/env bash
 # Linux/macOS 构建脚本（对应 Windows 的 build.cmd）
+# 用法：
+#   ./build.sh         完整构建：前端 + 主程序 + 便携插件部署
+#   ./build.sh check   快速门禁：cargo check + 前端类型检查（不产二进制）
 set -euo pipefail
 cd "$(dirname "$0")"
 
-echo "[1/3] Building frontend assets..."
+# ── 工具链检查 ──────────────────────────────────────────────
+command -v node >/dev/null || { echo "[错误] 未找到 node，请安装 Node.js 18+"; exit 1; }
+command -v cargo >/dev/null || { echo "[错误] 未找到 cargo，请安装 Rust（rustup.rs）"; exit 1; }
+
+if [[ "${1:-}" == "check" ]]; then
+    echo "[check] Rust 工作区编译检查（含全部插件 crate）..."
+    cargo check --workspace
+    echo "[check] 前端类型检查..."
+    npx tsc --noEmit
+    echo "[check] 门禁通过"
+    exit 0
+fi
+
+# ── 依赖安装（首次/依赖变更后自动补齐）─────────────────────
+if [[ ! -d node_modules ]]; then
+    echo "[依赖] node_modules 缺失，执行 npm install..."
+    npm install
+fi
+
+echo "[1/4] 构建前端（插件注册表生成 + 打包）..."
 npm run build
 
-echo "[2/3] Building Tauri release binary..."
+echo "[2/4] 构建主程序（Tauri release，含内置插件）..."
 npx tauri build --no-bundle
 
-echo "[3/3] Copying to release/LiteLauncher..."
+echo "[3/4] 拷贝主程序到 release/LiteLauncher..."
 mkdir -p release
 cp -f src-tauri/target/release/LiteLauncher release/LiteLauncher
-echo "Build and release completed successfully!"
+
+echo "[4/4] 部署外部插件到 release/plugins/..."
+node tools/deploy-portable-plugins.mjs
+
+echo "构建完成。可分发内容："
+echo "  release/LiteLauncher        主程序（内置 todo/apps/notes/ai 插件）"
+echo "  release/plugins/            外部插件（便携部署，随程序分发）"

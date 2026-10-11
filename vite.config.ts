@@ -8,6 +8,7 @@ const host = process.env.TAURI_DEV_HOST;
 // 插件包解析：@ll/sdk（插件唯一允许的壳层依赖）与 @ll/plugin-<id>（插件 fe 包）
 const pluginAlias = [
   { find: "@ll/sdk", replacement: path.resolve("plugins/sdk/src/index.ts") },
+  { find: "@ll/ui", replacement: path.resolve("plugins/ui/src/index.ts") },
   {
     find: /^@ll\/plugin-(.+)$/,
     replacement: path.resolve("plugins") + "/$1/fe/src/index.ts",

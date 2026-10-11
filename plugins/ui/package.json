@@ -1,0 +1,8 @@
+{
+  "name": "@ll/ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LiteLauncher 设计令牌与共享 UI 基础（@ll/ui）：双主题令牌单一真相源，插件窗口唯一允许的样式来源",
+  "type": "module",
+  "main": "src/index.ts"
+}

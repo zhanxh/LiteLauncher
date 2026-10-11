@@ -55,12 +55,12 @@ body.todoapp-mode {
 }
 
 .todoapp .btn.primary {
-  background: #3b7cff;
-  color: #fff;
+  background: var(--accent-color);
+  color: var(--accent-fg);
 }
 
 .todoapp .btn.primary:hover {
-  background: #2f6ae8;
+  background: var(--accent-hover);
 }
 
 .todoapp .btn.ghost {
@@ -73,7 +73,7 @@ body.todoapp-mode {
 }
 
 .todoapp .btn.danger {
-  color: #d0342c;
+  color: var(--danger-text);
 }
 
 .todoapp .btn.small {
@@ -82,9 +82,9 @@ body.todoapp-mode {
 }
 
 .todoapp .btn.active {
-  background: #3b7cff;
-  color: #fff;
-  border-color: #3b7cff;
+  background: var(--accent-color);
+  color: var(--accent-fg);
+  border-color: var(--accent-color);
 }
 
 /* 通用输入框 */
@@ -100,7 +100,7 @@ body.todoapp-mode {
 }
 
 .todoapp .ti:focus {
-  border-color: #3b7cff;
+  border-color: var(--accent-color);
 }
 
 .todoapp .ti.small {
@@ -150,12 +150,228 @@ body.todoapp-mode {
 /* 快速添加 */
 .todoapp-add {
   display: flex;
+  flex-direction: column;
   gap: 8px;
   margin-bottom: 16px;
 }
 
-.todoapp-add .ti.time {
-  flex: 0 0 150px;
+/* ─── 自绘日期时间选择器 ─── */
+.dtp {
+  position: relative;
+}
+
+.dtp-trigger {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-main);
+}
+
+.dtp-placeholder {
+  color: var(--text-muted);
+}
+
+.dtp-value {
+  color: var(--accent-color);
+}
+
+.dt-pop {
+  display: flex;
+  color: var(--text-main);
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  z-index: 5;
+}
+
+.cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cal-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cal-nav {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.cal-nav:hover {
+  border-color: var(--accent-color);
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+}
+
+.cal-wd {
+  text-align: center;
+  font-size: 11px;
+  opacity: 0.5;
+  padding: 2px 0;
+}
+
+.cal-cell {
+  padding: 6px 0;
+  text-align: center;
+  font-size: 12px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.cal-cell:hover {
+  background: var(--accent-light);
+}
+
+.cal-cell.today {
+  box-shadow: inset 0 0 0 1px var(--accent-color);
+}
+
+.cal-cell.sel {
+  background: var(--accent-color);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+/* Kobalte TimeField 分段输入 */
+.tf {
+  display: inline-flex;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--item-bg-hover);
+  font-size: 13px;
+}
+
+.tf [data-segment] {
+  padding: 3px 5px;
+  border-radius: 6px;
+  transition: background 0.1s;
+}
+
+.tf [data-segment]:focus {
+  background: var(--accent-light);
+  outline: none;
+}
+
+.tf [data-placeholder] {
+  opacity: 0.45;
+}
+
+.dt-pop-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* ─── 重复周期选择 ─── */
+.repeat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.repeat-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.repeat-toggle input {
+  accent-color: var(--accent-color);
+  width: 15px;
+  height: 15px;
+}
+
+.repeat-off {
+  font-size: 12px;
+  opacity: 0.45;
+}
+
+.repeat-num {
+  flex: 0 0 84px;
+}
+
+.select-wrap {
+  position: relative;
+  flex: 0 0 110px;
+}
+
+.select-btn {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.select-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+}
+
+.select-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 6;
+  padding: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  box-shadow: var(--pop-shadow);
+}
+
+.select-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  text-align: left;
+  font-size: 13px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.select-item:hover {
+  background: var(--accent-light);
+}
+
+.select-item.sel {
+  background: var(--accent-color);
+  color: #fff;
+}
+
+.repeat-once {
+  font-size: 12px;
+  opacity: 0.5;
 }
 
 /* 列表 */

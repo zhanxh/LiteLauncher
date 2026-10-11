@@ -1,5 +1,6 @@
 /* @refresh reload */
 import { render } from "solid-js/web";
+import "@ll/ui";
 import App from "./App";
 import { registerShellPlugins } from "./core/builtin";
 import { registerBuiltinPlugins } from "./plugins.generated";

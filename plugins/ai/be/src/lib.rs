@@ -11,8 +11,15 @@ use serde_json::{json, Value as JsonValue};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-const DEFAULT_MODEL: &str = "gpt-4o-mini";
-const DEFAULT_BASE_URL: &str = "https://api.openai.com";
+const DEFAULT_MODEL: &str = "deepseek-chat";
+/// 候选模型清单（get_config 下发，前端下拉选择；自定义模型经输入覆盖）
+const MODELS: &[&str] = &[
+    "DeepSeek-V4-Flash",
+    "DeepSeek-V4-Pro",
+    "deepseek-chat",
+    "deepseek-reasoner",
+];
+const DEFAULT_BASE_URL: &str = "https://api.deepseek.com";
 const COMPLETIONS_PATH: &str = "/v1/chat/completions";
 
 pub struct AiPlugin {
@@ -88,6 +95,7 @@ impl AiPlugin {
             Ok(json!({
                 "model": Self::config_value(ctx, "model", DEFAULT_MODEL),
                 "baseUrl": Self::config_value(ctx, "base_url", DEFAULT_BASE_URL),
+                "models": MODELS,
             }))
         })
     }

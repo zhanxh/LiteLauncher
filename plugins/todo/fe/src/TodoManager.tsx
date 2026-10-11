@@ -1,6 +1,8 @@
 import { Component, createSignal, For, onMount, onCleanup, Show } from 'solid-js';
 import { getPluginContext } from '@ll/sdk';
 import { repeatLabel } from './todoPlugin';
+import { DateTimePicker } from './DateTimePicker';
+import { RepeatPicker } from './RepeatPicker';
 import './todoapp.css';
 
 // 待办管理面板经统一插件通道访问 todo 插件后端
@@ -30,12 +32,12 @@ export const TodoManager: Component = () => {
 
   // 编辑表单
   const [editContent, setEditContent] = createSignal('');
-  const [editTime, setEditTime] = createSignal('');
+  const [editRemind, setEditRemind] = createSignal('');
   const [editRepeat, setEditRepeat] = createSignal('');
 
   // 快速添加表单
   const [newContent, setNewContent] = createSignal('');
-  const [newTime, setNewTime] = createSignal('');
+  const [newRemind, setNewRemind] = createSignal('');
   const [newRepeat, setNewRepeat] = createSignal('');
 
   // 设置
@@ -95,18 +97,22 @@ export const TodoManager: Component = () => {
   const startEdit = (item: TodoItem) => {
     setEditingId(item.id);
     setEditContent(item.content);
-    setEditTime(item.remind_at || '');
+    setEditRemind(item.remind_at || '');
     setEditRepeat(item.repeat_rule || '');
   };
 
   const saveEdit = async () => {
     const id = editingId();
     if (!id) return;
+    if (editRepeat() && !editRemind()) {
+      flash('启用重复需先选择提醒时间');
+      return;
+    }
     try {
       await ctx.call('update', {
         id,
         content: editContent(),
-        remind_at: editTime().trim() || null,
+        remind_at: editRemind(),
         repeat_rule: editRepeat().trim() || null,
       });
       setEditingId(null);
@@ -122,15 +128,19 @@ export const TodoManager: Component = () => {
       flash('待办内容不能为空');
       return;
     }
+    if (newRepeat() && !newRemind()) {
+      flash('启用重复需先选择提醒时间');
+      return;
+    }
     try {
       await ctx.call('create', {
         content: newContent(),
-        remind_at: newTime().trim() || null,
+        remind_at: newRemind(),
         repeat_rule: newRepeat().trim() || null,
         raw_input: '',
       });
       setNewContent('');
-      setNewTime('');
+      setNewRemind('');
       setNewRepeat('');
       flash('已添加待办');
       await refresh();
@@ -210,18 +220,8 @@ export const TodoManager: Component = () => {
             placeholder="待办内容"
             onInput={(e) => setEditContent(e.currentTarget.value)}
           />
-          <input
-            class="ti"
-            value={editTime()}
-            placeholder="提醒时间：HH:MM 或 YYYY-MM-DD HH:MM"
-            onInput={(e) => setEditTime(e.currentTarget.value)}
-          />
-          <input
-            class="ti"
-            value={editRepeat()}
-            placeholder="重复：every:30min / daily / weekly（可空）"
-            onInput={(e) => setEditRepeat(e.currentTarget.value)}
-          />
+          <DateTimePicker value={editRemind()} onChange={setEditRemind} />
+          <RepeatPicker value={editRepeat()} onChange={setEditRepeat} />
           <div class="todo-edit-actions">
             <button class="btn primary" onClick={() => void saveEdit()}>保存</button>
             <button class="btn ghost" onClick={() => setEditingId(null)}>取消</button>
@@ -278,21 +278,11 @@ export const TodoManager: Component = () => {
           onInput={(e) => setNewContent(e.currentTarget.value)}
           onKeyDown={(e) => e.key === 'Enter' && void quickAdd()}
         />
-        <input
-          class="ti time"
-          placeholder='时间 14:30'
-          value={newTime()}
-          onInput={(e) => setNewTime(e.currentTarget.value)}
-          onKeyDown={(e) => e.key === 'Enter' && void quickAdd()}
-        />
-        <input
-          class="ti time"
-          placeholder='重复 every:30min'
-          value={newRepeat()}
-          onInput={(e) => setNewRepeat(e.currentTarget.value)}
-          onKeyDown={(e) => e.key === 'Enter' && void quickAdd()}
-        />
-        <button class="btn primary" onClick={() => void quickAdd()}>添加</button>
+        <DateTimePicker value={newRemind()} onChange={setNewRemind} placeholder="点击选择提醒时间（可空，默认无提醒）" />
+        <RepeatPicker value={newRepeat()} onChange={setNewRepeat} />
+        <div class="todo-edit-actions">
+          <button class="btn primary" onClick={() => void quickAdd()}>添加</button>
+        </div>
       </section>
 
       <main class="todoapp-list">

@@ -24,9 +24,10 @@
     /* 插件包解析（与 vite.config.ts 别名一致，paths 相对 tsconfig 所在目录） */
     "paths": {
       "@ll/sdk": ["./plugins/sdk/src/index.ts"],
+      "@ll/ui": ["./plugins/ui/src/index.ts"],
       "@ll/plugin-*": ["./plugins/*/fe/src/index.ts"]
     }
   },
-  "include": ["src", "plugins/sdk/src", "plugins/*/fe/src"],
+  "include": ["src", "plugins/sdk/src", "plugins/ui/src", "plugins/*/fe/src"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

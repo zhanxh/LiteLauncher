@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "api_version": "^1",
   "trigger": "/ai",
-  "description": "AI 对话助手：/ai 提示词 打开对话窗口（OpenAI 兼容接口，流式输出；首次使用需在窗口内配置 API Key）",
-  "permissions": ["secrets", "settings", "windows", "net:api.openai.com"],
+  "description": "AI 对话助手：/ai 提示词 打开对话窗口（默认 DeepSeek，OpenAI 兼容流式；首次使用需在窗口内配置 API Key）",
+  "permissions": ["secrets", "settings", "windows", "net:api.deepseek.com", "net:api.openai.com"],
   "views": [
     {
       "id": "chat",

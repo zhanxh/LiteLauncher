@@ -1,5 +1,6 @@
 import { Component, For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { getPluginContext } from '@ll/sdk';
+import { Select as KSelect, Content as KSelectContent, Item as KSelectItem, Trigger as KSelectTrigger, Value as KSelectValue } from '@kobalte/core/select';
 import './chat.css';
 
 const ctx = getPluginContext('ai');
@@ -24,7 +25,12 @@ export const ChatView: Component = () => {
   const [messages, setMessages] = createSignal<Msg[]>([]);
   const [hasKey, setHasKey] = createSignal<boolean | null>(null);
   const [keyInput, setKeyInput] = createSignal('');
-  const [config, setConfig] = createSignal<{ model: string; baseUrl: string } | null>(null);
+  const [config, setConfig] = createSignal<{
+    model: string;
+    baseUrl: string;
+    models?: string[];
+  } | null>(null);
+  const [customModel, setCustomModel] = createSignal(false);
   const [showConfig, setShowConfig] = createSignal(false);
   const [streaming, setStreaming] = createSignal(false);
   const [error, setError] = createSignal('');
@@ -143,7 +149,7 @@ export const ChatView: Component = () => {
       <header class="ai-header">
         <h1>AI 对话</h1>
         <div class="ai-header-actions">
-          <button class="ai-btn ghost" onClick={() => setShowConfig((v) => !v)}>⚙️ 配置</button>
+          <button class="ai-btn ghost" onClick={() => { setShowConfig((v) => !v); setCustomModel(false); }}>⚙️ 配置</button>
           <button class="ai-btn ghost" onClick={() => void closeWindow()}>✕</button>
         </div>
       </header>
@@ -152,18 +158,53 @@ export const ChatView: Component = () => {
         <section class="ai-config">
           <label>
             模型
-            <input
-              value={config()?.model ?? ''}
-              onInput={(e) => setConfig((c) => ({ model: e.currentTarget.value, baseUrl: c?.baseUrl ?? '' }))}
-              placeholder="gpt-4o-mini"
-            />
+            <Show
+              when={!customModel()}
+              fallback={
+                <input
+                  value={config()?.model ?? ''}
+                  onInput={(e) =>
+                    setConfig((c) => ({ model: e.currentTarget.value, baseUrl: c?.baseUrl ?? '', models: c?.models }))
+                  }
+                  placeholder="输入模型 ID"
+                />
+              }
+            >
+              <KSelect
+                class="ai-model-select"
+                options={config()?.models ?? []}
+                optionValue={(m: string) => m}
+                optionTextValue={(m: string) => m}
+                value={config()?.model}
+                onChange={(m) => m && setConfig((c) => ({ model: m, baseUrl: c?.baseUrl ?? '', models: c?.models }))}
+                itemComponent={(p) => (
+                  <KSelectItem item={p.item} class="select-item">
+                    {p.item.rawValue}
+                  </KSelectItem>
+                )}
+                placement="bottom-start"
+                gutter={6}
+              >
+                <KSelectTrigger class="ai-btn ghost select-btn" aria-label="选择模型">
+                  <KSelectValue>
+                    {(state: any) => state.selectedOption() ?? config()?.model ?? '选择模型'}
+                  </KSelectValue>
+                </KSelectTrigger>
+                <KSelectContent class="select-pop" />
+              </KSelect>
+            </Show>
+            <Show when={!customModel()}>
+              <button type="button" class="ai-btn ghost ai-model-custom" onClick={() => setCustomModel(true)}>
+                自定义模型 ID…
+              </button>
+            </Show>
           </label>
           <label>
             接口地址（OpenAI 兼容）
             <input
               value={config()?.baseUrl ?? ''}
               onInput={(e) => setConfig((c) => ({ baseUrl: e.currentTarget.value, model: c?.model ?? '' }))}
-              placeholder="https://api.openai.com"
+              placeholder="https://api.deepseek.com"
             />
           </label>
           <button class="ai-btn" onClick={() => void saveConfig()}>保存配置</button>
@@ -184,7 +225,7 @@ export const ChatView: Component = () => {
               onKeyDown={(e) => e.key === 'Enter' && void saveKey()}
             />
             <button class="ai-btn" onClick={() => void saveKey()}>保存密钥</button>
-            <p class="ai-hint">接口默认 OpenAI；可在「配置」中改为任意 OpenAI 兼容端点（仅允许白名单域名）。</p>
+            <p class="ai-hint">接口默认 DeepSeek（deepseek-chat）；可在「配置」中切换任意 OpenAI 兼容端点（仅允许 manifest 白名单域名）。</p>
           </section>
         }
       >
