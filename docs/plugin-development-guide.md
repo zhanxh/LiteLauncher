@@ -490,8 +490,11 @@ plugins/sysinfo/                 # 仓库内开发
 ├─ manifest.json                 # backend.kind = "llp" + entry 启动命令 + command 命令声明
 └─ sysinfo.py                    # 任意语言的 sidecar（Python/Bash/Go/Rust…）
 
-~/.local/share/LiteLauncher/extplugins/sysinfo/    # 安装位置（拷入即装）
-npm run plugin:install -- sysinfo                  # 安装命令；卸载 = 删除该目录
+两级安装位置（同名插件：用户安装目录优先，覆盖随附版本）：
+├─ <主程序目录>/plugins/sysinfo/                    # 便携部署：随程序分发（绿色版）
+│   npm run plugin:install -- sysinfo --portable
+└─ ~/.local/share/LiteLauncher/extplugins/sysinfo/  # 用户安装：不随程序走
+    npm run plugin:install -- sysinfo              # 卸载 = 删除该目录
 ```
 
 ```jsonc
@@ -507,7 +510,7 @@ npm run plugin:install -- sysinfo                  # 安装命令；卸载 = 删
 
 - **懒启动**：注册/启用不 spawn，首次 `ctx.call` 才拉起进程；崩溃后下次调用自动重启
 - **前端同构**：宿主据 `command` 声明生成通用 CommandPlugin，fe 侧无需任何代码——`/sysinfo` 输入、候选、Toast 与内置插件体验一致
-- **加载流程**：宿主扫描 extplugins → manifest 解析 + 门控上下文构造（同一套权限模型）→ 注册进同一注册表；前端 `plugin_list` 驱动生成命令
+- **加载流程**：宿主扫描两级目录（用户安装 extplugins 优先，其次主程序旁 plugins/，同名取前者并记日志）→ manifest 解析 + 门控上下文构造（同一套权限模型）→ 注册进同一注册表；前端 `plugin_list` 驱动生成命令。便携目录随程序一起拷贝分发，程序升级不影响两侧插件
 - **安全**：sidecar 没有任何宿主句柄，能力全部经 `svc.*` 反向请求由宿主代理，未在 manifest 声明的权限直接拒绝
 
 ### 9.3 sidecar 协议（LLP/1：stdio JSON Lines，每行一条 JSON-RPC 2.0）

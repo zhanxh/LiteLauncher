@@ -347,62 +347,77 @@ fn handle_svc(ctx: &PluginContext, method: &str, params: &JsonValue) -> Result<J
 }
 
 impl HostState {
-    /// 扫描外部插件目录（extplugins/<id>/manifest.json），把 kind=llp 的注册进宿主。
-    /// 门控上下文与内置插件同一套逻辑（manifest 权限 → 服务句柄）。
+    /// 扫描外部插件目录列表，把 kind=llp 的注册进宿主（M6/M7 门控模型与内置一致）。
+    ///
+    /// 支持两级部署（`dirs` 按优先级排序，**先到先得**——调用方应把高优先级放前面）：
+    /// 1. 用户安装目录 extplugins/（同名覆盖随程序分发的版本）
+    /// 2. 便携目录 <主程序目录>/plugins/（随程序分发，绿色部署）
     /// 返回注册数量。
-    pub fn register_external_plugins(&self, dir: &Path, log: LogFn) -> usize {
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => return 0, // 目录不存在 = 尚未安装任何外部插件
-        };
-
+    pub fn register_external_plugins(&self, dirs: &[(PathBuf, String)], log: LogFn) -> usize {
         let core_db = match self.core_db.read().unwrap().clone() {
             Some(db) => db,
             None => return 0,
         };
         let registry = self.db_registry.read().unwrap().clone();
 
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut count = 0;
-        for item in entries.flatten() {
-            let plugin_dir = item.path();
-            let manifest_path = plugin_dir.join("manifest.json");
-            if !manifest_path.is_file() {
-                continue;
-            }
-            let manifest = match std::fs::read_to_string(&manifest_path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<PluginManifest>(&s).ok())
-            {
-                Some(m) => m,
-                None => {
+
+        for (dir, source_label) in dirs {
+            let entries = match std::fs::read_dir(dir) {
+                Ok(e) => e,
+                Err(_) => continue, // 目录不存在 = 该来源无插件
+            };
+            for item in entries.flatten() {
+                let plugin_dir = item.path();
+                let manifest_path = plugin_dir.join("manifest.json");
+                if !manifest_path.is_file() {
+                    continue;
+                }
+                let manifest = match std::fs::read_to_string(&manifest_path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<PluginManifest>(&s).ok())
+                {
+                    Some(m) => m,
+                    None => {
+                        (log)(
+                            &plugin_dir
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default(),
+                            &format!("外部插件 manifest.json 解析失败（{}），已跳过", source_label),
+                        );
+                        continue;
+                    }
+                };
+                if manifest.backend.kind != "llp" {
+                    continue; // 内置形态的 manifest 不属于外部插件目录
+                }
+                // 同 id 去重：高优先级来源先注册，低优先级静默跳过
+                if !seen.insert(manifest.id.clone()) {
                     (log)(
-                        &plugin_dir
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default(),
-                        "外部插件 manifest.json 解析失败，已跳过",
+                        &manifest.id,
+                        &format!("已在更高优先级来源加载，跳过 {} 副本", source_label),
                     );
                     continue;
                 }
-            };
-            if manifest.backend.kind != "llp" {
-                continue; // 内置形态的 manifest 不属于本目录
-            }
-            if self.plugins.read().unwrap().contains_key(&manifest.id) {
-                (log)(&manifest.id, "外部插件 id 与已有插件冲突，已跳过");
-                continue;
-            }
+                if self.plugins.read().unwrap().contains_key(&manifest.id) {
+                    (log)(&manifest.id, "外部插件 id 与内置插件冲突，已跳过");
+                    continue;
+                }
 
-            let plugin_conn = registry.as_ref().and_then(|r| r.cached(&manifest.id).ok());
-            let ctx = crate::build_context_from_parts(
-                self.app.read().unwrap().as_ref(),
-                &manifest,
-                plugin_conn,
-                Arc::clone(&core_db),
-                Arc::clone(&log),
-            );
-            self.register(Arc::new(LlpBackend::new(manifest, plugin_dir, ctx)));
-            count += 1;
+                let plugin_conn = registry.as_ref().and_then(|r| r.cached(&manifest.id).ok());
+                let ctx = crate::build_context_from_parts(
+                    self.app.read().unwrap().as_ref(),
+                    &manifest,
+                    plugin_conn,
+                    Arc::clone(&core_db),
+                    Arc::clone(&log),
+                );
+                (log)(&manifest.id, &format!("来源: {}", source_label));
+                self.register(Arc::new(LlpBackend::new(manifest, plugin_dir, ctx)));
+                count += 1;
+            }
         }
 
         if count > 0 {

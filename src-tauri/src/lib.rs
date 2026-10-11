@@ -9,6 +9,7 @@ use ll_plugin_apps::AppsPlugin;
 use ll_plugin_notes::NotesPlugin;
 use ll_plugin_ai::AiPlugin;
 use ll_plugin_todo::TodoPlugin;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -65,28 +66,56 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 显示并聚焦主窗口
+/// 将主窗口带到前台并抢占焦点
+///
+/// GTK/X11 兜底组合：重申 always-on-top（部分窗口管理器在 remap 后丢弃
+/// keep-above）、unminimize、show，并在短暂延迟后二次 set_focus
+/// （对抗 WM 的焦点抢占抑制与新映射窗口的焦点竞态）
+fn present_main(window: &tauri::WebviewWindow) {
+    let _ = window.set_always_on_top(true);
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+    let w = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let _ = w.set_focus();
+    });
+}
+
+/// 显示并聚焦主窗口（每次打开默认屏幕居中）
 #[tauri::command]
 fn show_main_window(app: AppHandle) -> Result<(), String> {
     log_lifecycle("IPC: show_main_window called");
     if let Some(window) = app.get_webview_window("main") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        let _ = window.center();
+        present_main(&window);
     }
     Ok(())
 }
 
 /// 切换主窗口显隐状态
+///
+/// 语义：已显示**且已聚焦** → 隐藏；其余一律前置展示——
+/// 窗口可见但焦点在别的应用时（输入草稿未清空等场景不会自动隐藏），
+/// 快捷键应当把它带回前台，而不是误触隐藏
 #[tauri::command]
 fn toggle_main_window(app: AppHandle) -> Result<(), String> {
     log_lifecycle("IPC: toggle_main_window called");
     if let Some(window) = app.get_webview_window("main") {
         let is_visible = window.is_visible().unwrap_or(false);
-        if is_visible {
+        let is_focused = window.is_focused().unwrap_or(false);
+        log_lifecycle(&format!(
+            "IPC: toggle state visible={} focused={}",
+            is_visible, is_focused
+        ));
+        if is_visible && is_focused {
             window.hide().map_err(|e| e.to_string())?;
         } else {
-            window.show().map_err(|e| e.to_string())?;
-            window.set_focus().map_err(|e| e.to_string())?;
+            if !is_visible {
+                let _ = window.center();
+            }
+            present_main(&window);
         }
     }
     Ok(())
@@ -133,7 +162,15 @@ pub fn run() {
             });
 
             // 1.8 扫描外部插件目录（LLP/1：拷入即安装，懒启动，与内置插件同注册表同契约）
-            host.register_external_plugins(&db::extplugins_dir(), Arc::clone(&plugin_log));
+            // 两级部署：用户安装目录（同名优先）> 便携目录（主程序旁 plugins/，随程序分发）
+            let mut ext_dirs: Vec<(PathBuf, String)> =
+                vec![(db::extplugins_dir(), "用户安装目录 extplugins".into())];
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(parent) = exe.parent() {
+                    ext_dirs.push((parent.join("plugins"), "便携目录（主程序旁 plugins）".into()));
+                }
+            }
+            host.register_external_plugins(&ext_dirs, Arc::clone(&plugin_log));
             host.init_all(plugin_log);
 
             let app_handle = app.handle().clone();
