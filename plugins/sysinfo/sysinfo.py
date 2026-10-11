@@ -6,11 +6,18 @@
   插件 → 宿主 : svc.* 反向请求（经宿主门控代执行：notify/process/settings/log）
 本插件演示：search 返回系统信息条目、select 经 svc.notify 推送详情、
 execute open 经 svc.process.launch 打开系统监视器。
+
+跨平台说明：
+  - stdio 一律 UTF-8（Windows 管道默认 GBK/本地编码，与宿主 JSON 不兼容，必须显式声明）
+  - 信息采集：Linux 用 uptime/free，Windows 用 GetTickCount64/GlobalMemoryStatusEx，
+    磁盘统一走 shutil.disk_usage
 """
 
+import ctypes
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -18,6 +25,15 @@ import time
 PROTOCOL = "LLP/1"
 next_svc_id = 1
 pending = {}  # id -> 等待中的响应占位（本插件串行处理，直接同步等待）
+
+
+def _force_utf8_stdio():
+    """管道默认编码跟随系统（中文 Windows = GBK），宿主按 UTF-8 收发，必须统一。"""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 
 def emit(obj):
@@ -48,33 +64,103 @@ def run(cmd):
         return ""
 
 
+def _fmt_secs(total):
+    m, s = divmod(int(total), 60)
+    h, m = divmod(m, 60)
+    d, h = divmod(h, 24)
+    parts = []
+    if d:
+        parts.append(f"{d} 天")
+    if h:
+        parts.append(f"{h} 小时")
+    if m:
+        parts.append(f"{m} 分钟")
+    return " ".join(parts) or f"{s} 秒"
+
+
+def _uptime_windows():
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetTickCount64.restype = ctypes.c_uint64
+    return _fmt_secs(kernel32.GetTickCount64() / 1000.0)
+
+
+def _mem_windows():
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_uint64),
+            ("ullAvailPhys", ctypes.c_uint64),
+            ("ullTotalPageFile", ctypes.c_uint64),
+            ("ullAvailPageFile", ctypes.c_uint64),
+            ("ullTotalVirtual", ctypes.c_uint64),
+            ("ullAvailVirtual", ctypes.c_uint64),
+            ("ullAvailExtendedVirtual", ctypes.c_uint64),
+        ]
+
+    st = MEMORYSTATUSEX()
+    st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+        return None
+    total, avail = st.ullTotalPhys, st.ullAvailPhys
+    used = total - avail
+    g = lambda n: f"{n / 1024**3:.1f}GB"
+    return total, used, avail, g
+
+
 def collect_items():
-    """采集系统信息条目（Linux 优先，非 Linux 平台优雅降级到 platform 模块）"""
+    """采集系统信息条目（Linux/Windows，其余平台仅返回内核与运行时条目）"""
     items = []
+    is_win = os.name == "nt"
 
     kernel = f"{platform.system()} {platform.release()} ({platform.machine()})"
-    items.append({"id": "kernel", "title": f"内核: {kernel}", "icon": "🐧",
+    items.append({"id": "kernel", "title": f"内核: {kernel}", "icon": "🐧" if not is_win else "🪟",
                   "description": platform.platform(), "metadata": {"detail": kernel}})
 
-    uptime_raw = run(["uptime", "-p"])
-    if uptime_raw:
-        items.append({"id": "uptime", "title": f"开机时长: {uptime_raw.removeprefix('up ')}",
-                      "icon": "⏱️", "description": "来自 uptime -p",
-                      "metadata": {"detail": uptime_raw}})
+    if is_win:
+        try:
+            uptime = _uptime_windows()
+            items.append({"id": "uptime", "title": f"开机时长: {uptime}",
+                          "icon": "⏱️", "description": "来自 GetTickCount64",
+                          "metadata": {"detail": uptime}})
+        except Exception:
+            pass
+    else:
+        uptime_raw = run(["uptime", "-p"])
+        if uptime_raw:
+            items.append({"id": "uptime", "title": f"开机时长: {uptime_raw.removeprefix('up ')}",
+                          "icon": "⏱️", "description": "来自 uptime -p",
+                          "metadata": {"detail": uptime_raw}})
 
-    mem_line = run(["free", "-h", "--si"])
-    if mem_line:
-        mem = mem_line.splitlines()[1].split()
-        items.append({"id": "mem", "title": f"内存: {mem[1]} 总量 / {mem[2]} 已用",
-                      "icon": "🧠", "description": f"可用 {mem[6]}",
-                      "metadata": {"detail": f"total={mem[1]} used={mem[2]} avail={mem[6]}"}})
+    if is_win:
+        try:
+            mem = _mem_windows()
+            if mem:
+                total, used, avail, g = mem
+                items.append({"id": "mem", "title": f"内存: {g(total)} 总量 / {g(used)} 已用",
+                              "icon": "🧠", "description": f"可用 {g(avail)}",
+                              "metadata": {"detail": f"total={g(total)} used={g(used)} avail={g(avail)}"}})
+        except Exception:
+            pass
+    else:
+        mem_line = run(["free", "-h", "--si"])
+        if mem_line:
+            mem = mem_line.splitlines()[1].split()
+            items.append({"id": "mem", "title": f"内存: {mem[1]} 总量 / {mem[2]} 已用",
+                          "icon": "🧠", "description": f"可用 {mem[6]}",
+                          "metadata": {"detail": f"total={mem[1]} used={mem[2]} avail={mem[6]}"}})
 
-    disk = run(["df", "-h", "/"])
-    if disk:
-        parts = disk.splitlines()[1].split()
-        items.append({"id": "disk", "title": f"根分区: {parts[2]} 已用 / {parts[1]} 总量",
-                      "icon": "💾", "description": f"剩余 {parts[3]}（使用率 {parts[4]}）",
-                      "metadata": {"detail": f"used={parts[2]} size={parts[1]} avail={parts[3]} {parts[4]}"}})
+    try:
+        disk_path = "C:\\" if is_win else "/"
+        du = shutil.disk_usage(disk_path)
+        label = "系统盘 C:" if is_win else "根分区"
+        pct = f"{du.used / du.total * 100:.0f}%"
+        g = lambda n: f"{n / 1024**3:.1f}GB"
+        items.append({"id": "disk", "title": f"{label}: {g(du.used)} 已用 / {g(du.total)} 总量",
+                      "icon": "💾", "description": f"剩余 {g(du.free)}（使用率 {pct}）",
+                      "metadata": {"detail": f"used={g(du.used)} size={g(du.total)} avail={g(du.free)} {pct}"}})
+    except Exception:
+        pass
 
     pyver = f"Python {platform.python_version()}"
     items.append({"id": "runtime", "title": f"sidecar 运行时: {pyver}",
@@ -84,6 +170,7 @@ def collect_items():
 
 
 def main():
+    _force_utf8_stdio()
     # LLP/1 initialize 握手
     for raw in sys.stdin:
         try:
@@ -130,7 +217,10 @@ def handle_call(m, params):
     if m == "execute":
         sub = params.get("subcommand")
         if sub == "open":
-            svc("svc.process.launch", {"target": "gnome-system-monitor"})
+            target = {"nt": "taskmgr.exe", "posix": "gnome-system-monitor"}.get(os.name)
+            if not target:
+                return {"success": False, "message": f"暂不支持在 {platform.system()} 上打开系统监视器"}
+            svc("svc.process.launch", {"target": target})
             return {"success": True, "message": "已打开系统监视器"}
         return {"success": False, "message": "支持的子命令：open（打开系统监视器）"}
 

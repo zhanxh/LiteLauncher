@@ -113,15 +113,15 @@ impl LlpBackend {
             }
         }
 
-        let entry = self.manifest.backend.entry.clone();
-        let (program, args) = entry
-            .split_first()
-            .ok_or_else(|| PluginError::bad_params("manifest 缺少 backend.entry"))?;
         let id = self.manifest.id.clone();
         let dir = self.dir.clone();
+        let (program, args) = self.resolve_entry().map_err(|e| {
+            self.ctx.log.log(&id, &format!("启动插件进程失败: {}", e));
+            e
+        })?;
 
-        let mut child = Command::new(program)
-            .args(args)
+        let mut child = Command::new(&program)
+            .args(&args)
             .current_dir(&dir) // 工作目录 = 插件目录（脚本以相对路径引用自己的资产）
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -192,6 +192,238 @@ impl LlpBackend {
             let _ = child.wait();
         }
     }
+
+    /// 解析 backend.entry 的解释器与参数（Windows / 无 PATH 场景友好）：
+    /// - `LLP_PYTHON` 环境变量显式指定解释器（最高优先级，可为全路径或 PATH 内裸名）
+    /// - 裸名 `python3`/`python`/`py` 依次探测 PATH（跳过 Microsoft Store 的 0 字节占位 stub）
+    /// - PATH 无果时探测常见安装位置（LOCALAPPDATA\Programs\Python、Program Files\Python、
+    ///   C:\Python3x、anaconda3/miniconda3；Unix：/usr/bin、/usr/local/bin、Homebrew）
+    /// 非 Python 裸名与含路径分隔符的条目按原行为交给系统解析。
+    fn resolve_entry(&self) -> Result<(String, Vec<String>), PluginError> {
+        let (program, args) = self
+            .manifest
+            .backend
+            .entry
+            .split_first()
+            .ok_or_else(|| PluginError::bad_params("manifest 缺少 backend.entry"))?;
+        let program = program.trim();
+        let args: Vec<String> = args.to_vec();
+
+        // 含路径分隔符 → 按字面使用（current_dir 已是插件目录，相对路径相对插件目录解析）
+        if program.contains('/') || program.contains('\\') {
+            return Ok((program.to_string(), args));
+        }
+
+        let base = program.trim_end_matches(".exe").to_ascii_lowercase();
+        let is_py = matches!(base.as_str(), "python3" | "python" | "py");
+
+        let mut candidates: Vec<String> = Vec::new();
+        if let Ok(v) = std::env::var("LLP_PYTHON") {
+            let v = v.trim().to_string();
+            if !v.is_empty() {
+                candidates.push(v);
+            }
+        }
+        candidates.push(program.to_string());
+        if is_py {
+            for name in ["python3", "python", "py"] {
+                if candidates
+                    .iter()
+                    .all(|c| c.trim_end_matches(".exe").to_ascii_lowercase() != name)
+                {
+                    candidates.push(name.to_string());
+                }
+            }
+        }
+
+        for cand in &candidates {
+            if let Some(path) = resolve_program(cand) {
+                let resolved = path.to_string_lossy().to_string();
+                if !resolved.eq_ignore_ascii_case(cand.as_str()) {
+                    self.ctx
+                        .log
+                        .log(&self.manifest.id, &format!("解释器解析: {} → {}", cand, resolved));
+                }
+                return Ok((resolved, args));
+            }
+        }
+
+        if is_py {
+            let mut located: Vec<PathBuf> = common_python_locations();
+            located.extend(registry_pythons());
+            for path in located {
+                self.ctx.log.log(
+                    &self.manifest.id,
+                    &format!(
+                        "解释器解析: {} → {}（常见安装位置）",
+                        program,
+                        path.display()
+                    ),
+                );
+                return Ok((path.to_string_lossy().to_string(), args));
+            }
+            return Err(PluginError::internal(format!(
+                "未找到 Python 解释器（已探测: {}及常见安装位置）。请安装 Python 3（python.org，安装时勾选 Add python.exe to PATH）或设置环境变量 LLP_PYTHON 指向 python.exe 全路径",
+                candidates.join(" → "),
+            )));
+        }
+
+        // 非 Python 裸名：维持原行为，交给系统 PATH 原生解析
+        Ok((program.to_string(), args))
+    }
+}
+
+/// 在 PATH 中探测裸命令（返回命中文件的全路径；含路径分隔符的候选按字面校验存在性）。
+/// Windows 下跳过 Microsoft Store 的 0 字节占位 stub（执行只会弹商店页）。
+fn resolve_program(name: &str) -> Option<PathBuf> {
+    if name.contains('/') || name.contains('\\') {
+        let literal = PathBuf::from(name);
+        return if literal.is_file() { Some(literal) } else { None };
+    }
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let mut candidates: Vec<PathBuf> = Vec::with_capacity(2);
+        #[cfg(target_os = "windows")]
+        candidates.push(dir.join(format!("{}.exe", name)));
+        candidates.push(dir.join(name));
+        for file in candidates {
+            if file.is_file() && !is_store_stub(&file) {
+                return Some(file);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn is_store_stub(path: &Path) -> bool {
+    path.to_string_lossy().to_lowercase().contains("windowsapps")
+        && std::fs::metadata(path).map(|m| m.len() == 0).unwrap_or(false)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_store_stub(_path: &Path) -> bool {
+    false
+}
+
+fn push_if_file(out: &mut Vec<PathBuf>, p: PathBuf) {
+    if p.is_file() {
+        out.push(p);
+    }
+}
+
+/// PEP 514：Windows 上 Python 发行版会在注册表登记安装路径（python.org/conda/uv 等均遵守）。
+/// 探测 HKCU/HKLM 的 Software\Python\<Brand>\<Tag>\InstallPath，按版本号降序返回 sys\python.exe。
+#[cfg(target_os = "windows")]
+fn registry_pythons() -> Vec<PathBuf> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
+
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let Ok(root) = RegKey::predef(hive).open_subkey_with_flags("Software\\Python", KEY_READ) else {
+            continue;
+        };
+        for brand in root.enum_keys().flatten() {
+            let Ok(brand_key) = root.open_subkey_with_flags(&brand, KEY_READ) else {
+                continue;
+            };
+            for tag in brand_key.enum_keys().flatten() {
+                let Ok(tag_key) = brand_key.open_subkey_with_flags(&tag, KEY_READ) else {
+                    continue;
+                };
+                // PEP 514：安装目录是 InstallPath 子键的默认值；ExecutablePath 在该子键内
+                let Ok(install_key) = tag_key.open_subkey_with_flags("InstallPath", KEY_READ) else {
+                    continue;
+                };
+                let dir: String = install_key
+                    .get_value::<String, _>("")
+                    .unwrap_or_default();
+                if dir.trim().is_empty() {
+                    continue;
+                }
+                let install = PathBuf::from(dir.trim_end_matches(['\\', '/']));
+                let exe: PathBuf = install_key
+                    .get_value::<String, _>("ExecutablePath")
+                    .map(|s| PathBuf::from(s.trim()))
+                    .unwrap_or_else(|_| install.join("python.exe"));
+                if exe.is_file() {
+                    out.push((tag.to_ascii_lowercase(), exe));
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0)); // 版本号降序
+    out.into_iter().map(|(_, p)| p).collect()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn registry_pythons() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// 无 PATH 可用时按常见安装位置探测 Python（按新到旧排序，命中即返回）
+fn common_python_locations() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let local = PathBuf::from(local);
+            // python.org 用户安装：%LOCALAPPDATA%\Programs\Python\Python3xx\（版本号倒序）
+            let base = local.join("Programs").join("Python");
+            if let Ok(rd) = std::fs::read_dir(&base) {
+                let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+                dirs.sort_unstable();
+                for d in dirs.into_iter().rev() {
+                    push_if_file(&mut out, d.join("python.exe"));
+                }
+            }
+            // Microsoft Store 真实解释器（非 0 字节 stub）
+            push_if_file(
+                &mut out,
+                local
+                    .join("Microsoft")
+                    .join("WindowsApps")
+                    .join("python3.exe"),
+            );
+        }
+        // 系统级安装与固定路径
+        for root in [r"C:\Program Files", r"C:\Program Files (x86)"] {
+            let base = PathBuf::from(root).join("Python");
+            if let Ok(rd) = std::fs::read_dir(&base) {
+                let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+                dirs.sort_unstable();
+                for d in dirs.into_iter().rev() {
+                    push_if_file(&mut out, d.join("python.exe"));
+                }
+            }
+        }
+        for v in ["313", "312", "311", "310", "39"] {
+            push_if_file(&mut out, PathBuf::from(format!(r"C:\Python{}\python.exe", v)));
+        }
+        // 用户目录下的发行版（大小写各命名都试）
+        if let Some(home) = std::env::var_os("USERPROFILE") {
+            let home = PathBuf::from(home);
+            for name in ["miniconda3", "Miniconda3", "anaconda3", "Anaconda3"] {
+                push_if_file(&mut out, home.join(name).join("python.exe"));
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        for p in [
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/home/linuxbrew/.linuxbrew/bin/python3",
+        ] {
+            push_if_file(&mut out, PathBuf::from(p));
+        }
+    }
+
+    out
 }
 
 impl PluginBackend for LlpBackend {
@@ -234,8 +466,18 @@ impl PluginBackend for LlpBackend {
 
 /// 读线程主体：响应分发到等待者；svc.* 反向请求经宿主门控句柄代执行
 fn reader_loop(proc: Arc<LlpProc>, stdout: ChildStdout, ctx: PluginContext, plugin_id: String) {
-    for line in BufReader::new(stdout).lines().flatten() {
-        let Ok(msg) = serde_json::from_str::<JsonValue>(&line) else {
+    // 字节切行 + 损失式 UTF-8 解码：sidecar 若按本地编码输出（如中文 Windows 管道默认 GBK），
+    // lines() 的 Err 会被 flatten 静默吞掉导致响应丢失；这里降级为替换符并记录，不再丢行。
+    for chunk in BufReader::new(stdout).split(b'\n') {
+        let Ok(raw) = chunk else {
+            break;
+        };
+        let line = String::from_utf8_lossy(&raw);
+        let line = line.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(msg) = serde_json::from_str::<JsonValue>(line) else {
             ctx.log.log(&plugin_id, &format!("[非 JSON 行] {}", line));
             continue;
         };
