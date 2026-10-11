@@ -12,7 +12,8 @@
     "prebuild": "npm run gen",
     "serve": "vite preview",
     "tauri": "tauri",
-    "build:exe": "tauri build --no-bundle"
+    "build:exe": "tauri build --no-bundle",
+    "plugin:install": "node tools/install-plugin.mjs"
   },
   "license": "MIT",
   "dependencies": {

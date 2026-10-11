@@ -26,6 +26,15 @@ pub fn plugin_db_root() -> PathBuf {
     dir
 }
 
+/// 外部插件安装目录（LLP/1：manifest.json + 任意语言 sidecar，拷入即安装）
+pub fn extplugins_dir() -> PathBuf {
+    let mut dir = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+    dir.push("LiteLauncher");
+    dir.push("extplugins");
+    fs::create_dir_all(&dir).ok();
+    dir
+}
+
 /// 初始化核心 SQLite 数据库与核心数据表
 ///
 /// M3 起业务表归属各插件独立库（todos→todo.db、app_shortcuts→apps.db、

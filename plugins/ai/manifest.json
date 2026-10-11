@@ -1,0 +1,24 @@
+{
+  "id": "ai",
+  "name": "AI 对话",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/ai",
+  "description": "AI 对话助手：/ai 提示词 打开对话窗口（OpenAI 兼容接口，流式输出；首次使用需在窗口内配置 API Key）",
+  "permissions": ["secrets", "settings", "windows", "net:api.openai.com"],
+  "views": [
+    {
+      "id": "chat",
+      "title": "LiteLauncher - AI 对话",
+      "width": 720.0,
+      "height": 560.0,
+      "min_width": 520.0,
+      "min_height": 420.0,
+      "resizable": true,
+      "decorated": true,
+      "focusable": true,
+      "position": "center",
+      "on_existing": "focus"
+    }
+  ]
+}

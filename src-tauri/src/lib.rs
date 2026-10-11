@@ -7,6 +7,7 @@ use db::DbState;
 use ll_host::{HostState, PluginDbRegistry};
 use ll_plugin_apps::AppsPlugin;
 use ll_plugin_notes::NotesPlugin;
+use ll_plugin_ai::AiPlugin;
 use ll_plugin_todo::TodoPlugin;
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -126,9 +127,13 @@ pub fn run() {
             host.register(Arc::new(TodoPlugin::new()));
             host.register(Arc::new(AppsPlugin::new()));
             host.register(Arc::new(NotesPlugin::new()));
+            host.register(Arc::new(AiPlugin::new()));
             let plugin_log: ll_host::LogFn = Arc::new(|plugin_id, msg| {
                 log_lifecycle(&format!("[plugin:{}] {}", plugin_id, msg));
             });
+
+            // 1.8 扫描外部插件目录（LLP/1：拷入即安装，懒启动，与内置插件同注册表同契约）
+            host.register_external_plugins(&db::extplugins_dir(), Arc::clone(&plugin_log));
             host.init_all(plugin_log);
 
             let app_handle = app.handle().clone();

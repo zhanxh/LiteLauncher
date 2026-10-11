@@ -1,0 +1,18 @@
+{
+  "id": "sysinfo",
+  "name": "系统信息",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/sysinfo",
+  "description": "系统信息查询：/sysinfo 列出内核/内存/磁盘/开机时长；/sysinfo open 打开系统监视器",
+  "permissions": ["notifications", "process"],
+  "backend": {
+    "kind": "llp",
+    "entry": ["python3", "sysinfo.py"]
+  },
+  "command": {
+    "icon": "🖥️",
+    "action_subcommands": ["open"],
+    "hint": "输入 open 回车打开系统监视器；或直接回车查看信息条目"
+  }
+}

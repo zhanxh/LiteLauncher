@@ -51,10 +51,17 @@ pub fn plugin_list(state: tauri::State<'_, HostState>) -> Vec<Value> {
                 "version": m.version,
                 "apiVersion": m.api_version,
                 "trigger": m.trigger,
+                "description": m.description,
                 "enabled": entry.enabled,
                 "permissions": m.permissions,
                 "views": m.views,
                 "settings": m.settings,
+                "backend": { "kind": m.backend.kind, "entry": m.backend.entry },
+                "command": m.command.map(|c| json!({
+                    "icon": c.icon,
+                    "actionSubcommands": c.action_subcommands,
+                    "hint": c.hint,
+                })),
             })
         })
         .collect()

@@ -476,3 +476,71 @@ export function setup(): void {
 - **纯前端插件**（`backend: { kind: "none" }`）：宿主内置 `svc:*` 方法（settings/index/clipboard/dialog/log），fe 包无 be crate——书签、剪贴板历史这类插件收敛为"单文件 TS + manifest"。接口已预留，暂未实现。
 - **LLP/1 外部进程插件**（二期）：`~/.litelauncher/plugins/<id>/` 安装任意语言实现的 sidecar，宿主经 JSON-RPC 分发；**前端 fe 代码与本文档完全同构**（`ctx.call` 不感知后端形态），届时只需换 manifest 的 backend 声明。
 - **跨插件事件总线 / 插件全局热键 / AI（SecretStore + HTTP 白名单代理）**：见设计文档 §4.5 服务目录与 §6。
+
+---
+
+## 9. 外部插件（LLP/1，M6）：独立部署 + 动态加载
+
+内置插件随宿主编译发布；**外部插件是独立分发的可执行 sidecar**，拷入目录即安装，宿主启动时动态加载，无需重编主程序。
+
+### 9.1 形态与安装
+
+```
+plugins/sysinfo/                 # 仓库内开发
+├─ manifest.json                 # backend.kind = "llp" + entry 启动命令 + command 命令声明
+└─ sysinfo.py                    # 任意语言的 sidecar（Python/Bash/Go/Rust…）
+
+~/.local/share/LiteLauncher/extplugins/sysinfo/    # 安装位置（拷入即装）
+npm run plugin:install -- sysinfo                  # 安装命令；卸载 = 删除该目录
+```
+
+```jsonc
+// manifest.json 新增字段
+{
+  "description": "系统信息查询……",
+  "backend": { "kind": "llp", "entry": ["python3", "sysinfo.py"] },  // 工作目录 = 插件目录
+  "command": { "icon": "🖥️", "action_subcommands": ["open"], "hint": "……" }
+}
+```
+
+### 9.2 运行时行为
+
+- **懒启动**：注册/启用不 spawn，首次 `ctx.call` 才拉起进程；崩溃后下次调用自动重启
+- **前端同构**：宿主据 `command` 声明生成通用 CommandPlugin，fe 侧无需任何代码——`/sysinfo` 输入、候选、Toast 与内置插件体验一致
+- **加载流程**：宿主扫描 extplugins → manifest 解析 + 门控上下文构造（同一套权限模型）→ 注册进同一注册表；前端 `plugin_list` 驱动生成命令
+- **安全**：sidecar 没有任何宿主句柄，能力全部经 `svc.*` 反向请求由宿主代理，未在 manifest 声明的权限直接拒绝
+
+### 9.3 sidecar 协议（LLP/1：stdio JSON Lines，每行一条 JSON-RPC 2.0）
+
+| 宿主 → 插件 | 说明 |
+|---|---|
+| `initialize` | 握手，须回 `{"protocol":"LLP/1"}`（3s 超时） |
+| `call` `{method, params}` | 分发到你的方法表（5s 超时）：标准方法 `search` / `execute` / `select` |
+| `shutdown` | 通知，收到后退出 |
+
+| 插件 → 宿主（反向请求） | 说明 |
+|---|---|
+| `svc.db.execute` / `svc.db.query` | `{sql, params[]}` —— 本插件专属库（须声明 `db` 权限） |
+| `svc.notify.send` | `{title, body}` 系统通知 |
+| `svc.process.launch` | `{target}` 受控启动（须声明 `process` 权限） |
+| `svc.settings.get/set`、`svc.log.write` | 设置 KV（自动前缀隔离）、日志 |
+
+参考实现：`plugins/sysinfo/sysinfo.py`（Python 标准库，~150 行，含完整握手/分发/svc 调用）。
+
+**MVP 边界**（后续迭代）：插件自定义 UI（iframe 沙箱 + postMessage 桥）、安装时权限确认弹窗、插件市场签名分发、流式事件通道。
+
+---
+
+## 10. M7 服务：密钥库 / 事件通道 / HTTP 代理（AI 类插件能力）
+
+M7 为 `PluginContext` 新增三个门控句柄（完整示例见 `plugins/ai/`）：
+
+| 句柄 | 权限 | 语义 |
+|---|---|---|
+| `ctx.secrets` | `secrets` | 核心托管密钥库，`secret.<id>.<key>` 命名空间——只能读写自己的；密钥不进插件库、他插件无法表达该前缀。MVP 存核心库保留键空间，OS keyring 为升级路径 |
+| `ctx.events` | 无（自动命名空间） | 向前端窗口推送事件：宿主以 Tauri `plugin-event` 广播 `{pluginId, event, payload}`，前端 `listen('plugin-event')` 按 id 过滤——流式增量、进度推送的标准通道 |
+| `ctx.http` | `net:<host>` 逐域名 | 宿主代理 HTTP（ureq）：`send`（非流式）与 `send_stream`（SSE 流式，回调返回 false 中止）。未声明域名直接拒绝，请求可审计 |
+
+AI 插件（`plugins/ai/`）是三者的组合范例：`/ai` 打开对话窗口 → 前端经 `ctx.call('chat')` 触发 → 后端从 secrets 取密钥、http 流式请求 OpenAI 兼容端点、SSE 解析后 events 推 delta → 前端增量渲染；中断走回调返回 false。
+
+**注意**：`net:` 白名单是逐域名精确匹配（含子域名需逐一声明）；接口地址可在对话窗口配置（默认 `https://api.openai.com`，换端点需同步在 manifest 增加对应 `net:` 权限）。

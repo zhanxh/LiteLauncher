@@ -4,11 +4,11 @@
 //! 窗口创建、SQL 白名单、设置前缀隔离等约束全部在此强制。
 
 use ll_plugin_api::{
-    DbApi, ExistingPolicy, LogApi, NotifyApi, PluginError, PluginManifest, ProcessApi,
-    SettingsApi, ViewSpec, WindowApi, WindowPosition,
+    DbApi, EventApi, ExistingPolicy, HttpApi, HttpRequest, LogApi, NotifyApi, PluginError,
+    PluginManifest, ProcessApi, SecretApi, SettingsApi, ViewSpec, WindowApi, WindowPosition,
 };
 use rusqlite::types::Value as SqlValue;
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_notification::NotificationExt;
@@ -460,6 +460,202 @@ fn spawn_desktop_entry(path: &str) -> std::io::Result<std::process::Child> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SecretApi —— 核心托管的密钥存储（secret.<pluginId>.<key> 命名空间，M7）
+//
+// MVP 存储：核心库 app_settings 的保留键空间（不进插件库、其他插件无法表达该
+// 前缀）；OS keyring（keyring crate）为后续升级路径，接口已按其语义收敛。
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct HostSecretApi {
+    pub db: Arc<Mutex<rusqlite::Connection>>,
+    pub plugin_id: String,
+}
+
+impl HostSecretApi {
+    fn full_key(&self, key: &str) -> String {
+        format!("secret.{}.{}", self.plugin_id, key)
+    }
+}
+
+impl SecretApi for HostSecretApi {
+    fn get(&self, key: &str) -> Option<String> {
+        let conn = self.db.lock().ok()?;
+        conn.query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            rusqlite::params![self.full_key(key)],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    fn set(&self, key: &str, value: &str) -> Result<(), PluginError> {
+        let conn = self.db.lock().map_err(|_| PluginError::db("数据库锁不可用"))?;
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![self.full_key(key), value],
+        )
+        .map_err(|e| PluginError::db(format!("写入密钥失败: {}", e)))?;
+        Ok(())
+    }
+
+    fn delete(&self, key: &str) -> Result<(), PluginError> {
+        let conn = self.db.lock().map_err(|_| PluginError::db("数据库锁不可用"))?;
+        conn.execute(
+            "DELETE FROM app_settings WHERE key = ?1",
+            rusqlite::params![self.full_key(key)],
+        )
+        .map_err(|e| PluginError::db(format!("删除密钥失败: {}", e)))?;
+        Ok(())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EventApi —— 插件 → 前端窗口事件（Tauri `plugin-event` 广播，载荷带 pluginId）
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct HostEventApi {
+    pub app: Option<AppHandle>,
+    pub plugin_id: String,
+}
+
+impl EventApi for HostEventApi {
+    fn emit(&self, event: &str, payload: JsonValue) -> Result<(), PluginError> {
+        let app = self
+            .app
+            .as_ref()
+            .ok_or_else(|| PluginError::internal("宿主事件通道未就绪"))?;
+        use tauri::Emitter;
+        app.emit(
+            "plugin-event",
+            json!({"pluginId": self.plugin_id, "event": event, "payload": payload}),
+        )
+        .map_err(|e| PluginError::internal(format!("事件广播失败: {}", e)))?;
+        Ok(())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HttpApi —— 宿主代理 HTTP（ureq），net:<host> 域名白名单门控（M7）
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct HostHttpApi {
+    /// manifest 声明的 `net:<host>` 白名单（逐域名精确匹配）
+    pub allowed_hosts: Vec<String>,
+}
+
+/// 提取 URL 的 host（不含端口/用户信息；非法 URL → None）
+fn url_host(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = authority.split(':').next()?;
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+fn net_allowed(allowed: &[String], host: &str) -> bool {
+    allowed.iter().any(|h| h.eq_ignore_ascii_case(host))
+}
+
+fn check_net(api: &HostHttpApi, url: &str) -> Result<(), PluginError> {
+    let host = url_host(url)
+        .ok_or_else(|| PluginError::bad_params(format!("无法解析 URL: {}", url)))?;
+    if net_allowed(&api.allowed_hosts, &host) {
+        Ok(())
+    } else {
+        Err(PluginError::new(
+            ll_plugin_api::PluginErrorCode::PermissionDenied,
+            format!("net:{}（manifest 域名白名单）", host),
+        ))
+    }
+}
+
+fn build_ureq_request(
+    agent: &ureq::Agent,
+    req: &HttpRequest,
+) -> Result<ureq::Request, PluginError> {
+    let mut r = match req.method.to_ascii_uppercase().as_str() {
+        "GET" => agent.get(&req.url),
+        "POST" => agent.post(&req.url),
+        "PUT" => agent.put(&req.url),
+        "DELETE" => agent.delete(&req.url),
+        other => return Err(PluginError::bad_params(format!("不支持的 HTTP 方法: {}", other))),
+    };
+    for (k, v) in &req.headers {
+        r = r.set(k, v);
+    }
+    Ok(r)
+}
+
+/// 把 ureq 错误（含非 2xx 状态）转为带响应体的 PluginError
+fn ureq_error_to_plugin(e: ureq::Error) -> PluginError {
+    match e {
+        ureq::Error::Status(code, resp) => {
+            let body = resp.into_string().unwrap_or_default();
+            PluginError::internal(format!("HTTP {}: {}", code, body))
+        }
+        ureq::Error::Transport(t) => PluginError::internal(format!("网络错误: {}", t)),
+    }
+}
+
+fn http_has_body(req: &HttpRequest) -> bool {
+    matches!(req.method.to_ascii_uppercase().as_str(), "POST" | "PUT")
+}
+
+impl HttpApi for HostHttpApi {
+    fn send(&self, req: HttpRequest) -> Result<String, PluginError> {
+        check_net(self, &req.url)?;
+        let agent = ureq::AgentBuilder::new().build();
+        let r = build_ureq_request(&agent, &req)?;
+        let resp = if http_has_body(&req) {
+            r.send_string(req.body.as_deref().unwrap_or(""))
+        } else {
+            r.call()
+        }
+        .map_err(ureq_error_to_plugin)?;
+        resp.into_string()
+            .map_err(|e| PluginError::internal(format!("读取响应失败: {}", e)))
+    }
+
+    fn send_stream(
+        &self,
+        req: HttpRequest,
+        on_chunk: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<u16, PluginError> {
+        check_net(self, &req.url)?;
+        let agent = ureq::AgentBuilder::new().build();
+        let r = build_ureq_request(&agent, &req)?;
+        let resp = if http_has_body(&req) {
+            r.send_string(req.body.as_deref().unwrap_or(""))
+        } else {
+            r.call()
+        }
+        .map_err(ureq_error_to_plugin)?;
+        let status = resp.status();
+
+        let mut reader = resp.into_reader();
+        let mut buf = [0u8; 1024];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if !on_chunk(&chunk) {
+                        break; // 插件侧中止
+                    }
+                }
+                Err(e) => return Err(PluginError::internal(format!("流式读取失败: {}", e))),
+            }
+        }
+        Ok(status)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // LogApi —— 透传到宿主日志管道（lifecycle.log）
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -504,5 +700,59 @@ mod tests {
         std::fs::write(&file, "[Desktop Entry]\nType=Application\nName=d\nExec=d\n").unwrap();
         assert!(should_use_opener(file.to_str().unwrap()));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod m7_service_tests {
+    use super::{net_allowed, url_host, HostSecretApi};
+    use ll_plugin_api::SecretApi;
+    use std::sync::{Arc, Mutex};
+
+    fn secret_api() -> HostSecretApi {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+        HostSecretApi {
+            db: Arc::new(Mutex::new(conn)),
+            plugin_id: "ai".into(),
+        }
+    }
+
+    #[test]
+    fn secrets_namespaced_roundtrip() {
+        let api = secret_api();
+        assert!(api.get("api_key").is_none());
+        api.set("api_key", "sk-test").unwrap();
+        assert_eq!(api.get("api_key").as_deref(), Some("sk-test"));
+        api.delete("api_key").unwrap();
+        assert!(api.get("api_key").is_none());
+    }
+
+    #[test]
+    fn secrets_isolated_between_plugins() {
+        // 不同插件 id 的句柄看到的是不同命名空间（宿主强制前缀隔离）
+        let ai = secret_api();
+        let mut other = secret_api();
+        other.plugin_id = "evil".into();
+        ai.set("api_key", "sk-ai").unwrap();
+        assert!(other.get("api_key").is_none());
+    }
+
+    #[test]
+    fn url_host_extraction() {
+        assert_eq!(url_host("https://api.openai.com/v1/chat/completions").as_deref(), Some("api.openai.com"));
+        assert_eq!(url_host("http://API.Example.com:8080/x").as_deref(), Some("api.example.com"));
+        assert_eq!(url_host("https://u:p@host.com/y").as_deref(), Some("host.com"));
+        assert!(url_host("not a url").is_none());
+    }
+
+    #[test]
+    fn net_gate_exact_host_match() {
+        let allow = vec!["api.openai.com".to_string()];
+        assert!(net_allowed(&allow, "api.openai.com"));
+        assert!(net_allowed(&allow, "API.OpenAI.COM"));
+        assert!(!net_allowed(&allow, "evil.example.com"));
+        assert!(!net_allowed(&allow, "api.openai.com.evil.com"));
+        assert!(!net_allowed(&[], "api.openai.com"));
     }
 }

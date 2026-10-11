@@ -94,7 +94,10 @@ pub struct PluginManifest {
     pub api_version: String,
     /// 指令触发前缀，如 "/todo"
     pub trigger: String,
-    /// 声明的权限：db / windows / notifications / settings …（§4.5 服务目录）
+    /// 功能描述（/help 与指令候选展示；外部插件必填）
+    #[serde(default)]
+    pub description: String,
+    /// 声明的权限：db / windows / notifications / settings / process / fs …（§4.5）
     #[serde(default)]
     pub permissions: Vec<String>,
     /// 插件可打开的窗口视图
@@ -103,6 +106,61 @@ pub struct PluginManifest {
     /// 插件声明设置项（后续由设置中心自动渲染）
     #[serde(default)]
     pub settings: Vec<SettingSpec>,
+    /// 后端形态：builtin（编译期内置，默认）| llp（外部进程，M6 动态加载）
+    #[serde(default)]
+    pub backend: BackendSpec,
+    /// 外部插件（kind=llp）的命令声明：宿主据此生成通用前端指令插件
+    #[serde(default)]
+    pub command: Option<ExternalCommandSpec>,
+}
+
+/// 后端形态声明（M6 LLP：宿主按 entry 启动 sidecar 子进程并经 stdio JSON-RPC 分发）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendSpec {
+    /// "builtin"（默认，随宿主编译）| "llp"（外部进程）
+    #[serde(default = "default_backend_kind")]
+    pub kind: String,
+    /// LLP 启动命令，如 ["python3", "main.py"]（相对插件目录解析）
+    #[serde(default)]
+    pub entry: Vec<String>,
+}
+
+impl Default for BackendSpec {
+    fn default() -> Self {
+        Self { kind: default_backend_kind(), entry: Vec::new() }
+    }
+}
+
+fn default_backend_kind() -> String {
+    "builtin".to_string()
+}
+
+/// 外部插件的命令声明：宿主前端据此生成通用 CommandPlugin（无自定义 UI 的 MVP 形态）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalCommandSpec {
+    /// 指令图标（emoji/字符）
+    #[serde(default = "default_command_icon")]
+    pub icon: String,
+    /// 进入 Action 模式的二级子命令（回车立即执行 execute）
+    #[serde(default)]
+    pub action_subcommands: Vec<String>,
+    /// Action 模式的操作提示（可选）
+    #[serde(default)]
+    pub hint: Option<String>,
+}
+
+impl Default for ExternalCommandSpec {
+    fn default() -> Self {
+        Self {
+            icon: default_command_icon(),
+            action_subcommands: Vec::new(),
+            hint: None,
+        }
+    }
+}
+
+fn default_command_icon() -> String {
+    "🧩".to_string()
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -239,6 +297,45 @@ pub trait ProcessApi: Send + Sync {
     fn launch(&self, target: &str) -> Result<(), PluginError>;
 }
 
+/// 密钥库（M7）：核心托管的秘密存储（`secret.<pluginId>.<key>` 命名空间），
+/// 插件只能读写**自己的**命名空间；宿主侧保证密钥永不进插件库/插件可读配置
+pub trait SecretApi: Send + Sync {
+    fn get(&self, key: &str) -> Option<String>;
+    fn set(&self, key: &str, value: &str) -> Result<(), PluginError>;
+    fn delete(&self, key: &str) -> Result<(), PluginError>;
+}
+
+/// 事件通道（M7）：插件向前端窗口推送事件。宿主以 Tauri 事件 `plugin-event` 广播，
+/// 载荷自动带 pluginId 命名空间——前端按 id 过滤。用于 AI 流式增量等场景
+pub trait EventApi: Send + Sync {
+    fn emit(&self, event: &str, payload: JsonValue) -> Result<(), PluginError>;
+}
+
+/// HTTP 请求描述（M7）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HttpRequest {
+    /// GET / POST / PUT / DELETE
+    pub method: String,
+    pub url: String,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+/// HTTP 代理（M7）：插件无裸 socket，一切网络经宿主代理；
+/// manifest 需声明 `net:<host>` 域名白名单（逐域名精确匹配）
+pub trait HttpApi: Send + Sync {
+    /// 非流式请求，返回响应体文本
+    fn send(&self, req: HttpRequest) -> Result<String, PluginError>;
+    /// 流式请求（SSE 等）：逐块回调，回调返回 false 中止读取；返回最终状态码
+    fn send_stream(
+        &self,
+        req: HttpRequest,
+        on_chunk: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<u16, PluginError>;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PluginContext 与插件 trait
 // ─────────────────────────────────────────────────────────────────────────────
@@ -250,6 +347,9 @@ pub struct PluginContext {
     pub windows: Option<Arc<dyn WindowApi>>,
     pub notify: Option<Arc<dyn NotifyApi>>,
     pub process: Option<Arc<dyn ProcessApi>>,
+    pub secrets: Option<Arc<dyn SecretApi>>,
+    pub http: Option<Arc<dyn HttpApi>>,
+    pub events: Arc<dyn EventApi>,
     pub settings: Arc<dyn SettingsApi>,
     pub log: Arc<dyn LogApi>,
 }

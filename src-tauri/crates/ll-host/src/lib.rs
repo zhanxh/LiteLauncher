@@ -7,6 +7,7 @@
 //! 4. 统一 IPC 通道（commands 模块）：plugin_call / plugin_list / plugin_set_enabled
 
 pub mod commands;
+pub mod llp;
 pub mod services;
 
 use ll_plugin_api::{PluginBackend, PluginContext, PluginManifest};
@@ -175,6 +176,11 @@ pub(crate) fn build_context_from_parts(
     log: LogFn,
 ) -> PluginContext {
     let granted = |perm: &str| manifest.permissions.iter().any(|p| p == perm);
+    let net_hosts: Vec<String> = manifest
+        .permissions
+        .iter()
+        .filter_map(|p| p.strip_prefix("net:").map(String::from))
+        .collect();
 
     PluginContext {
         db: if granted("db") {
@@ -199,6 +205,25 @@ pub(crate) fn build_context_from_parts(
         } else {
             None
         },
+        secrets: if granted("secrets") {
+            Some(Arc::new(services::HostSecretApi {
+                db: Arc::clone(&core_db),
+                plugin_id: manifest.id.clone(),
+            }))
+        } else {
+            None
+        },
+        http: if !net_hosts.is_empty() {
+            Some(Arc::new(services::HostHttpApi {
+                allowed_hosts: net_hosts,
+            }))
+        } else {
+            None
+        },
+        events: Arc::new(services::HostEventApi {
+            app: app.cloned(),
+            plugin_id: manifest.id.clone(),
+        }),
         settings: Arc::new(services::HostSettingsApi {
             db: Arc::clone(&core_db),
             plugin_id: manifest.id.clone(),
