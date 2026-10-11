@@ -1,0 +1,508 @@
+//! ll-host 门控服务实现：DbApi / WindowApi / NotifyApi / SettingsApi / LogApi
+//!
+//! 这些实现是宿主侧的"系统调用层"：插件只看到 ll-plugin-api 的 trait，
+//! 窗口创建、SQL 白名单、设置前缀隔离等约束全部在此强制。
+
+use ll_plugin_api::{
+    DbApi, ExistingPolicy, LogApi, NotifyApi, PluginError, PluginManifest, ProcessApi,
+    SettingsApi, ViewSpec, WindowApi, WindowPosition,
+};
+use rusqlite::types::Value as SqlValue;
+use serde_json::{Map as JsonMap, Value as JsonValue};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_notification::NotificationExt;
+
+pub type LogFn = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DbApi —— 核心 SQLite（M1 共库，M3 拆独立文件）
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct CoreDbApi(pub Arc<Mutex<rusqlite::Connection>>);
+
+/// 语句头白名单：execute 仅 DML，query 仅 SELECT/WITH（禁 ATTACH/DDL 散写，§4.3.1 句柄层）
+fn check_sql_head(sql: &str, allowed: &[&str]) -> Result<(), PluginError> {
+    let head = sql
+        .trim_start()
+        .split(|c: char| c.is_whitespace() || c == '(')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if allowed.contains(&head.as_str()) {
+        Ok(())
+    } else {
+        Err(PluginError::db(format!("SQL 语句类型不允许: {}", head)))
+    }
+}
+
+fn json_to_sql(v: &JsonValue) -> Result<SqlValue, PluginError> {
+    Ok(match v {
+        JsonValue::Null => SqlValue::Null,
+        JsonValue::Bool(b) => SqlValue::Integer(if *b { 1 } else { 0 }),
+        JsonValue::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                SqlValue::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                SqlValue::Real(f)
+            } else {
+                return Err(PluginError::bad_params("数字参数超出可表示范围"));
+            }
+        }
+        JsonValue::String(s) => SqlValue::Text(s.clone()),
+        _ => return Err(PluginError::bad_params("SQL 参数仅支持标量值")),
+    })
+}
+
+fn sql_to_json(v: SqlValue) -> JsonValue {
+    match v {
+        SqlValue::Null => JsonValue::Null,
+        SqlValue::Integer(i) => JsonValue::from(i),
+        SqlValue::Real(f) => JsonValue::from(f),
+        SqlValue::Text(s) => JsonValue::from(s),
+        SqlValue::Blob(b) => JsonValue::from(String::from_utf8_lossy(&b).to_string()),
+    }
+}
+
+impl DbApi for CoreDbApi {
+    fn migrate(&self, statements: &[&str]) -> Result<(), PluginError> {
+        let conn = self.0.lock().map_err(|_| PluginError::db("数据库锁不可用"))?;
+        for stmt in statements {
+            conn.execute_batch(stmt)
+                .map_err(|e| PluginError::db(format!("migrate 失败: {}", e)))?;
+        }
+        Ok(())
+    }
+
+    fn execute(&self, sql: &str, params: &[JsonValue]) -> Result<u64, PluginError> {
+        check_sql_head(sql, &["insert", "update", "delete", "replace"])?;
+        let conn = self.0.lock().map_err(|_| PluginError::db("数据库锁不可用"))?;
+        let vals: Vec<SqlValue> = params
+            .iter()
+            .map(json_to_sql)
+            .collect::<Result<Vec<_>, PluginError>>()?;
+        let affected = conn
+            .execute(sql, rusqlite::params_from_iter(vals))
+            .map_err(|e| PluginError::db(format!("执行失败: {}", e)))?;
+        Ok(affected as u64)
+    }
+
+    fn query(&self, sql: &str, params: &[JsonValue]) -> Result<Vec<JsonValue>, PluginError> {
+        check_sql_head(sql, &["select", "with"])?;
+        let conn = self.0.lock().map_err(|_| PluginError::db("数据库锁不可用"))?;
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| PluginError::db(format!("prepare 失败: {}", e)))?;
+        let names: Vec<String> = stmt
+            .column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let vals: Vec<SqlValue> = params
+            .iter()
+            .map(json_to_sql)
+            .collect::<Result<Vec<_>, PluginError>>()?;
+
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(vals), |row| {
+                let mut obj = JsonMap::new();
+                for (idx, name) in names.iter().enumerate() {
+                    let v: SqlValue = row.get(idx)?;
+                    obj.insert(name.clone(), sql_to_json(v));
+                }
+                Ok(JsonValue::Object(obj))
+            })
+            .map_err(|e| PluginError::db(format!("查询失败: {}", e)))?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| PluginError::db(format!("读取行失败: {}", e)))?);
+        }
+        Ok(out)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SettingsApi —— 强制 `${pluginId}.` 前缀隔离（§4.3.1 命名层）
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct HostSettingsApi {
+    pub db: Arc<Mutex<rusqlite::Connection>>,
+    pub plugin_id: String,
+}
+
+impl SettingsApi for HostSettingsApi {
+    fn get(&self, key: &str) -> Option<String> {
+        let conn = self.db.lock().ok()?;
+        conn.query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            rusqlite::params![format!("{}.{}", self.plugin_id, key)],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    fn set(&self, key: &str, value: &str) -> Result<(), PluginError> {
+        let conn = self.db.lock().map_err(|_| PluginError::db("数据库锁不可用"))?;
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![format!("{}.{}", self.plugin_id, key), value],
+        )
+        .map_err(|e| PluginError::db(format!("写入设置失败: {}", e)))?;
+        Ok(())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NotifyApi
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct HostNotifyApi {
+    pub app: AppHandle,
+}
+
+impl NotifyApi for HostNotifyApi {
+    fn send(&self, title: &str, body: &str) -> Result<(), PluginError> {
+        self.app
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+            .map_err(|e| PluginError::notify(format!("发送系统通知失败: {}", e)))?;
+        Ok(())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WindowApi —— manifest 声明式建窗（唯一合法开窗途径）
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct HostWindowApi {
+    pub app: AppHandle,
+    pub manifest: PluginManifest,
+    pub log: LogFn,
+}
+
+/// 窗口标签的实例段净化：保留字母数字并截断 + 追加稳定哈希，避免不同参数净化后碰撞
+fn sanitize_label(raw: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let kept: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(16)
+        .collect();
+    let mut hasher = DefaultHasher::new();
+    raw.hash(&mut hasher);
+    format!("{}-{:016x}", kept, hasher.finish())
+}
+
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+    out
+}
+
+impl WindowApi for HostWindowApi {
+    /// 任意线程可调用：建窗动作派发到主线程执行（后台线程直接建窗会死锁/panic）
+    fn open(&self, view_id: &str, params: &[(String, String)]) -> Result<(), PluginError> {
+        let spec = self
+            .manifest
+            .views
+            .iter()
+            .find(|v| v.id == view_id)
+            .ok_or_else(|| {
+                PluginError::window(format!("manifest 未声明视图: {}", view_id))
+            })?
+            .clone();
+
+        let app = self.app.clone();
+        let plugin_id = self.manifest.id.clone();
+        let log = Arc::clone(&self.log);
+        let params: Vec<(String, String)> = params.to_vec();
+
+        self.app
+            .run_on_main_thread(move || {
+                if let Err(e) = open_on_main(&app, &plugin_id, &spec, &params) {
+                    (log)(&plugin_id, &format!("打开视图 {} 失败: {}", spec.id, e));
+                }
+            })
+            .map_err(|e| PluginError::window(format!("派发主线程失败: {}", e)))
+    }
+}
+
+/// 主线程上执行的实际建窗逻辑
+fn open_on_main(
+    app: &AppHandle,
+    plugin_id: &str,
+    spec: &ViewSpec,
+    params: &[(String, String)],
+) -> Result<(), String> {
+    // 窗口标签：plugin-view[-uniquevalue]
+    let unique_value = spec
+        .unique_by
+        .as_ref()
+        .and_then(|k| params.iter().find(|(pk, _)| pk == k).map(|(_, v)| v.clone()));
+    let label = match &unique_value {
+        Some(v) => format!("{}-{}-{}", plugin_id, spec.id, sanitize_label(v)),
+        None => format!("{}-{}", plugin_id, spec.id),
+    };
+
+    if let Some(existing) = app.get_webview_window(&label) {
+        return match spec.on_existing {
+            ExistingPolicy::Focus => {
+                let _ = existing.show();
+                let _ = existing.unminimize();
+                let _ = existing.set_focus();
+                Ok(())
+            }
+            ExistingPolicy::Replace => {
+                let _ = existing.close();
+                Ok(())
+            }
+        };
+    }
+
+    // URL：index.html?view=<viewId>&<params...>（与前端视图路由约定一致）
+    let mut url = format!("index.html?view={}", spec.id);
+    for (k, v) in params {
+        url.push_str(&format!("&{}={}", k, percent_encode(v)));
+    }
+
+    // 堆叠偏移在构建前统计（不含本次窗口）
+    let stack_offset = if spec.stacked {
+        let prefix = format!("{}-{}", plugin_id, spec.id);
+        app.webview_windows()
+            .keys()
+            .filter(|l| l.starts_with(&prefix))
+            .count() as f64
+            * (spec.height + 8.0)
+    } else {
+        0.0
+    };
+
+    // 动态标题：title_param 声明的参数存在时，标题变为 "<title> - <参数值>"
+    let window_title = spec
+        .title_param
+        .as_ref()
+        .and_then(|k| params.iter().find(|(pk, _)| pk == k).map(|(_, v)| v.clone()))
+        .map(|v| format!("{} - {}", spec.title, v))
+        .unwrap_or_else(|| spec.title.clone());
+
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
+        .title(window_title.as_str())
+        .inner_size(spec.width, spec.height)
+        .resizable(spec.resizable)
+        .decorations(spec.decorated)
+        .always_on_top(spec.always_on_top)
+        .skip_taskbar(spec.skip_taskbar)
+        .focused(spec.focusable);
+    if let (Some(mw), Some(mh)) = (spec.min_width, spec.min_height) {
+        builder = builder.min_inner_size(mw, mh);
+    }
+    if matches!(spec.position, WindowPosition::BottomRight) {
+        builder = builder.visible(false);
+    }
+
+    let window = builder
+        .build()
+        .map_err(|e| format!("创建窗口 {} 失败: {}", label, e))?;
+
+    if matches!(spec.position, WindowPosition::BottomRight) {
+        if let Ok(Some(monitor)) = app.primary_monitor() {
+            let mon_logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
+            let margin = 16.0;
+            let _ = window.set_position(LogicalPosition::new(
+                mon_logical.width - spec.width - margin,
+                mon_logical.height - spec.height - margin - stack_offset,
+            ));
+        }
+        let _ = window.show();
+    }
+
+    // 兜底定时关闭：前端异常未自关时防弹窗残留
+    if let Some(param_key) = spec.fallback_close_param.as_ref() {
+        if let Some(dur) = params
+            .iter()
+            .find(|(pk, _)| pk == param_key)
+            .and_then(|(_, v)| v.parse::<u64>().ok())
+        {
+            let grace = spec.fallback_close_grace_secs.unwrap_or(8);
+            let app2 = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(dur + grace));
+                if let Some(w) = app2.get_webview_window(&label) {
+                    let _ = w.close();
+                }
+            });
+        }
+    }
+
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProcessApi —— 受控进程服务（宿主持有全部启动策略与安全校验）
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct HostProcessApi;
+
+impl ProcessApi for HostProcessApi {
+    fn launch(&self, target: &str) -> Result<(), PluginError> {
+        let clean = target.trim();
+        if clean.is_empty() {
+            return Err(PluginError::bad_params("启动路径不能为空"));
+        }
+        // 安全校验：禁止 Shell 注入元字符（管道/重定向/拼接/变量展开）
+        let forbidden = ['&', '|', ';', '>', '<', '$', '`', '\n', '\r'];
+        if clean.chars().any(|c| forbidden.contains(&c)) {
+            return Err(PluginError::bad_params("启动路径包含不安全的特殊字符"));
+        }
+        spawn_app(clean).map_err(|e| PluginError::internal(format!("启动程序失败: {}", e)))?;
+        Ok(())
+    }
+}
+
+/// 是否应交给系统默认打开器打开（仅非 Windows 平台）
+///
+/// - URL、.desktop 桌面项、非可执行文档 → true（xdg-open / open）
+/// - 可执行文件（含绝对路径）与裸命令 → false（直接 spawn，走 PATH）
+///
+/// 可执行文件绝不能交给 xdg-open：桌面环境对 application/x-executable
+/// 通常没有默认打开方式，会静默失败（GNOME 实测）
+#[cfg(not(target_os = "windows"))]
+fn should_use_opener(clean_path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let is_url = ["http://", "https://", "file://"]
+        .iter()
+        .any(|prefix| clean_path.starts_with(prefix));
+
+    let path = std::path::Path::new(clean_path);
+    let is_exec_file = path.is_file()
+        && path
+            .metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    let is_desktop_entry = path.extension().map_or(false, |ext| ext == "desktop");
+
+    is_url || (path.exists() && (is_desktop_entry || !is_exec_file))
+}
+
+/// 以独立进程启动外部应用（各平台策略不同）
+fn spawn_app(clean_path: &str) -> std::io::Result<std::process::Child> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // Windows：cmd.exe /c start "" 以完全独立进程运行并支持环境变量关联；
+        // CREATE_NO_WINDOW 隐藏 cmd 窗口
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", clean_path])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // .desktop 桌面项必须用 gio launch / gtk-launch：xdg-open 会把它当普通文件
+        // 交给默认程序"打开"（通常是编辑器），而不是执行其中的 Exec
+        if std::path::Path::new(clean_path)
+            .extension()
+            .map_or(false, |ext| ext == "desktop")
+        {
+            return spawn_desktop_entry(clean_path);
+        }
+
+        if should_use_opener(clean_path) {
+            #[cfg(target_os = "macos")]
+            let opener = "open";
+            #[cfg(not(target_os = "macos"))]
+            let opener = "xdg-open";
+            std::process::Command::new(opener).arg(clean_path).spawn()
+        } else {
+            std::process::Command::new(clean_path).spawn()
+        }
+    }
+}
+
+/// 启动 .desktop 桌面项：优先 `gio launch`（GLib ≥ 2.58），
+/// 回退 `gtk-launch <桌面项ID>`（要求位于标准 applications 目录）
+#[cfg(not(target_os = "windows"))]
+fn spawn_desktop_entry(path: &str) -> std::io::Result<std::process::Child> {
+    if let Ok(child) = std::process::Command::new("gio").args(["launch", path]).spawn() {
+        return Ok(child);
+    }
+
+    if let Some(id) = std::path::Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+    {
+        if let Ok(child) = std::process::Command::new("gtk-launch").arg(&id).spawn() {
+            return Ok(child);
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "未找到 gio 或 gtk-launch，无法启动桌面项（请安装 glib/gtk 工具）",
+    ))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LogApi —— 透传到宿主日志管道（lifecycle.log）
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct FnLog {
+    pub f: LogFn,
+    pub plugin_id: String,
+}
+
+impl LogApi for FnLog {
+    fn log(&self, level: &str, msg: &str) {
+        (self.f)(&self.plugin_id, &format!("[{}] {}", level, msg));
+    }
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod tests {
+    use super::should_use_opener;
+
+    #[test]
+    fn executables_spawn_directly() {
+        // /bin/ls 在常规 Linux 上一定存在且可执行 → 直接 spawn
+        if !std::path::Path::new("/bin/ls").exists() {
+            return;
+        }
+        assert!(!should_use_opener("/bin/ls"));
+        // 裸命令（不存在于磁盘）走 PATH spawn
+        assert!(!should_use_opener("gnome-terminal"));
+    }
+
+    #[test]
+    fn urls_use_opener() {
+        assert!(should_use_opener("https://example.com"));
+        assert!(should_use_opener("http://example.com"));
+        assert!(should_use_opener("file:///tmp/a.txt"));
+    }
+
+    #[test]
+    fn desktop_entries_use_opener() {
+        let dir = std::env::temp_dir().join(format!("ll-host-opener-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("demo.desktop");
+        std::fs::write(&file, "[Desktop Entry]\nType=Application\nName=d\nExec=d\n").unwrap();
+        assert!(should_use_opener(file.to_str().unwrap()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

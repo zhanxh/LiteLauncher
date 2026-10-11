@@ -1,0 +1,8 @@
+{
+  "id": "apps",
+  "name": "应用启动器",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/app",
+  "permissions": ["db", "process"]
+}

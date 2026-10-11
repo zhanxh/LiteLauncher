@@ -1,0 +1,4 @@
+# 把编译产物钉回 src-tauri/target：workspace 提升到仓库根后，
+# 保持 build.sh / build.cmd 与既有发布路径（release/LiteLauncher）完全不变
+[build]
+target-dir = "src-tauri/target"

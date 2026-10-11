@@ -185,3 +185,43 @@ body.settings-mode {
   font-size: 11px;
   color: var(--text-muted);
 }
+
+/* ─── 插件管理区 ─── */
+.plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.plugin-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--ll-border, #2a2a35);
+  border-radius: 10px;
+  background: var(--ll-surface, rgba(255, 255, 255, 0.03));
+}
+.plugin-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.plugin-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+.plugin-trigger {
+  opacity: 0.65;
+  font-size: 12px;
+  margin-left: 4px;
+}
+.plugin-desc {
+  font-size: 12px;
+  opacity: 0.6;
+}
+.plugin-toggle.is-on {
+  border-color: var(--ll-accent, #6c8cff);
+  color: var(--ll-accent, #6c8cff);
+}

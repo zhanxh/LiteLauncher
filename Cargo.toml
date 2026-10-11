@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "src-tauri/crates/ll-plugin-api",
+    "src-tauri/crates/ll-host",
+    "plugins/todo/be",
+    "plugins/apps/be",
+    "plugins/notes/be",
+]
+
+# 依赖规则（CI/grep 门禁）：
+# 1. plugins/*/be 只允许依赖 ll-plugin-api 与通用基础库（serde/chrono/uuid/dirs），
+#    禁止依赖 ll-host、tauri 或彼此——保证插件可独立编译、独立演进。
+# 2. ll-host 不得依赖任何具体插件（注册方向：应用 crate → 插件 crate）。
+
+# 发布优化配置必须声明在 workspace 根（成员包内的 profile 会被忽略）
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

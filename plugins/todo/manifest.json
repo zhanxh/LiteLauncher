@@ -1,0 +1,50 @@
+{
+  "id": "todo",
+  "name": "待办事项",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/todo",
+  "permissions": ["db", "windows", "notifications", "settings"],
+  "views": [
+    {
+      "id": "todoapp",
+      "title": "LiteLauncher - 待办管理",
+      "width": 580.0,
+      "height": 680.0,
+      "min_width": 480.0,
+      "min_height": 520.0,
+      "resizable": true,
+      "decorated": true,
+      "focusable": true,
+      "position": "center",
+      "on_existing": "focus"
+    },
+    {
+      "id": "reminder",
+      "title": "LiteLauncher 待办提醒",
+      "width": 360.0,
+      "height": 148.0,
+      "resizable": false,
+      "decorated": false,
+      "always_on_top": true,
+      "skip_taskbar": true,
+      "focusable": false,
+      "position": "bottom-right",
+      "stacked": true,
+      "unique_by": "id",
+      "on_existing": "replace",
+      "fallback_close_param": "dur",
+      "fallback_close_grace_secs": 8
+    }
+  ],
+  "settings": [
+    {
+      "key": "popup_auto_close_secs",
+      "label": "提醒弹窗显示时长（秒）",
+      "kind": "number",
+      "min": 5,
+      "max": 300,
+      "default": 12
+    }
+  ]
+}

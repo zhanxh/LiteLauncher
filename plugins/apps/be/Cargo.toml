@@ -1,0 +1,12 @@
+[package]
+name = "ll-plugin-apps"
+version = "0.1.0"
+edition = "2024"
+description = "LiteLauncher 应用启动插件：/app 指令后端（快捷方式管理 + 系统应用扫描 + 受控启动）"
+
+[dependencies]
+ll-plugin-api = { path = "../../../src-tauri/crates/ll-plugin-api" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4" }

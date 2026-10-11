@@ -1,0 +1,12 @@
+[package]
+name = "ll-plugin-todo"
+version = "0.1.0"
+edition = "2024"
+description = "LiteLauncher 待办插件：/todo 指令后端（待办 CRUD + 重复规则 + 提醒调度）"
+
+[dependencies]
+ll-plugin-api = { path = "../../../src-tauri/crates/ll-plugin-api" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4" }
+uuid = { version = "1", features = ["v4"] }

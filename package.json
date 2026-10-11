@@ -6,7 +6,10 @@
   "scripts": {
     "start": "vite",
     "dev": "vite",
+    "gen": "node tools/gen-frontend-registry.mjs",
+    "predev": "npm run gen",
     "build": "vite build",
+    "prebuild": "npm run gen",
     "serve": "vite preview",
     "tauri": "tauri",
     "build:exe": "tauri build --no-bundle"

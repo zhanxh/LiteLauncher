@@ -5,6 +5,9 @@ description = "A Tauri App"
 authors = ["you"]
 edition = "2024"
 
+# 本包是仓库根 workspace 的成员（见 ../Cargo.toml），插件为独立 crate：
+#   plugins/{todo,apps,notes}/be —— 仅依赖 ll-plugin-api，可独立编译
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
@@ -23,6 +26,11 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+ll-plugin-api = { path = "crates/ll-plugin-api" }
+ll-host = { path = "crates/ll-host" }
+ll-plugin-todo = { path = "../plugins/todo/be" }
+ll-plugin-apps = { path = "../plugins/apps/be" }
+ll-plugin-notes = { path = "../plugins/notes/be" }
 tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
@@ -33,12 +41,3 @@ rusqlite = { version = "0.31", features = ["bundled-full"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
-
-
-# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
-panic = "abort"
-strip = true

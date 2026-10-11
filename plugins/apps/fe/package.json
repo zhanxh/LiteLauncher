@@ -1,0 +1,9 @@
+{
+  "name": "@ll/plugin-apps",
+  "version": "0.1.0",
+  "private": true,
+  "description": "应用启动插件（前端）：/app 指令与裸文本搜索提供者",
+  "type": "module",
+  "main": "src/index.ts",
+  "llplugin": true
+}

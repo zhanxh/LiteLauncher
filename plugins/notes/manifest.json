@@ -1,0 +1,25 @@
+{
+  "id": "notes",
+  "name": "Markdown 笔记",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/note",
+  "permissions": ["db", "fs", "windows"],
+  "views": [
+    {
+      "id": "editor",
+      "title": "LiteLauncher",
+      "title_param": "title",
+      "width": 860.0,
+      "height": 640.0,
+      "min_width": 600.0,
+      "min_height": 400.0,
+      "resizable": true,
+      "decorated": true,
+      "focusable": true,
+      "position": "center",
+      "unique_by": "path",
+      "on_existing": "focus"
+    }
+  ]
+}

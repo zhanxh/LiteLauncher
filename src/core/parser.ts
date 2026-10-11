@@ -1,6 +1,6 @@
-import { ParsedInput, CommandPlugin } from '../types/command';
-import { tokenizeInput, extractTimeAndRule } from './tokenizer';
-import { pluginRegistry } from './registry';
+import { ParsedInput, CommandPlugin } from '@ll/sdk';
+import { tokenizeInput } from './tokenizer';
+import { pluginRegistry } from '@ll/sdk';
 import { fuzzyScore } from './fuzzy';
 
 /**
@@ -180,21 +180,20 @@ export function parseCommand(rawInput: string): ParseResult {
     paramTokens = paramTokens.slice(1);
   }
 
-  // 解析时间与重复规则
-  const { cleanArgs, time, repeatRule } = extractTimeAndRule(paramTokens);
-  const namedArgs: Record<string, string> = {};
-  if (time) namedArgs['time'] = time;
-  if (repeatRule) namedArgs['repeat'] = repeatRule;
-
   const parsedInput: ParsedInput = {
     raw,
     trigger: matchedPlugin.trigger,
     subcommand,
-    args: cleanArgs,
-    namedArgs,
+    args: paramTokens,
+    namedArgs: {},
     isAction: false,
     queryText: remainingTokens.join(' '),
   };
+
+  // 插件专属语法增强（如 todo 的时间/重复规则）；核心不做任何插件特有解析
+  if (matchedPlugin.enrichParsed) {
+    Object.assign(parsedInput, matchedPlugin.enrichParsed(paramTokens, parsedInput));
+  }
 
   parsedInput.isAction = matchedPlugin.isAction(parsedInput);
 

@@ -1,5 +1,5 @@
 import { Component, For, Show } from 'solid-js';
-import { PanelItem } from '../types/command';
+import { PanelItem } from '@ll/sdk';
 
 interface ResultPanelProps {
   items: PanelItem[];

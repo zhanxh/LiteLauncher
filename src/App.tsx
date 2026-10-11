@@ -4,14 +4,12 @@ import { SearchBar } from './components/SearchBar';
 import { PreviewCapsule } from './components/PreviewCapsule';
 import { ResultPanel } from './components/ResultPanel';
 import { Toast } from './components/Toast';
-import { NoteEditor } from './components/NoteEditor';
-import { ReminderToast } from './components/ReminderToast';
-import { TodoManager } from './components/TodoManager';
 import { SettingsPanel } from './components/SettingsPanel';
 import { initTheme, listenThemeChange } from './theme';
-import { registerBuiltinPlugins } from './plugins';
 import { parseCommand } from './core/parser';
-import { ActionPreviewCapsule, PanelItem } from './types/command';
+import { searchRegistry } from '@ll/sdk';
+import { getView } from '@ll/sdk';
+import { ActionPreviewCapsule, PanelItem } from '@ll/sdk';
 import './styles/launcher.css';
 
 /**
@@ -28,50 +26,31 @@ interface CommandHistoryItem {
   use_count: number;
 }
 
-interface AppBackendItem {
-  id: string;
-  name: string;
-  path: string;
-  icon: string;
-  description: string;
-}
-
 export const App: Component = () => {
   // 主题：每个窗口加载时读取设置并应用，同时监听其他窗口的主题切换广播
   void initTheme().then(() => listenThemeChange());
 
-  // 检查是否为独立编辑窗口模式 (index.html?view=editor&path=...&title=...)
+  // 独立窗口视图路由：查插件注册表（壳层不 import 任何插件视图组件）
   const urlParams = new URLSearchParams(window.location.search);
-  const isEditorView = urlParams.get('view') === 'editor';
-  const editorPath = urlParams.get('path') || '';
-  const editorTitle = urlParams.get('title') || '未命名笔记';
-
-  if (isEditorView) {
-    return <NoteEditor filePath={editorPath} title={editorTitle} />;
+  const viewParam = urlParams.get('view');
+  if (viewParam) {
+    const ViewComponent = getView(viewParam);
+    if (ViewComponent) {
+      return <ViewComponent />;
+    }
   }
 
-  // 检查是否为待办提醒弹窗模式 (index.html?view=reminder&id=...&content=...)
-  if (urlParams.get('view') === 'reminder') {
-    return (
-      <ReminderToast
-        id={urlParams.get('id') || ''}
-        content={urlParams.get('content') || ''}
-      />
-    );
-  }
-
-  // 待办管理面板窗口 (index.html?view=todoapp)
-  if (urlParams.get('view') === 'todoapp') {
-    return <TodoManager />;
-  }
-
-  // 应用设置面板窗口 (index.html?view=settings)
-  if (urlParams.get('view') === 'settings') {
+  // 应用设置面板窗口 (index.html?view=settings，核心设置中心)
+  if (viewParam === 'settings') {
     return <SettingsPanel />;
   }
 
   const [inputValue, setInputValue] = createSignal('');
   const [selectedIndex, setSelectedIndex] = createSignal(0);
+
+  // 裸文本聚合搜索的防抖计时器与查询序号（陈旧结果取消）
+  let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  let searchSeq = 0;
   const [panelItems, setPanelItems] = createSignal<PanelItem[]>([]);
   const [emptyText, setEmptyText] = createSignal<string>('未检索到内容');
   const [actionCapsule, setActionCapsule] = createSignal<ActionPreviewCapsule | null>(null);
@@ -137,8 +116,6 @@ export const App: Component = () => {
   };
 
   onMount(() => {
-    registerBuiltinPlugins();
-
     // 焦点管理状态机：只有在窗口真正获得过焦点之后且过了初次挂载保护期，失焦才执行自动隐藏
     let hasBeenFocused = false;
     let blurTimer: any = null;
@@ -248,7 +225,7 @@ export const App: Component = () => {
       return;
     }
 
-    // 4. 普通搜索文本或空状态（通用启动器模式：聚合本地应用、系统命令、候选指令与网络搜索）
+    // 4. 普通搜索文本或空状态（聚合所有 SearchProvider + 候选指令，壳层无任何搜索业务）
     setPrefixIcon('🔍');
     setActionCapsule(null);
 
@@ -285,65 +262,43 @@ export const App: Component = () => {
       metadata: { trigger: p.trigger },
     }));
 
-    // 4.2 系统命令直接运行项
-    const cliItem: PanelItem = {
-      id: `cli-${raw}`,
-      title: `运行系统命令: "${raw}"`,
-      description: `调用系统环境执行 "${raw}" 命令或程序`,
-      icon: '⚡',
-      badge: '系统运行',
-      metadata: { command: raw, isCliLaunch: true },
-    };
-
-    // 4.3 网络搜索兜底项
-    const webItem: PanelItem = {
-      id: 'web-search',
-      title: `在浏览器中搜索 "${raw}"`,
-      description: '调用默认搜索引擎检索互联网',
-      icon: '🌐',
-      badge: '网络搜索',
-      metadata: { query: raw, isWebSearch: true },
-    };
-
-    // 4.4 并发异步检索本地应用
-    if (isTauriEnvironment()) {
-      invoke<AppBackendItem[]>('list_applications', { keyword: raw })
-        .then((apps) => {
-          // 若异步返回时输入内容已变更，丢弃过时结果
-          if (inputValue().trim() !== raw) return;
-
-          const appItems: PanelItem[] = apps.map((a) => ({
-            id: `app-${a.id}`,
-            title: a.name,
-            description: a.description,
-            icon: a.icon || '🚀',
-            badge: '启动应用',
-            metadata: { path: a.path, isAppLaunch: true },
-          }));
-
-          // 综合排序：本地应用优先 -> 插件候选 -> 系统运行命令 -> 网络搜索
-          const combined = [...appItems, ...pluginCandidateItems, cliItem, webItem];
-          setPanelItems(combined);
-          setSelectedIndex(0);
-          updateWindowHeight(Math.min(70 + combined.length * 62, 420));
-        })
-        .catch(() => {
-          const fallback = [...pluginCandidateItems, cliItem, webItem];
-          setPanelItems(fallback);
-          setSelectedIndex(0);
-          updateWindowHeight(Math.min(70 + fallback.length * 62, 420));
-        });
-    } else {
-      const combined = [...pluginCandidateItems, cliItem, webItem];
-      setPanelItems(combined);
-      setSelectedIndex(0);
-      updateWindowHeight(Math.min(70 + combined.length * 62, 420));
+    // 4.2 并行聚合搜索提供者（R1 按键扇出预算：50ms debounce + 陈旧结果取消）
+    const queryId = ++searchSeq;
+    if (searchTimer !== null) {
+      clearTimeout(searchTimer);
     }
+    searchTimer = setTimeout(() => {
+      const queries = searchRegistry.getAll().map((provider) =>
+        provider
+          .search(raw)
+          .then((items) => ({ provider, items }))
+          .catch(() => ({ provider, items: [] as PanelItem[] })),
+      );
+      Promise.all(queries).then((settled) => {
+        // 异步返回时输入已变更 → 丢弃过时结果
+        if (queryId !== searchSeq || inputValue().trim() !== raw) return;
+
+        const providerItems: PanelItem[] = [];
+        for (const { provider, items } of settled) {
+          for (const item of items) {
+            providerItems.push({
+              ...item,
+              metadata: { ...(item.metadata || {}), providerId: provider.id },
+            });
+          }
+        }
+
+        // 综合排序：搜索提供者（priority 序）→ 候选指令
+        const combined = [...providerItems, ...pluginCandidateItems];
+        setPanelItems(combined);
+        setSelectedIndex(0);
+        updateWindowHeight(Math.min(70 + combined.length * 62, 420));
+      });
+    }, 50);
   });
 
   // 处理 Enter 回车确认
   const handleEnter = async () => {
-    const raw = inputValue().trim();
     const result = parseCommand(inputValue());
 
     // 1. 数学计算复制
@@ -376,31 +331,13 @@ export const App: Component = () => {
       return;
     }
 
-    // 3. 面板列表项执行
+    // 3. 面板列表项执行（cli/web 兜底 provider 恒有产出，无需额外 fallback）
     const items = panelItems();
     if (items.length > 0) {
       const current = items[selectedIndex()];
       if (current) {
         await handleSelectItem(current);
         return;
-      }
-    }
-
-    // 4. 若无面板项但有非空输入，默认作为系统命令尝试启动
-    if (raw && isTauriEnvironment()) {
-      try {
-        await invoke('launch_application', { path: raw });
-        recordHistory(raw, 'cli');
-        setInputValue('');
-        updateWindowHeight(70);
-        hideWindow();
-      } catch {
-        // 打开浏览器搜索
-        const url = `https://www.bing.com/search?q=${encodeURIComponent(raw)}`;
-        window.open(url, '_blank');
-        setInputValue('');
-        updateWindowHeight(70);
-        hideWindow();
       }
     }
   };
@@ -413,102 +350,45 @@ export const App: Component = () => {
       return;
     }
 
-    // 2. 本地应用启动
-    if (item.metadata?.isAppLaunch && item.metadata?.path) {
-      if (isTauriEnvironment()) {
-        try {
-          await invoke('launch_application', { path: item.metadata.path });
-          recordHistory(item.title, 'app');
+    // 2. 裸文本搜索提供者条目：选中行为由提供者 onSelect 声明（壳层无业务特判）
+    if (item.metadata?.providerId) {
+      const provider = searchRegistry.getById(item.metadata.providerId as string);
+      if (provider?.onSelect) {
+        const after = (await provider.onSelect(item)) || {};
+        recordHistory(item.title, provider.id);
+        if (after.toast) {
+          showToast(after.toast);
+        }
+        if (after.clearInput ?? after.close) {
           setInputValue('');
+        }
+        if (after.close) {
           updateWindowHeight(70);
           hideWindow();
-          showToast(`已启动: ${item.title}`);
-        } catch (err: any) {
-          showToast(`启动失败: ${err?.message || err}`);
         }
-      } else {
-        showToast(`[预览] 启动应用: ${item.metadata.path}`);
       }
       return;
     }
 
-    // 2.5 系统应用候选：添加为快捷方式（不隐藏启动器，便于继续添加）
-    if (item.metadata?.isAppAdd) {
-      const { name, path, added } = item.metadata as { name: string; path: string; added?: boolean };
-      if (added) {
-        showToast(`"${name}" 已在应用列表中`);
-        return;
-      }
-      if (isTauriEnvironment()) {
-        try {
-          await invoke('add_custom_app', { name, path });
-          showToast(`已添加: ${name}`);
-          setInputValue('');
-          updateWindowHeight(70);
-        } catch (err: any) {
-          showToast(`添加失败: ${err?.message || err}`);
-        }
-      } else {
-        showToast(`[预览] 添加应用: ${name} → ${path}`);
-      }
-      return;
-    }
-
-    // 3. 直接系统命令运行
-    if (item.metadata?.isCliLaunch && item.metadata?.command) {
-      if (isTauriEnvironment()) {
-        try {
-          await invoke('launch_application', { path: item.metadata.command });
-          recordHistory(item.metadata.command, 'cli');
-          setInputValue('');
-          updateWindowHeight(70);
-          hideWindow();
-          showToast(`已执行: ${item.metadata.command}`);
-        } catch (err: any) {
-          showToast(`执行失败: ${err?.message || err}`);
-        }
-      } else {
-        showToast(`[预览] 执行命令: ${item.metadata.command}`);
-      }
-      return;
-    }
-
-    // 4. 浏览器搜索
-    if (item.id === 'web-search' || item.metadata?.isWebSearch) {
-      const q = item.metadata?.query || inputValue();
-      const url = `https://www.bing.com/search?q=${encodeURIComponent(q)}`;
-      window.open(url, '_blank');
-      setInputValue('');
-      updateWindowHeight(70);
-      hideWindow();
-      return;
-    }
-
-    // 5. 插件自身回调（如 /note 弹出独立编辑窗口，或 /todo 切换完成状态）
+    // 3. 指令插件面板项：壳层行为由插件经 AfterSelect 声明（关窗/清空/提示/刷新）
     const result = parseCommand(inputValue());
     if (result.plugin && result.plugin.onSelect) {
-      await result.plugin.onSelect(item);
+      const after = (await result.plugin.onSelect(item)) || {};
       recordHistory(result.plugin.trigger, result.plugin.id);
 
-      // 笔记插件：已弹出独立编辑窗口，立即关闭并隐藏主搜索框，归还焦点
-      if (result.plugin.id === 'notes') {
+      if (after.toast) {
+        showToast(after.toast);
+      }
+      if (after.clearInput ?? after.close) {
         setInputValue('');
+      }
+      if (after.close) {
         updateWindowHeight(70);
         hideWindow();
         return;
       }
-
-      // 应用插件：已启动应用，立即关闭并隐藏主搜索框
-      if (result.plugin.id === 'app') {
-        setInputValue('');
-        updateWindowHeight(70);
-        hideWindow();
-        return;
-      }
-
-      showToast(`已选择: ${item.title}`);
-      // 重新执行查询以刷新待办列表等面板状态
-      if (result.plugin.query) {
+      if (after.refresh && result.plugin.query) {
+        // 重新执行查询以刷新面板状态（如待办完成状态）
         const data = await result.plugin.query(result.parsed);
         setPanelItems(data.items);
       }

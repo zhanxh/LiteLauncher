@@ -1,0 +1,11 @@
+[package]
+name = "ll-plugin-notes"
+version = "0.1.0"
+edition = "2024"
+description = "LiteLauncher 笔记插件：/note 指令后端（Markdown 索引/读写 + 编辑器窗口）"
+
+[dependencies]
+ll-plugin-api = { path = "../../../src-tauri/crates/ll-plugin-api" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"

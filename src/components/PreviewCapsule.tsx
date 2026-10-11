@@ -1,5 +1,5 @@
 import { Component } from 'solid-js';
-import { ActionPreviewCapsule } from '../types/command';
+import { ActionPreviewCapsule } from '@ll/sdk';
 
 interface PreviewCapsuleProps {
   capsule: ActionPreviewCapsule;

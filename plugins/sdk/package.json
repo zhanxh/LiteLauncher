@@ -1,0 +1,8 @@
+{
+  "name": "@ll/sdk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LiteLauncher 插件前端 SDK（LPS-1）：类型契约、PluginContext、注册表。插件 fe 包唯一允许的壳层依赖。",
+  "type": "module",
+  "main": "src/index.ts"
+}

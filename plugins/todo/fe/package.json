@@ -1,0 +1,9 @@
+{
+  "name": "@ll/plugin-todo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "待办事项插件（前端）：/todo 指令、管理面板、提醒弹窗",
+  "type": "module",
+  "main": "src/index.ts",
+  "llplugin": true
+}

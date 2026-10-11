@@ -1,14 +1,14 @@
 pub mod db;
-pub mod app_launcher;
-pub mod todo;
-pub mod notes;
+pub mod migration;
 pub mod history;
-pub mod reminder;
 pub mod settings;
-pub mod system_apps;
 
 use db::DbState;
-use std::sync::Mutex;
+use ll_host::{HostState, PluginDbRegistry};
+use ll_plugin_apps::AppsPlugin;
+use ll_plugin_notes::NotesPlugin;
+use ll_plugin_todo::TodoPlugin;
+use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -98,15 +98,38 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            // 1. 初始化 SQLite 数据库并注入应用状态
-            match db::init_db() {
-                Ok(conn) => {
-                    app.manage(DbState(Mutex::new(conn)));
-                }
+            // 1. 初始化核心 SQLite 数据库（command_history + app_settings）
+            let db_conn = match db::init_db() {
+                Ok(conn) => Arc::new(Mutex::new(conn)),
                 Err(e) => {
                     let _ = std::fs::write("db_init_error.log", format!("DB INIT ERROR: {:?}\n", e));
+                    std::process::exit(1);
                 }
+            };
+            app.manage(DbState(Arc::clone(&db_conn)));
+
+            // 1.5 插件数据库注册表：每插件独立库文件（物理隔离）
+            let db_registry = Arc::new(PluginDbRegistry::new(db::plugin_db_root()));
+            app.manage(Arc::clone(&db_registry) as Arc<PluginDbRegistry>);
+
+            // 1.6 旧版单库数据迁移（一次性、幂等、先备份）
+            if let Ok(core) = db_conn.lock() {
+                migration::run_legacy_migration(&core, &db_registry);
             }
+
+            // 1.7 初始化插件宿主：注册内置插件并按 manifest 权限构造门控上下文
+            app.manage(HostState::default());
+            let host = app.state::<HostState>();
+            host.set_db_registry(Arc::clone(&db_registry));
+            host.set_core_db(Arc::clone(&db_conn));
+            host.set_app(app.handle().clone());
+            host.register(Arc::new(TodoPlugin::new()));
+            host.register(Arc::new(AppsPlugin::new()));
+            host.register(Arc::new(NotesPlugin::new()));
+            let plugin_log: ll_host::LogFn = Arc::new(|plugin_id, msg| {
+                log_lifecycle(&format!("[plugin:{}] {}", plugin_id, msg));
+            });
+            host.init_all(plugin_log);
 
             let app_handle = app.handle().clone();
 
@@ -170,8 +193,7 @@ pub fn run() {
 
             // 4. DevTools 支持由 Cargo `devtools` feature 提供（按 F12 打开），不再启动时自动展开
 
-            // 5. 启动待办提醒调度线程：每 20 秒扫描到期待办并弹系统通知（窗口隐藏时依然有效）
-            reminder::spawn_reminder_scheduler(app_handle.clone());
+            // 5. 提醒调度已随 todo 插件化：TodoPlugin::init 内部启动自己的扫描线程
 
             Ok(())
         })
@@ -191,29 +213,16 @@ pub fn run() {
             hide_main_window,
             show_main_window,
             toggle_main_window,
-            app_launcher::launch_application,
-            app_launcher::list_applications,
-            app_launcher::add_custom_app,
-            system_apps::search_system_apps,
-            todo::create_todo,
-            todo::list_todos,
-            todo::toggle_todo,
-            todo::delete_todo,
-            todo::update_todo,
-            todo::open_todo_manager,
-            reminder::get_popup_duration,
-            reminder::set_popup_duration,
-            reminder::test_reminder_popup,
             settings::get_setting,
             settings::set_setting,
             settings::get_app_info,
             settings::open_settings_window,
-            notes::search_notes,
-            notes::read_note_content,
-            notes::save_note_content,
-            notes::open_editor_window,
             history::record_command_usage,
             history::get_recent_commands,
+            // 插件宿主统一通道（插件能力不再逐命令注册）
+            ll_host::commands::plugin_call,
+            ll_host::commands::plugin_list,
+            ll_host::commands::plugin_set_enabled,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

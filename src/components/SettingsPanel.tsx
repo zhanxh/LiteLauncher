@@ -11,6 +11,17 @@ interface AppInfo {
   db_path: string;
 }
 
+/** 宿主 plugin_list 返回的插件信息（ll-host commands.rs） */
+interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  apiVersion: string;
+  trigger: string;
+  enabled: boolean;
+  permissions: string[];
+}
+
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
@@ -28,6 +39,15 @@ const OS_LABELS: Record<string, string> = {
 export const SettingsPanel: Component = () => {
   const [theme, setThemeSignal] = createSignal<Theme>('dark');
   const [info, setInfo] = createSignal<AppInfo | null>(null);
+  const [plugins, setPlugins] = createSignal<PluginInfo[]>([]);
+
+  const refreshPlugins = () => {
+    if (isTauri()) {
+      invoke<PluginInfo[]>('plugin_list')
+        .then(setPlugins)
+        .catch((err) => console.warn('读取插件列表失败:', err));
+    }
+  };
 
   onMount(() => {
     void initTheme().then((t) => {
@@ -43,7 +63,17 @@ export const SettingsPanel: Component = () => {
         .then(setInfo)
         .catch((err) => console.warn('读取应用信息失败:', err));
     }
+    refreshPlugins();
   });
+
+  const togglePlugin = async (p: PluginInfo) => {
+    try {
+      await invoke('plugin_set_enabled', { pluginId: p.id, enabled: !p.enabled });
+      refreshPlugins();
+    } catch (err) {
+      console.warn('切换插件状态失败:', err);
+    }
+  };
 
   const pickTheme = (t: Theme) => {
     setThemeSignal(t);
@@ -88,6 +118,37 @@ export const SettingsPanel: Component = () => {
           ))}
         </div>
         <p class="settings-hint">切换后立即生效并同步到所有窗口（启动器、笔记编辑、待办面板与提醒弹窗）。</p>
+      </section>
+
+      <section class="settings-card">
+        <h2>插件</h2>
+        <Show
+          when={plugins().length > 0}
+          fallback={<p class="settings-hint">（浏览器预览模式，启动应用后显示插件列表）</p>}
+        >
+          <div class="plugin-list">
+            {plugins().map((p) => (
+              <div class="plugin-row">
+                <div class="plugin-meta">
+                  <span class="plugin-name">
+                    {p.name} <span class="plugin-trigger mono">{p.trigger}</span>
+                  </span>
+                  <span class="plugin-desc">
+                    v{p.version} · LPS {p.apiVersion} · 权限 {p.permissions.join('/') || '无'}
+                  </span>
+                </div>
+                <button
+                  class="ll-btn ghost plugin-toggle"
+                  classList={{ 'is-on': p.enabled }}
+                  onClick={() => void togglePlugin(p)}
+                >
+                  {p.enabled ? '已启用' : '已禁用'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </Show>
+        <p class="settings-hint">禁用的插件保留全部本地数据，可随时重新启用。</p>
       </section>
 
       <section class="settings-card">
