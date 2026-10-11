@@ -1,0 +1,5 @@
+# build.cmd must stay CRLF (cmd.exe goto/label parsing depends on it)
+# and ASCII-only (multi-byte UTF-8/GBK text breaks cmd's batch parser).
+# build.sh must stay LF for bash.
+*.cmd text eol=crlf
+*.sh text eol=lf

@@ -1,80 +1,91 @@
 @echo off
-setlocal enabledelayedexpansion
-chcp 65001 >nul
+setlocal
 cd /d "%~dp0"
 
 REM ============================================================
-REM  LiteLauncher Windows 构建脚本（对应 Linux 的 build.sh）
-REM  用法：
-REM    build.cmd          完整构建：前端 + 主程序 + 便携插件部署
-REM    build.cmd check    快速门禁：cargo check + 前端类型检查（不产二进制）
+REM  LiteLauncher Windows build script (Linux/macOS: build.sh)
+REM
+REM  IMPORTANT: keep this file ASCII-only with CRLF line endings.
+REM  cmd.exe cannot reliably parse .cmd files that contain UTF-8 /
+REM  GBK multi-byte text (with or without "chcp 65001"); the parser
+REM  loses its file offset and executes random line fragments.
+REM  Chinese usage notes live in build.sh and docs/ instead.
+REM
+REM  Usage:
+REM    build.cmd          full build: frontend + main exe + portable plugin deploy
+REM    build.cmd check    quick gate: cargo check + frontend type check (no binary)
 REM ============================================================
 
-set "STEP=[1/5]"
-
-REM ── 工具链检查 ──────────────────────────────────────────────
+REM -- Toolchain check ----------------------------------------
 where node >nul 2>nul || (
-    echo [错误] 未找到 node，请安装 Node.js 18+ 并加入 PATH
+    echo [ERROR] node not found. Install Node.js 18+ and add it to PATH
     exit /b 1
 )
 where cargo >nul 2>nul || (
     if exist "%USERPROFILE%\.cargo\bin\cargo.exe" (
         set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
     ) else (
-        echo [错误] 未找到 cargo，请安装 Rust（rustup.rs）并加入 PATH
+        echo [ERROR] cargo not found. Install Rust from rustup.rs and add it to PATH
         exit /b 1
     )
 )
 
 if "%~1"=="check" goto :check
 
-REM ── 依赖安装（首次/依赖变更后自动补齐）─────────────────────
+REM -- npm install (first run / after dependency changes) ------
 if not exist "node_modules\" (
-    echo [依赖] node_modules 缺失，执行 npm install...
+    echo [DEPS] node_modules missing, running npm install...
     call npm install || exit /b 1
 )
 
-REM ── [1/5] 前端：插件注册表生成 + 类型检查 + 打包 ────────────
-set "STEP=[2/5]"
-echo %STEP% 构建前端（插件注册表生成 + 打包）...
+set "STEP=[1/5]"
+echo %STEP% Building frontend (plugin registry gen + type check + bundle)...
 call npm run build
 if %ERRORLEVEL% NEQ 0 (
-    echo [错误] 前端构建失败
+    echo [ERROR] frontend build failed
     exit /b 1
 )
 
-REM ── [2/5] 主程序：Tauri release 构建（含全部内置插件 crate）──
-set "STEP=[3/5]"
-echo %STEP% 构建主程序（Tauri release，含内置插件）...
+REM -- [2/5] main program: Tauri release build (built-in plugins)
+REM A running LiteLauncher.exe locks target\release\LiteLauncher.exe (os error 5),
+REM so fail early with a clear message instead of after a full compile.
+tasklist /FI "IMAGENAME eq LiteLauncher.exe" 2>nul | find /I "LiteLauncher.exe" >nul && (
+    echo [ERROR] LiteLauncher.exe is currently running and locks the build output.
+    echo         Please close it first, then re-run build.cmd.
+    exit /b 1
+)
+set "STEP=[2/5]"
+echo %STEP% Building main program (Tauri release, built-in plugins included)...
 call npx tauri build --no-bundle
 if %ERRORLEVEL% NEQ 0 (
-    echo [错误] 主程序构建失败
+    echo [ERROR] main program build failed
     exit /b 1
 )
 
-REM ── [3/5] 产物拷贝 ──────────────────────────────────────────
-set "STEP=[4/5]"
+REM -- [3/5] copy binary to release/ ---------------------------
+set "STEP=[3/5]"
 if not exist "release" mkdir "release"
-echo %STEP% 拷贝主程序到 release\LiteLauncher.exe...
+echo %STEP% Copying main exe to release\LiteLauncher.exe...
 copy /Y "src-tauri\target\release\LiteLauncher.exe" "release\LiteLauncher.exe" >nul || exit /b 1
 
-REM ── [4/5] 便携插件部署（backend.kind=llp → release\plugins\）─
-echo %STEP% 部署外部插件到 release\plugins\...
+REM -- [4/5] deploy external plugins (backend.kind=llp) --------
+set "STEP=[4/5]"
+echo %STEP% Deploying external plugins to release\plugins\...
 node tools\deploy-portable-plugins.mjs || exit /b 1
 
-REM ── [5/5] 完成 ──────────────────────────────────────────────
+REM -- [5/5] done -----------------------------------------------
 set "STEP=[5/5]"
-echo %STEP% 构建完成。可分发内容：
-echo   release\LiteLauncher.exe        主程序（内置 todo/apps/notes/ai 插件）
-echo   release\plugins\                外部插件（便携部署，随程序分发）
+echo %STEP% Done. Distributable output:
+echo   release\LiteLauncher.exe        main program (built-in todo/apps/notes/ai plugins)
+echo   release\plugins\                external plugins (portable, ship together)
 exit /b 0
 
 :check
-echo [check] Rust 工作区编译检查（含全部插件 crate）...
+echo [check] Rust workspace check (all plugin crates)...
 cargo check --workspace
 if %ERRORLEVEL% NEQ 0 exit /b 1
-echo [check] 前端类型检查...
+echo [check] Frontend type check...
 call npx tsc --noEmit
 if %ERRORLEVEL% NEQ 0 exit /b 1
-echo [check] 门禁通过
+echo [check] gate passed
 exit /b 0
