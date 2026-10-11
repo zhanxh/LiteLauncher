@@ -9,19 +9,47 @@ interface AppItemBackend {
   description: string;
 }
 
+interface SystemAppItem {
+  name: string;
+  path: string;
+  detail: string;
+  kind: 'desktop' | 'exec' | 'startmenu' | string;
+  added: boolean;
+}
+
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+const KIND_ICONS: Record<string, string> = {
+  desktop: '🚀',
+  exec: '⚙️',
+  startmenu: '🖥️',
+};
+
+function toCandidateItem(app: SystemAppItem): PanelItem {
+  return {
+    id: `sys-${app.kind}-${app.path}`,
+    title: app.name,
+    description: app.detail,
+    icon: KIND_ICONS[app.kind] || '🚀',
+    badge: app.added ? '✅ 已添加' : '➕ 未添加',
+    metadata: { isAppAdd: true, name: app.name, path: app.path, added: app.added },
+  };
+}
+
 /**
  * 应用启动插件：/app
+ * add 模式下根据输入实时列出系统应用候选（桌面应用/可执行命令/开始菜单），
+ * 点击候选直接添加；列表中以徽标区分已添加/未添加
  */
 export const appPlugin: CommandPlugin = {
   id: 'app',
   trigger: '/app',
   name: '应用启动器',
-  description: '快速检索与启动应用；支持 /app add "名称" "路径"',
+  description: '应用检索与启动；/app add 名称[ 路径] 从系统应用候选中快速添加',
   icon: '🚀',
+  showItemsInActionMode: true,
 
   isAction(input: ParsedInput): boolean {
     return input.subcommand === 'add';
@@ -31,13 +59,13 @@ export const appPlugin: CommandPlugin = {
     if (input.subcommand !== 'add') return null;
 
     const name = input.args[0] || '（请输入应用名称）';
-    const path = input.args[1] || '（请输入可执行路径）';
+    const path = input.args[1] || '（可省略，回车自动匹配）';
 
     return {
       title: '添加应用捷径',
       detail: `应用名: "${name}"  |  路径: "${path}"`,
       badge: '即时动作',
-      hint: '按 Enter 回车保存快捷启动',
+      hint: 'Enter 添加；或点击下方候选直接加入',
     };
   },
 
@@ -45,10 +73,40 @@ export const appPlugin: CommandPlugin = {
     const name = input.args[0]?.trim();
     const path = input.args[1]?.trim();
 
+    // 仅输入名称：唯一匹配直接添加；多个/零个提示从候选选择
+    if (name && !path) {
+      if (isTauri()) {
+        try {
+          const apps = await invoke<SystemAppItem[]>('search_system_apps', {
+            keyword: name,
+            limit: null,
+          });
+          if (apps.length === 1) {
+            const app = apps[0];
+            if (app.added) {
+              return { success: false, message: `"${app.name}" 已在应用列表中，无需重复添加` };
+            }
+            await invoke('add_custom_app', { name: app.name, path: app.path });
+            return { success: true, message: `已添加应用: ${app.name}` };
+          }
+          if (apps.length > 1) {
+            return { success: false, message: `找到 ${apps.length} 个匹配，请点击下方候选选择` };
+          }
+          return {
+            success: false,
+            message: '未找到匹配的系统应用，可补全路径：/app add "名称" "可执行路径"',
+          };
+        } catch (err: any) {
+          return { success: false, message: `搜索系统应用失败: ${err?.message || err}` };
+        }
+      }
+      return { success: true, message: `[预览模式] 已添加应用: ${name}` };
+    }
+
     if (!name || !path) {
       return {
         success: false,
-        message: '参数不完整，请使用：/app add "名称" "可执行路径"',
+        message: '请输入应用名称，或从下方系统应用候选中选择',
       };
     }
 
@@ -65,8 +123,37 @@ export const appPlugin: CommandPlugin = {
   },
 
   async query(input: ParsedInput): Promise<PanelData> {
-    const keyword = input.queryText.trim();
+    // add 模式：系统应用候选（含已添加/未添加状态）
+    if (input.subcommand === 'add') {
+      const keyword = input.args.join(' ').trim();
+      if (isTauri()) {
+        try {
+          const apps = await invoke<SystemAppItem[]>('search_system_apps', {
+            keyword: keyword || null,
+            limit: null,
+          });
+          return {
+            items: apps.map(toCandidateItem),
+            emptyText: '未找到匹配的系统应用，可直接输入 /app add "名称" "可执行路径"',
+          };
+        } catch (err) {
+          console.warn('搜索系统应用失败:', err);
+        }
+      }
 
+      // 浏览器预览回退：展示候选与状态徽标的渲染样式
+      return {
+        items: [
+          { id: 's1', title: 'Visual Studio Code', description: '/usr/share/code/code', icon: '🚀', badge: '✅ 已添加', metadata: { isAppAdd: true, name: 'Visual Studio Code', path: 'code', added: true } },
+          { id: 's2', title: '终端', description: 'gnome-terminal', icon: '🚀', badge: '➕ 未添加', metadata: { isAppAdd: true, name: '终端', path: 'gnome-terminal', added: false } },
+          { id: 's3', title: 'ls', description: '/bin/ls', icon: '⚙️', badge: '➕ 未添加', metadata: { isAppAdd: true, name: 'ls', path: '/bin/ls', added: false } },
+        ],
+        emptyText: '未找到匹配的系统应用',
+      };
+    }
+
+    // 列表模式：已保存的应用快捷方式
+    const keyword = input.queryText.trim();
     if (isTauri()) {
       try {
         const apps = await invoke<AppItemBackend[]>('list_applications', {
@@ -84,7 +171,7 @@ export const appPlugin: CommandPlugin = {
 
         return {
           items,
-          emptyText: '未检索到应用，可输入 /app add "名称" "路径" 手动添加',
+          emptyText: '未检索到应用，可输入 /app add 名称 从系统应用中添加',
         };
       } catch (err) {
         console.warn('读取应用列表失败:', err);

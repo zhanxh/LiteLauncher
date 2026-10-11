@@ -54,6 +54,16 @@ fn spawn_app(clean_path: &str) -> std::io::Result<std::process::Child> {
 
     #[cfg(not(target_os = "windows"))]
     {
+        // .desktop 桌面项必须用 gio launch / gtk-launch 启动：
+        // xdg-open 会把它当作普通文件交给默认程序"打开"（通常是编辑器），
+        // 而不是执行其中的 Exec（本机 marker 测试实证）
+        if std::path::Path::new(clean_path)
+            .extension()
+            .map_or(false, |ext| ext == "desktop")
+        {
+            return spawn_desktop_entry(clean_path);
+        }
+
         if should_use_opener(clean_path) {
             #[cfg(target_os = "macos")]
             let opener = "open";
@@ -64,6 +74,29 @@ fn spawn_app(clean_path: &str) -> std::io::Result<std::process::Child> {
             Command::new(clean_path).spawn()
         }
     }
+}
+
+/// 启动 .desktop 桌面项：优先 `gio launch`（GLib ≥ 2.58，接受任意路径），
+/// 二进制缺失时回退 `gtk-launch <桌面项ID>`（要求文件位于标准 applications 目录）
+#[cfg(not(target_os = "windows"))]
+fn spawn_desktop_entry(path: &str) -> std::io::Result<std::process::Child> {
+    if let Ok(child) = Command::new("gio").args(["launch", path]).spawn() {
+        return Ok(child);
+    }
+
+    if let Some(id) = std::path::Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+    {
+        if let Ok(child) = Command::new("gtk-launch").arg(&id).spawn() {
+            return Ok(child);
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "未找到 gio 或 gtk-launch，无法启动桌面项（请安装 glib/gtk 工具）",
+    ))
 }
 
 /// 启动指定的外部应用程序，并立即隐藏启动器主窗口
@@ -152,6 +185,18 @@ pub fn add_custom_app(
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp();
 
+    // 同一路径只允许添加一次，避免候选列表重复点击造成冗余条目
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM app_shortcuts WHERE path = ?1",
+            rusqlite::params![&path],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if exists > 0 {
+        return Err(format!("\"{}\" 已在应用列表中，无需重复添加", name));
+    }
+
     conn.execute(
         "INSERT INTO app_shortcuts (id, name, path, created_at) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![&id, &name, &path, now],
@@ -202,5 +247,40 @@ mod tests {
         assert!(!should_use_opener("gnome-terminal"));
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn desktop_entry_launch_executes_exec_line() {
+        // gio 缺失的环境跳过（如极简容器）
+        if Command::new("gio").arg("--version").output().is_err() {
+            return;
+        }
+        let marker = std::env::temp_dir().join(format!("ll-desktop-marker-{}", std::process::id()));
+        let _ = fs::remove_file(&marker);
+        let desktop = std::env::temp_dir().join(format!("ll-desktop-test-{}.desktop", std::process::id()));
+        fs::write(
+            &desktop,
+            format!(
+                "[Desktop Entry]\nType=Application\nName=LL Test\nExec=/bin/touch {}\n",
+                marker.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let child = spawn_desktop_entry(desktop.to_str().unwrap());
+        assert!(child.is_ok(), "spawn_desktop_entry 失败: {:?}", child.err());
+
+        // gio launch 异步执行 Exec，轮询等待 marker 出现
+        let mut launched = false;
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if marker.exists() {
+                launched = true;
+                break;
+            }
+        }
+        assert!(launched, ".desktop 的 Exec 未被执行");
+        let _ = fs::remove_file(&marker);
+        let _ = fs::remove_file(&desktop);
     }
 }

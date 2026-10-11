@@ -218,8 +218,20 @@ export const App: Component = () => {
       if (result.parsed.isAction && result.plugin.getPreview) {
         const preview = result.plugin.getPreview(result.parsed);
         setActionCapsule(preview);
-        setPanelItems([]);
-        updateWindowHeight(preview ? 124 : 70);
+
+        // 插件声明 showItemsInActionMode 时（如 /app add），在胶囊下方同步展示候选列表
+        if (result.plugin.showItemsInActionMode && result.plugin.query) {
+          result.plugin.query(result.parsed).then((data) => {
+            setPanelItems(data.items);
+            setEmptyText(data.emptyText || '');
+            setSelectedIndex(0);
+            const listHeight = data.items.length > 0 ? Math.min(64 + data.items.length * 56, 460) : 0;
+            updateWindowHeight((preview ? 124 : 70) + listHeight);
+          });
+        } else {
+          setPanelItems([]);
+          updateWindowHeight(preview ? 124 : 70);
+        }
         return;
       }
 
@@ -416,6 +428,28 @@ export const App: Component = () => {
         }
       } else {
         showToast(`[预览] 启动应用: ${item.metadata.path}`);
+      }
+      return;
+    }
+
+    // 2.5 系统应用候选：添加为快捷方式（不隐藏启动器，便于继续添加）
+    if (item.metadata?.isAppAdd) {
+      const { name, path, added } = item.metadata as { name: string; path: string; added?: boolean };
+      if (added) {
+        showToast(`"${name}" 已在应用列表中`);
+        return;
+      }
+      if (isTauriEnvironment()) {
+        try {
+          await invoke('add_custom_app', { name, path });
+          showToast(`已添加: ${name}`);
+          setInputValue('');
+          updateWindowHeight(70);
+        } catch (err: any) {
+          showToast(`添加失败: ${err?.message || err}`);
+        }
+      } else {
+        showToast(`[预览] 添加应用: ${name} → ${path}`);
       }
       return;
     }

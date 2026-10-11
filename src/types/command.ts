@@ -79,6 +79,12 @@ export interface CommandPlugin {
   isAction(input: ParsedInput): boolean;
 
   /**
+   * Action 模式下是否同时渲染 query() 的候选列表
+   * （如 /app add 需要在预览胶囊下方展示系统应用候选供点选）
+   */
+  showItemsInActionMode?: boolean;
+
+  /**
    * 获取即时执行的实时语义预览胶囊（若返回 null 则不显示胶囊）
    */
   getPreview?(input: ParsedInput): ActionPreviewCapsule | null;

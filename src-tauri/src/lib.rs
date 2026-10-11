@@ -5,6 +5,7 @@ pub mod notes;
 pub mod history;
 pub mod reminder;
 pub mod settings;
+pub mod system_apps;
 
 use db::DbState;
 use std::sync::Mutex;
@@ -193,6 +194,7 @@ pub fn run() {
             app_launcher::launch_application,
             app_launcher::list_applications,
             app_launcher::add_custom_app,
+            system_apps::search_system_apps,
             todo::create_todo,
             todo::list_todos,
             todo::toggle_todo,
