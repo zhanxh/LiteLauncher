@@ -20,13 +20,19 @@ if [[ "${1:-}" == "check" ]]; then
 fi
 
 # ── 依赖安装（首次/依赖变更后自动补齐）─────────────────────
-if [[ ! -d node_modules ]]; then
-    echo "[依赖] node_modules 缺失，执行 npm install..."
+# node_modules/ 目录可能存在但内容残缺（安装中断、网盘同步跳过了深层路径、
+# 从其他机器拷贝不完整）。在信任目录前先探测前端实际会 import 的包。
+if [[ ! -f node_modules/@kobalte/core/package.json ]]; then
+    echo "[依赖] 依赖缺失或不完整，执行 npm install..."
     npm install
 fi
 
 echo "[1/4] 构建前端（插件注册表生成 + 打包）..."
-npm run build
+if ! npm run build; then
+    echo "[错误] 前端构建失败。若日志中出现 \"failed to resolve import\"，多为依赖不完整所致。"
+    echo "        修复：rm -rf node_modules && npm install"
+    exit 1
+fi
 
 echo "[2/4] 构建主程序（Tauri release，含内置插件）..."
 npx tauri build --no-bundle

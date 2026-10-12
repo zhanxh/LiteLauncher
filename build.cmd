@@ -33,8 +33,11 @@ where cargo >nul 2>nul || (
 if "%~1"=="check" goto :check
 
 REM -- npm install (first run / after dependency changes) ------
-if not exist "node_modules\" (
-    echo [DEPS] node_modules missing, running npm install...
+REM node_modules\ may exist but be incomplete (interrupted install, cloud-sync
+REM directory that skipped deep paths, copy from another machine). Probe a
+REM package that the frontend actually imports before trusting the directory.
+if not exist "node_modules\@kobalte\core\package.json" (
+    echo [DEPS] dependencies missing or incomplete, running npm install...
     call npm install || exit /b 1
 )
 
@@ -43,6 +46,8 @@ echo %STEP% Building frontend (plugin registry gen + type check + bundle)...
 call npm run build
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] frontend build failed
+    echo         If the log shows "failed to resolve import", dependencies are
+    echo         incomplete. Fix: rmdir /s /q node_modules ^&^& npm install
     exit /b 1
 )
 
