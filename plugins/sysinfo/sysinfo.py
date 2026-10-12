@@ -162,10 +162,11 @@ def collect_items():
     except Exception:
         pass
 
+    # 展示实际生效的解释器：用户可在「设置 → Python 环境」切换，这里用于确认
     pyver = f"Python {platform.python_version()}"
     items.append({"id": "runtime", "title": f"sidecar 运行时: {pyver}",
-                  "icon": "🐍", "description": "本插件由 python3 标准库实现",
-                  "metadata": {"detail": pyver}})
+                  "icon": "🐍", "description": f"解释器: {sys.executable}",
+                  "metadata": {"detail": f"{pyver}\n{sys.executable}"}})
     return items
 
 

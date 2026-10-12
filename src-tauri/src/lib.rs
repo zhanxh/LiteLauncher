@@ -1,6 +1,7 @@
 pub mod db;
 pub mod migration;
 pub mod history;
+pub mod python_env;
 pub mod settings;
 
 use db::DbState;
@@ -138,6 +139,12 @@ pub fn run() {
             };
             app.manage(DbState(Arc::clone(&db_conn)));
 
+            // 1.2 载入用户配置的 Python 解释器（sysinfo 等 LLP 插件的 sidecar 运行时）
+            ll_host::python::set_configured(python_env::read_configured(&db_conn));
+            if let Some(p) = ll_host::python::configured() {
+                log_lifecycle(&format!("Python 运行时（用户配置）: {}", p));
+            }
+
             // 1.5 插件数据库注册表：每插件独立库文件（物理隔离）
             let db_registry = Arc::new(PluginDbRegistry::new(db::plugin_db_root()));
             app.manage(Arc::clone(&db_registry) as Arc<PluginDbRegistry>);
@@ -259,6 +266,11 @@ pub fn run() {
             settings::set_setting,
             settings::get_app_info,
             settings::open_settings_window,
+            // Python 运行时配置（LLP sidecar 依赖）
+            python_env::get_python_env,
+            python_env::detect_python_path,
+            python_env::set_python_path,
+            python_env::pick_python_file,
             history::record_command_usage,
             history::get_recent_commands,
             // 插件宿主统一通道（插件能力不再逐命令注册）

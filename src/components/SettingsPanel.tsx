@@ -22,6 +22,24 @@ interface PluginInfo {
   permissions: string[];
 }
 
+/** 宿主 python_env 返回的当前 Python 环境状态 */
+interface PyEnv {
+  configured: string | null;
+  path: string | null;
+  version: string | null;
+  source: string;
+  available: boolean;
+  error: string | null;
+}
+
+/** 自动检测到的解释器候选 */
+interface PyCandidate {
+  path: string;
+  version: string | null;
+  source: string;
+  valid: boolean;
+}
+
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
@@ -40,6 +58,86 @@ export const SettingsPanel: Component = () => {
   const [theme, setThemeSignal] = createSignal<Theme>('dark');
   const [info, setInfo] = createSignal<AppInfo | null>(null);
   const [plugins, setPlugins] = createSignal<PluginInfo[]>([]);
+
+  // ── Python 环境（sysinfo 等外部插件的 sidecar 运行时）──
+  const [pyEnv, setPyEnv] = createSignal<PyEnv | null>(null);
+  const [pyInput, setPyInput] = createSignal('');
+  const [pyCandidates, setPyCandidates] = createSignal<PyCandidate[]>([]);
+  const [pyBusy, setPyBusy] = createSignal(false);
+  const [pyMsg, setPyMsg] = createSignal<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  const loadPyEnv = async () => {
+    if (!isTauri()) return;
+    try {
+      const env = await invoke<PyEnv>('get_python_env');
+      setPyEnv(env);
+      setPyInput(env.configured ?? '');
+    } catch (err) {
+      console.warn('读取 Python 环境失败:', err);
+    }
+  };
+
+  const applyPyPath = async (path: string) => {
+    if (!isTauri()) {
+      setPyMsg({ kind: 'err', text: '浏览器预览模式不支持配置，请启动应用后操作' });
+      return;
+    }
+    setPyBusy(true);
+    setPyMsg(null);
+    try {
+      const env = await invoke<PyEnv>('set_python_path', { path });
+      setPyEnv(env);
+      setPyInput(env.configured ?? '');
+      if (path.trim()) {
+        setPyMsg({ kind: 'ok', text: `已应用：${env.version ?? '解释器'}（${env.path}）` });
+      } else {
+        setPyMsg({
+          kind: env.available ? 'ok' : 'err',
+          text: env.available ? `已清除配置，回落到自动探测：${env.path}` : '已清除配置，但自动探测未找到解释器',
+        });
+      }
+    } catch (err) {
+      setPyMsg({ kind: 'err', text: String(err) });
+    } finally {
+      setPyBusy(false);
+    }
+  };
+
+  const detectPy = async () => {
+    if (!isTauri()) return;
+    setPyBusy(true);
+    setPyMsg(null);
+    try {
+      const list = await invoke<PyCandidate[]>('detect_python_path');
+      setPyCandidates(list);
+      const usable = list.filter((c) => c.valid);
+      setPyMsg({
+        kind: usable.length ? 'ok' : 'err',
+        text: usable.length ? `检测到 ${usable.length} 个可用解释器，点击即可应用` : '未检测到可用的 Python 解释器，请手动填写路径',
+      });
+    } catch (err) {
+      setPyMsg({ kind: 'err', text: String(err) });
+    } finally {
+      setPyBusy(false);
+    }
+  };
+
+  const pickPyFile = async () => {
+    if (!isTauri()) return;
+    setPyBusy(true);
+    setPyMsg(null);
+    try {
+      const picked = await invoke<string | null>('pick_python_file');
+      if (picked) {
+        setPyInput(picked);
+        await applyPyPath(picked);
+      }
+    } catch (err) {
+      setPyMsg({ kind: 'err', text: String(err) });
+    } finally {
+      setPyBusy(false);
+    }
+  };
 
   const refreshPlugins = () => {
     if (isTauri()) {
@@ -62,6 +160,7 @@ export const SettingsPanel: Component = () => {
       invoke<AppInfo>('get_app_info')
         .then(setInfo)
         .catch((err) => console.warn('读取应用信息失败:', err));
+      void loadPyEnv();
     }
     refreshPlugins();
   });
@@ -118,6 +217,76 @@ export const SettingsPanel: Component = () => {
           ))}
         </div>
         <p class="settings-hint">切换后立即生效并同步到所有窗口（启动器、笔记编辑、待办面板与提醒弹窗）。</p>
+      </section>
+
+      <section class="settings-card">
+        <h2>Python 环境</h2>
+
+        <div class="py-status">
+          <span class="py-badge" classList={{ ok: !!pyEnv()?.available, bad: !pyEnv()?.available }}>
+            {pyEnv() ? (pyEnv()!.available ? '可用' : '不可用') : '检测中'}
+          </span>
+          <div class="py-status-main">
+            <div class="py-path mono">{pyEnv()?.path ?? '（未找到解释器）'}</div>
+            <div class="py-meta">
+              {pyEnv()?.version ?? '—'} · 来源 {pyEnv()?.source ?? '—'}
+            </div>
+          </div>
+        </div>
+
+        <Show when={pyEnv()?.error}>
+          {(e) => <p class="py-error">{e()}</p>}
+        </Show>
+
+        <div class="py-row">
+          <input
+            class="py-input mono"
+            spellcheck={false}
+            placeholder="例如 D:\tools\Miniconda3\python.exe（留空则自动探测）"
+            value={pyInput()}
+            onInput={(e) => setPyInput(e.currentTarget.value)}
+          />
+        </div>
+
+        <div class="py-actions">
+          <button class="ll-btn" disabled={pyBusy()} onClick={() => void applyPyPath(pyInput())}>
+            保存并应用
+          </button>
+          <button class="ll-btn ghost" disabled={pyBusy()} onClick={() => void detectPy()}>
+            自动检测
+          </button>
+          <button class="ll-btn ghost" disabled={pyBusy()} onClick={() => void pickPyFile()}>
+            浏览…
+          </button>
+          <button class="ll-btn ghost" disabled={pyBusy()} onClick={() => void applyPyPath('')}>
+            清除
+          </button>
+        </div>
+
+        <Show when={pyMsg()}>
+          {(m) => <p class="py-msg" classList={{ ok: m().kind === 'ok', err: m().kind === 'err' }}>{m().text}</p>}
+        </Show>
+
+        <Show when={pyCandidates().length > 0}>
+          <div class="py-candidates">
+            {pyCandidates().map((c) => (
+              <button class="py-candidate" onClick={() => void applyPyPath(c.path)}>
+                <span class="py-cand-icon">{c.valid ? '🐍' : '⚠️'}</span>
+                <span class="py-cand-main">
+                  <span class="py-cand-path mono">{c.path}</span>
+                  <span class="py-cand-meta">
+                    {c.version ?? '不可用'} · {c.source}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </Show>
+
+        <p class="settings-hint">
+          sysinfo 等外部插件以 Python 作为运行时。保存后立刻生效——已在运行的插件进程会被重启并按新解释器
+          重建，无需退出应用。也可设置环境变量 <span class="mono">LLP_PYTHON</span> 作为便携部署的替代方案。
+        </p>
       </section>
 
       <section class="settings-card">

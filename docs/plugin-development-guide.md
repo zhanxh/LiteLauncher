@@ -506,14 +506,33 @@ plugins/sysinfo/                 # 仓库内开发
 }
 ```
 
-### 9.2 运行时行为
+### 9.2 Python 运行时（sysinfo 等 Python sidecar）
+
+Python 版 sidecar 依赖机器上有一个 Python 3 解释器。宿主按以下优先级解析，**命中即停**：
+
+| 优先级 | 来源 | 说明 |
+|---|---|---|
+| 1 | 用户在「设置 → Python 环境」配置的路径 | 持久化在核心库 `app_settings`（键 `python.path`），进程启动时载入 |
+| 2 | 环境变量 `LLP_PYTHON` | 全路径或 PATH 内裸名，适合便携部署/批量分发 |
+| 3 | PATH 中的 `python3` / `python` / `py` | 跳过 Microsoft Store 的 0 字节占位 stub |
+| 4 | Windows 注册表 PEP 514 | `HKCU/HKLM\Software\Python\...\InstallPath`，python.org/conda/uv 均登记 |
+| 5 | 常见安装位置 | `%LOCALAPPDATA%\Programs\Python`、`C:\Python3xx`、用户目录 conda、Homebrew、`/usr/bin`… |
+| 6 | 各盘符根目录的 conda/Python 目录 | 覆盖 `D:\tools\Miniconda3` 这类自定义位置（含其 `envs\*`） |
+
+设置面板提供**自动检测**（列出全部候选与版本）、**浏览…**（系统文件选择框）与手动填写；保存前会先执行一次版本探测，
+路径不可用直接报错不落库。保存成功后宿主会杀掉已运行的 sidecar —— LLP 是懒启动的，下次调用自动按新解释器重建，
+**无需重启应用**。sysinfo 的「sidecar 运行时」条目会显示实际生效的解释器路径，可用于确认。
+
+`backend.entry` 写成绝对路径（含 `/` 或 `\`）或非 Python 裸名（如 `node`）时按字面交给系统解析，不参与上述探测。
+
+### 9.3 运行时行为
 
 - **懒启动**：注册/启用不 spawn，首次 `ctx.call` 才拉起进程；崩溃后下次调用自动重启
 - **前端同构**：宿主据 `command` 声明生成通用 CommandPlugin，fe 侧无需任何代码——`/sysinfo` 输入、候选、Toast 与内置插件体验一致
 - **加载流程**：宿主扫描两级目录（用户安装 extplugins 优先，其次主程序旁 plugins/，同名取前者并记日志）→ manifest 解析 + 门控上下文构造（同一套权限模型）→ 注册进同一注册表；前端 `plugin_list` 驱动生成命令。便携目录随程序一起拷贝分发，程序升级不影响两侧插件
 - **安全**：sidecar 没有任何宿主句柄，能力全部经 `svc.*` 反向请求由宿主代理，未在 manifest 声明的权限直接拒绝
 
-### 9.3 sidecar 协议（LLP/1：stdio JSON Lines，每行一条 JSON-RPC 2.0）
+### 9.4 sidecar 协议（LLP/1：stdio JSON Lines，每行一条 JSON-RPC 2.0）
 
 | 宿主 → 插件 | 说明 |
 |---|---|

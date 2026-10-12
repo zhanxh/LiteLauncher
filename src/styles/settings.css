@@ -186,6 +186,137 @@ body.settings-mode {
   color: var(--text-muted);
 }
 
+/* ─── Python 环境区 ─── */
+.py-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--item-bg-hover);
+}
+.py-badge {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--keyhint-border);
+  color: var(--text-muted);
+}
+.py-badge.ok {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+  background: var(--accent-light);
+}
+.py-badge.bad {
+  border-color: var(--border-subtle);
+  opacity: 0.85;
+}
+.py-status-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.py-path {
+  font-size: 12px;
+  word-break: break-all;
+}
+.py-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.py-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--accent-text);
+  line-height: 1.5;
+}
+.py-row {
+  margin-top: 10px;
+}
+.py-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--keyhint-border);
+  background: var(--bg-solid);
+  color: var(--text-main);
+  font-size: 12px;
+  font-family: Consolas, Monaco, monospace;
+  outline: none;
+}
+.py-input:focus {
+  border-color: var(--accent-color);
+}
+.py-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.py-actions .ll-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.py-msg {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.py-msg.ok {
+  color: var(--accent-text);
+}
+.py-msg.err {
+  color: var(--text-main);
+  opacity: 0.75;
+}
+.py-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.py-candidate {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-main);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: background 0.15s, border-color 0.15s;
+}
+.py-candidate:hover {
+  background: var(--item-bg-hover);
+  border-color: var(--accent-color);
+}
+.py-cand-icon {
+  font-size: 15px;
+}
+.py-cand-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.py-cand-path {
+  font-size: 12px;
+  word-break: break-all;
+}
+.py-cand-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* ─── 插件管理区 ─── */
 .plugin-list {
   display: flex;

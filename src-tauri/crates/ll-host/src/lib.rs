@@ -8,6 +8,7 @@
 
 pub mod commands;
 pub mod llp;
+pub mod python;
 pub mod services;
 
 use ll_plugin_api::{PluginBackend, PluginContext, PluginManifest};
@@ -83,6 +84,31 @@ impl HostState {
 
     pub fn set_app(&self, app: AppHandle) {
         *self.app.write().unwrap() = Some(app);
+    }
+
+    /// 关闭全部外部进程插件（kind=llp）的 sidecar 子进程
+    ///
+    /// 场景：用户在设置面板改了 Python 解释器路径。LLP 是懒启动的，这里只杀进程，
+    /// 标记 dead，下次调用会自动按新解释器重建——不需要重启应用，也不触碰内置插件
+    /// （内置插件的 shutdown 会停线程，不能随便调）。
+    /// 返回被关闭的插件数量。
+    pub fn shutdown_llp_plugins(&self) -> usize {
+        let ids: Vec<String> = {
+            let map = match self.plugins.read() {
+                Ok(m) => m,
+                Err(_) => return 0,
+            };
+            map.values()
+                .filter(|e| e.backend.manifest().backend.kind == "llp")
+                .map(|e| e.backend.manifest().id)
+                .collect()
+        };
+        for id in &ids {
+            if let Some(entry) = self.plugins.read().unwrap().get(id) {
+                entry.backend.shutdown();
+            }
+        }
+        ids.len()
     }
 
     /// 登记插件（默认启用；实际启用状态在 init_all 时依持久化设置校正）
