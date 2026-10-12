@@ -1,4 +1,4 @@
-import { CommandPlugin, ParsedInput, PanelData, PanelItem } from '@ll/sdk';
+import { CommandPlugin, ParsedInput, PanelData, PanelItem, ActionPreviewCapsule } from '@ll/sdk';
 import { getPluginContext } from '@ll/sdk';
 
 // 经宿主统一通道访问 notes 插件后端
@@ -12,6 +12,11 @@ interface NoteBackend {
   tags: string;
 }
 
+interface CreatedNote {
+  path: string;
+  title: string;
+}
+
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
@@ -23,11 +28,41 @@ export const notesPlugin: CommandPlugin = {
   id: 'notes',
   trigger: '/note',
   name: 'Markdown 笔记',
-  description: '搜索并浏览本地 Markdown 笔记文档（按回车弹出独立编辑窗口）',
+  description:
+    '笔记管理：/note 检索本地 Markdown；/note new [标题] 新建笔记并打开编辑器',
   icon: '📝',
 
-  isAction(_input: ParsedInput): boolean {
-    return false;
+  isAction(input: ParsedInput): boolean {
+    return input.subcommand === 'new';
+  },
+
+  getPreview(input: ParsedInput): ActionPreviewCapsule | null {
+    if (input.subcommand !== 'new') return null;
+    const title = input.args.join(' ').trim() || '未命名笔记';
+    return {
+      title: '新建 Markdown 笔记',
+      detail: `标题: "${title}"  |  位置: 文档/LiteNotes`,
+      badge: '即时动作',
+      hint: '按 Enter 回车创建并打开编辑器',
+    };
+  },
+
+  async execute(input: ParsedInput): Promise<{ success: boolean; message: string }> {
+    if (input.subcommand !== 'new') {
+      return { success: false, message: `未知子命令: ${input.subcommand}` };
+    }
+    const title = input.args.join(' ').trim();
+
+    if (isTauri()) {
+      try {
+        const created = await ctx.call<CreatedNote>('create', { title: title || null });
+        await ctx.call('open_editor', { path: created.path, title: created.title });
+        return { success: true, message: `已创建笔记「${created.title}」并打开编辑器` };
+      } catch (err: any) {
+        return { success: false, message: `创建笔记失败: ${err?.message || err}` };
+      }
+    }
+    return { success: true, message: `[预览模式] 将创建笔记: "${title || '未命名笔记'}"` };
   },
 
   async query(input: ParsedInput): Promise<PanelData> {
@@ -57,9 +92,21 @@ export const notesPlugin: CommandPlugin = {
           };
         });
 
+        // 有关键词时首项直达"新建"：回车即创建同名笔记并打开编辑器
+        if (keyword) {
+          items.unshift({
+            id: '__note_create_new__',
+            title: `新建笔记「${keyword}」`,
+            description: '回车创建 Markdown 文档并打开编辑器',
+            icon: '✨',
+            badge: '新建',
+            metadata: { createNew: true, title: keyword },
+          });
+        }
+
         return {
           items,
-          emptyText: '未检索到 Markdown 笔记，可在 LiteNotes 文件夹中创建 .md 文档',
+          emptyText: '未检索到 Markdown 笔记，输入标题回车新建，或用 /note new [标题] 创建',
         };
       } catch (err) {
         console.warn('检索笔记失败:', err);
@@ -91,6 +138,23 @@ export const notesPlugin: CommandPlugin = {
   },
 
   async onSelect(item: PanelItem) {
+    // 面板"新建"入口：直接创建并打开编辑器
+    if (item.metadata?.createNew) {
+      const title = String(item.metadata?.title || item.title || '').trim();
+      if (isTauri()) {
+        try {
+          const created = await ctx.call<CreatedNote>('create', { title: title || null });
+          await ctx.call('open_editor', { path: created.path, title: created.title });
+          return { close: true };
+        } catch (err) {
+          console.error('新建笔记失败:', err);
+        }
+      } else {
+        console.log('[预览环境] 新建笔记:', title);
+      }
+      return;
+    }
+
     const path = item.metadata?.path;
     const title = item.metadata?.title || item.title;
     if (!path) return;

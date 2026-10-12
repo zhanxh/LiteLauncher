@@ -171,6 +171,36 @@ impl NotesPlugin {
         })
     }
 
+    /// 新建 Markdown 笔记（/note new [标题]）
+    /// 文件名清洗非法字符；同名不覆盖，自动追加序号；写入 `# 标题` 模板并同步索引
+    fn create(&self, params: &JsonValue) -> Result<JsonValue, PluginError> {
+        let title = sanitize_title(&get_str(params, "title").unwrap_or_default());
+        let title = if title.is_empty() {
+            "未命名笔记".to_string()
+        } else {
+            title
+        };
+
+        let notes_dir = get_notes_dir();
+        let mut file_name = format!("{}.md", title);
+        let mut seq = 2;
+        while notes_dir.join(&file_name).exists() {
+            file_name = format!("{} ({}).md", title, seq);
+            seq += 1;
+        }
+        let path = notes_dir.join(&file_name);
+        fs::write(&path, format!("# {}\n\n", title))
+            .map_err(|e| PluginError::internal(format!("创建笔记失败: {}", e)))?;
+
+        // 立即入索引，下次 /note 搜索可见
+        self.with_ctx(|ctx| Self::synced_db(ctx))?;
+
+        Ok(json!({
+            "path": path.to_string_lossy(),
+            "title": title,
+        }))
+    }
+
     fn open_editor(&self, params: &JsonValue) -> Result<JsonValue, PluginError> {
         let path = get_str(params, "path")
             .ok_or_else(|| PluginError::bad_params("缺少参数 path"))?;
@@ -245,6 +275,7 @@ fn init(&self, ctx: PluginContext) -> Result<(), PluginError> {
             "search" => self.search(&params),
             "read" => self.read(&params),
             "save" => self.save(&params),
+            "create" => self.create(&params),
             "open_editor" => self.open_editor(&params),
             _ => Err(PluginError::unknown_method(method)),
         }
@@ -256,4 +287,40 @@ fn get_str(params: &JsonValue, key: &str) -> Option<String> {
         .get(key)
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
+}
+
+/// 清洗笔记标题为合法文件名：Windows 非法字符与控制字符替换为空格，
+/// 压缩连续空白，去掉结尾的空格与点（Windows 不允许）
+fn sanitize_title(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| match c {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => ' ',
+            c if (c as u32) < 0x20 => ' ',
+            c => c,
+        })
+        .collect();
+    cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches(|c| c == '.' || c == ' ')
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_title;
+
+    #[test]
+    fn strips_windows_illegal_chars() {
+        assert_eq!(sanitize_title(r#"a/b\c:d*e?f"g<h>i|j"#), "a b c d e f g h i j");
+    }
+
+    #[test]
+    fn trims_and_collapses_whitespace() {
+        assert_eq!(sanitize_title("  会议   记录  "), "会议 记录");
+        assert_eq!(sanitize_title("笔记."), "笔记");
+        assert_eq!(sanitize_title(""), "");
+    }
 }
