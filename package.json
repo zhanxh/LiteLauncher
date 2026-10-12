@@ -18,6 +18,9 @@
     "plugin:deploy": "node tools/deploy-portable-plugins.mjs"
   },
   "license": "MIT",
+  "engines": {
+    "node": ">=20.19"
+  },
   "dependencies": {
     "@internationalized/date": "^3.12.4",
     "@kobalte/core": "^0.13.14",

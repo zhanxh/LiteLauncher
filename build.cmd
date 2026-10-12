@@ -18,7 +18,25 @@ REM ============================================================
 
 REM -- Toolchain check ----------------------------------------
 where node >nul 2>nul || (
-    echo [ERROR] node not found. Install Node.js 18+ and add it to PATH
+    echo [ERROR] node not found. Install Node.js 22 LTS and add it to PATH
+    exit /b 1
+)
+REM Vite 8 requires Node 20.19+ / 22.12+. On older Node, vite crashes with a
+REM cryptic SyntaxError and npm may still exit 0, so the build would continue
+REM and embed a STALE frontend into the exe. Fail fast with a clear message.
+for /f "delims=" %%v in ('node -v') do set "NODE_VER=%%v"
+set "NODE_VER=%NODE_VER:v=%"
+for /f "tokens=1,2 delims=." %%a in ("%NODE_VER%") do (
+    set "NODE_MAJOR=%%a"
+    set "NODE_MINOR=%%b"
+)
+set "NODE_OK=0"
+if %NODE_MAJOR% GTR 22 set "NODE_OK=1"
+if %NODE_MAJOR% EQU 22 if %NODE_MINOR% GEQ 12 set "NODE_OK=1"
+if %NODE_MAJOR% EQU 20 if %NODE_MINOR% GEQ 19 set "NODE_OK=1"
+if %NODE_OK% NEQ 1 (
+    echo [ERROR] Node.js v%NODE_VER% is too old. Vite 8 requires Node 20.19+ or 22.12+.
+    echo         Install Node.js 22 LTS from https://nodejs.org then re-run build.cmd.
     exit /b 1
 )
 where cargo >nul 2>nul || (
@@ -48,6 +66,11 @@ if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] frontend build failed
     echo         If the log shows "failed to resolve import", dependencies are
     echo         incomplete. Fix: rmdir /s /q node_modules ^&^& npm install
+    exit /b 1
+)
+if not exist "dist\index.html" (
+    echo [ERROR] frontend build produced no dist\index.html. The vite step may
+    echo         have crashed silently. Check the npm output above.
     exit /b 1
 )
 

@@ -7,8 +7,24 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # ── 工具链检查 ──────────────────────────────────────────────
-command -v node >/dev/null || { echo "[错误] 未找到 node，请安装 Node.js 18+"; exit 1; }
+command -v node >/dev/null || { echo "[错误] 未找到 node，请安装 Node.js 22 LTS"; exit 1; }
 command -v cargo >/dev/null || { echo "[错误] 未找到 cargo，请安装 Rust（rustup.rs）"; exit 1; }
+
+# Vite 8 要求 Node 20.19+ / 22.12+；旧版 Node 会让 vite 报晦涩的 SyntaxError，
+# 且 npm 仍可能返回 0，导致带着过期前端继续构建。这里快速失败。
+node_ver=$(node -v | sed 's/^v//')
+node_major=${node_ver%%.*}
+node_minor=$(echo "$node_ver" | cut -d. -f2)
+node_ok=0
+if (( node_major > 22 )) \
+   || { (( node_major == 22 )) && (( node_minor >= 12 )); } \
+   || { (( node_major == 20 )) && (( node_minor >= 19 )); }; then
+    node_ok=1
+fi
+if (( node_ok == 0 )); then
+    echo "[错误] Node.js v${node_ver} 过旧。Vite 8 要求 Node 20.19+ 或 22.12+，请升级到 Node 22 LTS。"
+    exit 1
+fi
 
 if [[ "${1:-}" == "check" ]]; then
     echo "[check] Rust 工作区编译检查（含全部插件 crate）..."
@@ -31,6 +47,10 @@ echo "[1/4] 构建前端（插件注册表生成 + 打包）..."
 if ! npm run build; then
     echo "[错误] 前端构建失败。若日志中出现 \"failed to resolve import\"，多为依赖不完整所致。"
     echo "        修复：rm -rf node_modules && npm install"
+    exit 1
+fi
+if [[ ! -f dist/index.html ]]; then
+    echo "[错误] 前端构建未产出 dist/index.html，vite 步骤可能静默崩溃，请检查上方 npm 输出。"
     exit 1
 fi
 
