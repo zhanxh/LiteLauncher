@@ -1,0 +1,9 @@
+{
+  "name": "@ll/plugin-weather",
+  "version": "0.1.0",
+  "private": true,
+  "description": "天气查询（纯前端）：逻辑全在 fe/src/index.ts",
+  "type": "module",
+  "main": "src/index.ts",
+  "llplugin": true
+}

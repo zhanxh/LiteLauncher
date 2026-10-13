@@ -1,0 +1,17 @@
+{
+  "id": "ts",
+  "name": "时间戳转换",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/ts",
+  "description": "时间戳转换：/ts 显示当前时间与时间戳；/ts 1700000000 时间戳→日期（自动识别秒/毫秒/微秒/纳秒）；/ts 2026-10-13 14:30 日期→时间戳。回车复制。",
+  "permissions": [],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "🕒",
+    "action_subcommands": [],
+    "hint": "输入时间戳或日期时间，回车复制结果"
+  }
+}

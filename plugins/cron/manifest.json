@@ -1,0 +1,18 @@
+{
+  "id": "cron",
+  "name": "Cron 解析",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/cron",
+  "description": "Cron 表达式解析：/cron 0 9 * * 1-5 输出人类可读描述与未来 5 次触发时间；支持 */n、a-b、列表与 @daily 等宏。回车复制。",
+  "permissions": [],
+  "backend": {
+    "kind": "llp",
+    "entry": ["python3", "cron.py"]
+  },
+  "command": {
+    "icon": "⏰",
+    "action_subcommands": [],
+    "hint": "输入 5 段 cron 表达式，如 0 9 * * 1-5"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "id": "pick",
+  "name": "取色器",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/pick",
+  "description": "取色器：全局热键 alt+p 取光标处的屏幕颜色并复制 HEX（任意界面可用，无需打开启动器）；/pick 可打开浮动取色台（放大镜 + HEX/RGB/HSL，鼠标移入自动冻结），或复制最近取色与多格式值。",
+  "permissions": [
+    "screen",
+    "clipboard:write",
+    "notifications",
+    "settings",
+    "windows",
+    "shortcut:alt+p"
+  ],
+  "views": [
+    {
+      "id": "panel",
+      "title": "LiteLauncher - 取色台",
+      "width": 320.0,
+      "height": 350.0,
+      "min_width": 320.0,
+      "min_height": 350.0,
+      "resizable": false,
+      "decorated": false,
+      "always_on_top": true,
+      "skip_taskbar": true,
+      "focusable": true,
+      "position": "bottom-right",
+      "on_existing": "focus"
+    }
+  ],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "🎨",
+    "action_subcommands": [],
+    "hint": "回车复制颜色值；alt+p 直接取光标处颜色"
+  }
+}

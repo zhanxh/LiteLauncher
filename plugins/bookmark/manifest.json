@@ -1,0 +1,18 @@
+{
+  "id": "bookmark",
+  "name": "书签收藏",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/bookmark",
+  "description": "书签收藏：/bookmark 列出检索；/bookmark add \"标题\" URL 添加；/bookmark del 序号 删除；回车在浏览器打开。",
+  "permissions": ["settings", "process"],
+  "backend": {
+    "kind": "llp",
+    "entry": ["python3", "bookmark.py"]
+  },
+  "command": {
+    "icon": "🔖",
+    "action_subcommands": ["add", "del"],
+    "hint": "回车打开选中书签"
+  }
+}

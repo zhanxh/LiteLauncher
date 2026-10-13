@@ -1,0 +1,18 @@
+{
+  "id": "memo",
+  "name": "备忘速记",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/memo",
+  "description": "备忘速记：/memo add 内容 记一条；/memo 列出最近备忘（可加关键字检索）；/memo del 序号 删除；/memo clear 清空；回车复制内容。",
+  "permissions": ["settings"],
+  "backend": {
+    "kind": "llp",
+    "entry": ["python3", "memo.py"]
+  },
+  "command": {
+    "icon": "📝",
+    "action_subcommands": ["add", "del", "clear"],
+    "hint": "回车复制选中备忘"
+  }
+}

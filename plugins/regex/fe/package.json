@@ -1,0 +1,9 @@
+{
+  "name": "@ll/plugin-regex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "正则测试（纯前端）：逻辑全在 fe/src/index.ts",
+  "type": "module",
+  "main": "src/index.ts",
+  "llplugin": true
+}

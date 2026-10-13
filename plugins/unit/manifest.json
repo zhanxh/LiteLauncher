@@ -1,0 +1,17 @@
+{
+  "id": "unit",
+  "name": "单位换算",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/unit",
+  "description": "单位换算与进制转换：/unit 100 km mi、/unit 100 km（列出同族换算）、/unit 36.5 c f、/unit hex 255（255→0xFF）、/unit bin 10。回车复制结果。",
+  "permissions": [],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "📐",
+    "action_subcommands": [],
+    "hint": "格式：数值 源单位 [目标单位]；或 hex/bin/oct/dec 数值"
+  }
+}

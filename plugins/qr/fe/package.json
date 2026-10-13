@@ -1,0 +1,9 @@
+{
+  "name": "@ll/plugin-qr",
+  "version": "0.1.0",
+  "private": true,
+  "description": "二维码（纯前端）：逻辑全在 fe/src/index.ts",
+  "type": "module",
+  "main": "src/index.ts",
+  "llplugin": true
+}

@@ -1,0 +1,19 @@
+{
+  "id": "weather",
+  "name": "天气查询",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/weather",
+  "description": "天气查询（纯前端）：/weather 北京 联网获取实况与今日预报（数据源 wttr.in，免密）。不带城市则按本机网络位置。",
+  "permissions": [
+    "net:wttr.in"
+  ],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "🌤️",
+    "action_subcommands": [],
+    "hint": "回车联网查询；结果项回车复制"
+  }
+}

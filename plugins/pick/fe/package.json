@@ -1,0 +1,9 @@
+{
+  "name": "@ll/plugin-pick",
+  "version": "0.1.0",
+  "private": true,
+  "description": "取色器（纯前端）：逻辑在 fe/src/index.ts，浮动取色台在 fe/src/panel.tsx",
+  "type": "module",
+  "main": "src/index.ts",
+  "llplugin": true
+}

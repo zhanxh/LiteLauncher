@@ -1,0 +1,17 @@
+{
+  "id": "rand",
+  "name": "随机生成",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/rand",
+  "description": "随机生成：/rand 列出全部，或 /rand uuid、/rand str 24、/rand num 1 100、/rand coin、/rand dice、/rand pick 甲 乙 丙；回车复制结果。",
+  "permissions": [],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "🎲",
+    "action_subcommands": [],
+    "hint": "回车复制选中结果"
+  }
+}

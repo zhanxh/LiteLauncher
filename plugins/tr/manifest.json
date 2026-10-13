@@ -1,0 +1,19 @@
+{
+  "id": "tr",
+  "name": "翻译",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/tr",
+  "description": "翻译（纯前端）：/tr hello world 自动中英互译，/tr en ja hello 指定语言对。数据源 MyMemory，免密（有每日额度）。",
+  "permissions": [
+    "net:api.mymemory.translated.net"
+  ],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "🌏",
+    "action_subcommands": [],
+    "hint": "回车联网翻译；结果项回车复制"
+  }
+}

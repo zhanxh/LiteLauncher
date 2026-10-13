@@ -344,6 +344,21 @@ export const App: Component = () => {
 
   // 选中某一项并执行
   const handleSelectItem = async (item: PanelItem) => {
+    // 通用剪贴板能力：插件经 AfterSelect.copy 声明要复制的文本，壳层不理解插件语义。
+    // 优先走宿主原生剪贴板：窗口即将隐藏时 webview 的 navigator.clipboard 会被策略拒绝。
+    const applyCopy = async (text?: string) => {
+      if (!text) return;
+      try {
+        if (isTauriEnvironment()) {
+          await invoke('clipboard_write', { text });
+        } else {
+          await navigator.clipboard.writeText(text);
+        }
+      } catch {
+        showToast('复制失败（剪贴板不可用）');
+      }
+    };
+
     // 1. 候选指令补全（例如选中 /todo，在输入框填入 "/todo "）
     if (item.metadata?.trigger) {
       setInputValue(item.metadata.trigger + ' ');
@@ -356,6 +371,7 @@ export const App: Component = () => {
       if (provider?.onSelect) {
         const after = (await provider.onSelect(item)) || {};
         recordHistory(item.title, provider.id);
+        await applyCopy(after.copy);
         if (after.toast) {
           showToast(after.toast);
         }
@@ -370,12 +386,13 @@ export const App: Component = () => {
       return;
     }
 
-    // 3. 指令插件面板项：壳层行为由插件经 AfterSelect 声明（关窗/清空/提示/刷新）
+    // 3. 指令插件面板项：壳层行为由插件经 AfterSelect 声明（关窗/清空/提示/刷新/复制）
     const result = parseCommand(inputValue());
     if (result.plugin && result.plugin.onSelect) {
       const after = (await result.plugin.onSelect(item)) || {};
       recordHistory(result.plugin.trigger, result.plugin.id);
 
+      await applyCopy(after.copy);
       if (after.toast) {
         showToast(after.toast);
       }

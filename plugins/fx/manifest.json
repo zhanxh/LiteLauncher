@@ -1,0 +1,19 @@
+{
+  "id": "fx",
+  "name": "汇率换算",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/fx",
+  "description": "汇率换算（纯前端）：/fx 100 usd cny、/fx usd cny、/fx usd（列出主要货币）。数据源 open.er-api.com，每日更新。",
+  "permissions": [
+    "net:open.er-api.com"
+  ],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "💱",
+    "action_subcommands": [],
+    "hint": "回车联网查询；结果项回车复制"
+  }
+}

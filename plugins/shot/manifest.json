@@ -1,0 +1,24 @@
+{
+  "id": "shot",
+  "name": "屏幕截图",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/shot",
+  "description": "屏幕截图：/shot 截取光标所在屏幕、/shot 2 指定显示器、/shot -d3 延时 3 秒；截图前自动隐藏 LiteLauncher，存盘后路径进剪贴板，可用系统查看器打开或打开所在文件夹。全局热键 alt+shift+s 免开启动器直接截图。",
+  "permissions": [
+    "screen",
+    "clipboard:write",
+    "notifications",
+    "settings",
+    "process",
+    "shortcut:alt+shift+s"
+  ],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "📸",
+    "action_subcommands": [],
+    "hint": "回车截图；路径自动进剪贴板"
+  }
+}

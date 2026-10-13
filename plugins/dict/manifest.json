@@ -1,0 +1,20 @@
+{
+  "id": "dict",
+  "name": "英文词典",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/dict",
+  "description": "英文词典（纯前端）：/dict hello 查音标、词性与释义，回车打开发音。数据源 dictionaryapi.dev，免密。",
+  "permissions": [
+    "net:api.dictionaryapi.dev",
+    "process"
+  ],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "📖",
+    "action_subcommands": [],
+    "hint": "回车联网查询；结果项回车复制"
+  }
+}

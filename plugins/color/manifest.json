@@ -1,0 +1,17 @@
+{
+  "id": "color",
+  "name": "颜色转换",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/color",
+  "description": "颜色格式转换：/color #ff8800、/color rgb(255,136,0)、/color hsl(30,100%,50%)、/color 255,136,0 输出 HEX/RGB/RGBA/HSL/HSV 与互补色；回车复制。",
+  "permissions": [],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "🎨",
+    "action_subcommands": [],
+    "hint": "输入 HEX / rgb() / hsl()，回车复制结果"
+  }
+}

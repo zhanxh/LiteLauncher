@@ -1,0 +1,17 @@
+{
+  "id": "json",
+  "name": "JSON 工具",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/json",
+  "description": "JSON 工具：/json {…} 解析并给出美化/压缩/转义结果与结构摘要；解析失败会指出错误位置。回车复制结果。",
+  "permissions": [],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "🧾",
+    "action_subcommands": [],
+    "hint": "粘贴 JSON，回车复制美化/压缩结果"
+  }
+}

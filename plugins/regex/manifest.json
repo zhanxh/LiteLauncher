@@ -1,0 +1,17 @@
+{
+  "id": "regex",
+  "name": "正则测试",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/regex",
+  "description": "正则工具：/regex 列出常用正则速查；/regex 模式 校验表达式；/regex 模式 样本文本 显示匹配与分组。回车复制。",
+  "permissions": [],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "🧩",
+    "action_subcommands": [],
+    "hint": "空格分隔：模式 样本文本（模式含空格请用引号）"
+  }
+}

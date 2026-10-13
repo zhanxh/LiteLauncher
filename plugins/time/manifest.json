@@ -1,0 +1,18 @@
+{
+  "id": "time",
+  "name": "世界时钟",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/time",
+  "description": "世界时钟：/time 列出主要城市当前时间与相对本地的时差；/time 纽约 只看指定城市；回车复制时间。",
+  "permissions": [],
+  "backend": {
+    "kind": "llp",
+    "entry": ["python3", "worldtime.py"]
+  },
+  "command": {
+    "icon": "🌍",
+    "action_subcommands": [],
+    "hint": "回车复制该城市时间"
+  }
+}

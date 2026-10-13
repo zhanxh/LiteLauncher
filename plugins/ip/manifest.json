@@ -1,0 +1,19 @@
+{
+  "id": "ip",
+  "name": "IP 查询",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/ip",
+  "description": "IP 归属查询（纯前端）：/ip 查本机公网 IP 与归属地，/ip 8.8.8.8 查指定 IP。数据源 ipwho.is，免密。",
+  "permissions": [
+    "net:ipwho.is"
+  ],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "🌐",
+    "action_subcommands": [],
+    "hint": "回车联网查询；结果项回车复制"
+  }
+}

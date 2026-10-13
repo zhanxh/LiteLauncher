@@ -1,0 +1,17 @@
+{
+  "id": "text",
+  "name": "文本处理",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/text",
+  "description": "文本处理：/text 文本 列出全部（大写/小写/反转/命名风格/词数），或 /text snake 文本 只做指定变换；回车复制结果。",
+  "permissions": [],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "🔤",
+    "action_subcommands": [],
+    "hint": "输入要处理的文本，回车复制选中结果"
+  }
+}

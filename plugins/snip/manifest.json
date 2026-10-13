@@ -1,0 +1,18 @@
+{
+  "id": "snip",
+  "name": "文本片段",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/snip",
+  "description": "文本片段/快捷短语：/snip 检索列表；/snip add \"标题\" 内容 添加；/snip del 序号 删除；回车复制选中片段。",
+  "permissions": ["settings"],
+  "backend": {
+    "kind": "llp",
+    "entry": ["python3", "snip.py"]
+  },
+  "command": {
+    "icon": "✂️",
+    "action_subcommands": ["add", "del"],
+    "hint": "回车复制选中片段"
+  }
+}

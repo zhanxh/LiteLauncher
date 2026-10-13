@@ -1,0 +1,19 @@
+{
+  "id": "qr",
+  "name": "二维码",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/qr",
+  "description": "二维码生成：/qr 文本 生成二维码，回车在默认浏览器打开图片（联网），也可复制二维码链接或原文。",
+  "permissions": [
+    "process"
+  ],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "🔳",
+    "action_subcommands": [],
+    "hint": "回车打开二维码图片；或复制链接/原文"
+  }
+}

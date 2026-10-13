@@ -1,0 +1,18 @@
+{
+  "id": "cheat",
+  "name": "命令速查",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/cheat",
+  "description": "命令/快捷键速查：/cheat 列出（含内置常用命令）；/cheat git 按关键字过滤；/cheat add \"标题\" 内容 添加；/cheat del 序号 删除；回车复制。",
+  "permissions": ["settings"],
+  "backend": {
+    "kind": "llp",
+    "entry": ["python3", "cheat.py"]
+  },
+  "command": {
+    "icon": "📚",
+    "action_subcommands": ["add", "del"],
+    "hint": "回车复制选中条目"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "pwd",
+  "name": "密码生成器",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/pwd",
+  "description": "强密码生成：/pwd 列出多种方案；/pwd 24 指定长度；/pwd 16 easy（无易混淆字符）或 /pwd 20 nosym（不含符号）；回车复制。",
+  "permissions": [],
+  "backend": {
+    "kind": "llp",
+    "entry": ["python3", "pwgen.py"]
+  },
+  "command": {
+    "icon": "🔑",
+    "action_subcommands": [],
+    "hint": "回车复制选中密码"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "cost",
+  "name": "快速记账",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/cost",
+  "description": "快速记账：/cost add 25 午餐 记一笔；/cost 查看今日合计与最近记录；/cost month 查看本月合计与分类；/cost del 序号 删除。",
+  "permissions": ["settings"],
+  "backend": {
+    "kind": "llp",
+    "entry": ["python3", "cost.py"]
+  },
+  "command": {
+    "icon": "💰",
+    "action_subcommands": ["add", "del"],
+    "hint": "回车查看该笔详情"
+  }
+}

@@ -95,12 +95,14 @@ function makeExternalPlugin(info: ExternalPluginInfo): CommandPlugin {
           clearInput?: boolean;
           toast?: string;
           refresh?: boolean;
+          copy?: string;
         }>('select', { id: item.id, metadata: item.metadata ?? {} });
         return {
           close: res?.close,
           clearInput: res?.clearInput,
           toast: res?.toast,
           refresh: res?.refresh,
+          copy: res?.copy,
         };
       } catch (err: any) {
         return { toast: `${info.name}: ${err?.message || err}` };
