@@ -1,0 +1,17 @@
+{
+  "id": "hotkey",
+  "name": "全局热键速查",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/hotkey",
+  "description": "全局热键速查表：列出当前真正生效的全局热键（免开启动器即可触发的那些），回车复制对应指令。",
+  "permissions": [],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "⌨️",
+    "action_subcommands": [],
+    "hint": "回车复制该热键绑定的指令"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "find",
+  "name": "文件搜索",
+  "version": "0.2.0",
+  "api_version": "^1",
+  "trigger": "/find",
+  "description": "文件搜索（走系统索引，毫秒级）：/find Cargo.toml 搜文件名，/find ext:rs clippy 用字段语法，/find size:>500mb desc size 按体积倒序；回车打开，目录自动记入 recent。Windows 走 Everything，Linux 走 plocate。",
+  "permissions": ["process", "settings"],
+  "backend": {
+    "kind": "llp",
+    "entry": ["python3", "find.py"]
+  },
+  "command": {
+    "icon": "🔍",
+    "action_subcommands": ["recent", "open", "dir", "where"],
+    "hint": "支持 ext:/size:/dm:/name:/path:/type: 字段语法；desc <字段> 排序，limit N 限制条数",
+    "queryDebounceMs": 280
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "id": "clip",
+  "name": "剪贴板历史",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/clip",
+  "description": "剪贴板历史：/clip 查看最近复制的内容并回填，/clip <关键词> 搜索历史。数据只存本地，疑似密码/Token 的内容不会被记录，条数与有效期有上限，可随时暂停监听。",
+  "permissions": [
+    "clipboard:history",
+    "clipboard:write",
+    "settings",
+    "notifications"
+  ],
+  "backend": {
+    "kind": "none"
+  },
+  "command": {
+    "icon": "📋",
+    "action_subcommands": [],
+    "hint": "回车复制回填；隐私设置与暂停监听在面板内"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "@ll/plugin-clip",
+  "version": "0.1.0",
+  "private": true,
+  "description": "剪贴板历史（纯前端）：隐私优先的历史记录与回填",
+  "type": "module",
+  "main": "src/index.ts",
+  "llplugin": true
+}

@@ -1,0 +1,9 @@
+{
+  "name": "@ll/plugin-hotkey",
+  "version": "0.1.0",
+  "private": true,
+  "description": "全局热键速查（纯前端）：汇总各插件自报的全局热键成速查表",
+  "type": "module",
+  "main": "src/index.ts",
+  "llplugin": true
+}
