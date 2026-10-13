@@ -122,12 +122,33 @@ fn toggle_main_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 壳层原生剪贴板写入（插件 AfterSelect.copy 的落点）
+///
+/// 不用 webview 的 navigator.clipboard：窗口失焦时浏览器会拒绝写入，
+/// 而"选中即复制"通常紧接着就隐藏窗口，异步竞态下极易失败。
+#[tauri::command]
+fn clipboard_write(app: AppHandle, text: String) -> Result<(), String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    app.clipboard()
+        .write_text(text)
+        .map_err(|e| format!("写入剪贴板失败: {}", e))
+}
+
+/// 壳层原生剪贴板读取（如后续的"粘贴即搜"）；内容非文本 → None
+#[tauri::command]
+fn clipboard_read(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    Ok(app.clipboard().read_text().ok())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        // 原生剪贴板：插件走 svc.clipboard.*，壳层走 clipboard_write/read
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             // 1. 初始化核心 SQLite 数据库（command_history + app_settings）
             let db_conn = match db::init_db() {
@@ -177,6 +198,15 @@ pub fn run() {
                     ext_dirs.push((parent.join("plugins"), "便携目录（主程序旁 plugins）".into()));
                 }
             }
+            // 开发期：仓库 plugins/ 即"便携目录"的对照物，直接纳入扫描。
+            // 好处有二：① 改完插件不必每次 plugin:install；② backend.kind=none 的
+            // 纯前端插件能读到自己的 manifest——权限门控（如 /qr 需 process）与
+            // 设置面板的启用/禁用都依赖它。
+            #[cfg(debug_assertions)]
+            ext_dirs.push((
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins"),
+                "开发期仓库 plugins/".into(),
+            ));
             host.register_external_plugins(&ext_dirs, Arc::clone(&plugin_log));
             host.init_all(plugin_log);
 
@@ -262,6 +292,9 @@ pub fn run() {
             hide_main_window,
             show_main_window,
             toggle_main_window,
+            // 壳层原生剪贴板（插件通用 copy 能力与"粘贴即搜"）
+            clipboard_write,
+            clipboard_read,
             settings::get_setting,
             settings::set_setting,
             settings::get_app_info,

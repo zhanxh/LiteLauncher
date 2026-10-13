@@ -261,7 +261,7 @@ fn reader_loop(proc: Arc<LlpProc>, stdout: ChildStdout, ctx: PluginContext, plug
         if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
             let req_id = msg.get("id").cloned().unwrap_or(JsonValue::Null);
             let params = msg.get("params").cloned().unwrap_or(json!({}));
-            let response = match handle_svc(&ctx, method, &params) {
+            let response = match crate::services::dispatch_svc(&ctx, method, &params) {
                 Ok(v) => json!({"jsonrpc": "2.0", "id": req_id, "result": v}),
                 Err(e) => json!({"jsonrpc": "2.0", "id": req_id, "error": {"message": e.to_string()}}),
             };
@@ -296,71 +296,47 @@ fn reader_loop(proc: Arc<LlpProc>, stdout: ChildStdout, ctx: PluginContext, plug
 
 type ChildStdout = std::process::ChildStdout;
 
-/// 反向服务分发：外部插件没有任何宿主句柄，svc.* 全部经门控 PluginContext 代理
-fn handle_svc(ctx: &PluginContext, method: &str, params: &JsonValue) -> Result<JsonValue, PluginError> {
-    let p_str = |key: &str| params.get(key).and_then(|v| v.as_str()).map(String::from);
-    let p_arr = |key: &str| -> Vec<JsonValue> {
-        params.get(key).and_then(|v| v.as_array()).cloned().unwrap_or_default()
-    };
+// ─────────────────────────────────────────────────────────────────────────────
+// SvcBackend —— `backend.kind = "none"` 的纯前端插件后端（设计文档 §4.6）
+//
+// 这类插件没有 Rust crate、也没有 sidecar：它的全部业务逻辑都在 `plugins/<id>/fe`
+// 的单文件 TS 里，除了宿主保留方法名空间 `svc.*` 之外不依赖任何后端能力。
+// 因此后端只需把 `svc.*` 原样转给统一分发器；非 `svc.*` 方法视为插件作者笔误。
+//
+// 保留这类后端实体（而不是让 plugin_call 直接短路）的好处：
+//   - 与内置/LLP 插件共用同一张注册表 → plugin_list / 设置面板启用禁用天然可用
+//   - 权限门控仍由 manifest 声明驱动，不因"没有后端"而放宽
+// ─────────────────────────────────────────────────────────────────────────────
 
-    match method {
-        "svc.db.execute" => {
-            let db = ctx
-                .db
-                .as_ref()
-                .ok_or_else(|| PluginError::permission_denied("db"))?;
-            let sql = p_str("sql").ok_or_else(|| PluginError::bad_params("缺少 sql"))?;
-            let affected = db.execute(&sql, &p_arr("params"))?;
-            Ok(json!(affected))
+pub struct SvcBackend {
+    manifest: PluginManifest,
+    ctx: PluginContext,
+}
+
+impl SvcBackend {
+    pub fn new(manifest: PluginManifest, ctx: PluginContext) -> Self {
+        Self { manifest, ctx }
+    }
+}
+
+impl PluginBackend for SvcBackend {
+    fn manifest(&self) -> PluginManifest {
+        self.manifest.clone()
+    }
+
+    fn init(&self, _ctx: PluginContext) -> Result<(), PluginError> {
+        self.ctx.log.log(
+            &self.manifest.id,
+            "纯前端插件已注册（kind=none，逻辑随前端包分发）",
+        );
+        Ok(())
+    }
+
+    fn call(&self, method: &str, params: JsonValue) -> Result<JsonValue, PluginError> {
+        if !method.starts_with("svc.") {
+            return Err(PluginError::unknown_method(method));
         }
-        "svc.db.query" => {
-            let db = ctx
-                .db
-                .as_ref()
-                .ok_or_else(|| PluginError::permission_denied("db"))?;
-            let sql = p_str("sql").ok_or_else(|| PluginError::bad_params("缺少 sql"))?;
-            let rows = db.query(&sql, &p_arr("params"))?;
-            Ok(JsonValue::Array(rows))
-        }
-        "svc.notify.send" => {
-            let notify = ctx
-                .notify
-                .as_ref()
-                .ok_or_else(|| PluginError::permission_denied("notifications"))?;
-            let title = p_str("title").ok_or_else(|| PluginError::bad_params("缺少 title"))?;
-            let body = p_str("body").ok_or_else(|| PluginError::bad_params("缺少 body"))?;
-            notify.send(&title, &body)?;
-            Ok(JsonValue::Null)
-        }
-        "svc.process.launch" => {
-            let process = ctx
-                .process
-                .as_ref()
-                .ok_or_else(|| PluginError::permission_denied("process"))?;
-            let target = p_str("target").ok_or_else(|| PluginError::bad_params("缺少 target"))?;
-            process.launch(&target)?;
-            Ok(JsonValue::Null)
-        }
-        "svc.settings.get" => {
-            let key = p_str("key").ok_or_else(|| PluginError::bad_params("缺少 key"))?;
-            Ok(match ctx.settings.get(&key) {
-                Some(v) => json!(v),
-                None => JsonValue::Null,
-            })
-        }
-        "svc.settings.set" => {
-            let key = p_str("key").ok_or_else(|| PluginError::bad_params("缺少 key"))?;
-            let value = p_str("value").ok_or_else(|| PluginError::bad_params("缺少 value"))?;
-            ctx.settings.set(&key, &value)?;
-            Ok(JsonValue::Null)
-        }
-        "svc.log.write" => {
-            let level = p_str("level").unwrap_or_else(|| "info".into());
-            let message = p_str("message").unwrap_or_default();
-            ctx.log.log(&level, &message);
-            Ok(JsonValue::Null)
-        }
-        _ => Err(PluginError::unknown_method(method)),
+        crate::services::dispatch_svc(&self.ctx, method, &params)
     }
 }
 
@@ -408,8 +384,9 @@ impl HostState {
                         continue;
                     }
                 };
-                if manifest.backend.kind != "llp" {
-                    continue; // 内置形态的 manifest 不属于外部插件目录
+                let is_svc_only = manifest.backend.kind == "none";
+                if manifest.backend.kind != "llp" && !is_svc_only {
+                    continue; // builtin 形态的 manifest 不属于外部插件目录
                 }
                 // 同 id 去重：高优先级来源先注册，低优先级静默跳过
                 if !seen.insert(manifest.id.clone()) {
@@ -433,7 +410,12 @@ impl HostState {
                     Arc::clone(&log),
                 );
                 (log)(&manifest.id, &format!("来源: {}", source_label));
-                self.register(Arc::new(LlpBackend::new(manifest, plugin_dir, ctx)));
+                if is_svc_only {
+                    // 纯前端插件（kind=none）：无 sidecar，逻辑在前端包里，后端只应答 svc.*
+                    self.register(Arc::new(SvcBackend::new(manifest, ctx)));
+                } else {
+                    self.register(Arc::new(LlpBackend::new(manifest, plugin_dir, ctx)));
+                }
                 count += 1;
             }
         }

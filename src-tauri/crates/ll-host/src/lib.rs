@@ -246,6 +246,43 @@ pub(crate) fn build_context_from_parts(
         } else {
             None
         },
+        // 剪贴板：写/读分别授权；两者都未声明时不注入句柄
+        clipboard: match app {
+            Some(app) if granted("clipboard:write") || granted("clipboard:read") => {
+                Some(Arc::new(services::HostClipboardApi {
+                    app: app.clone(),
+                    can_write: granted("clipboard:write"),
+                    can_read: granted("clipboard:read"),
+                }))
+            }
+            _ => None,
+        },
+        // 屏幕捕获（D 组）：截图与取色都要宿主窗口上下文（读全局光标位置）
+        screen: match (granted("screen"), app) {
+            (true, Some(app)) => Some(Arc::new(services::HostScreenApi {
+                app: Some(app.clone()),
+                plugin_id: manifest.id.clone(),
+            })),
+            _ => None,
+        },
+        // 全局热键（D 组）：manifest 逐条声明 `shortcut:<accel>`，无通配
+        shortcuts: {
+            let allowed: Vec<String> = manifest
+                .permissions
+                .iter()
+                .filter_map(|p| p.strip_prefix("shortcut:"))
+                .map(services::normalize_accel)
+                .filter(|accel| !accel.is_empty())
+                .collect();
+            match (allowed.is_empty(), app) {
+                (false, Some(app)) => Some(Arc::new(services::HostShortcutApi {
+                    app: Some(app.clone()),
+                    plugin_id: manifest.id.clone(),
+                    allowed,
+                })),
+                _ => None,
+            }
+        },
         events: Arc::new(services::HostEventApi {
             app: app.cloned(),
             plugin_id: manifest.id.clone(),
@@ -258,5 +295,81 @@ pub(crate) fn build_context_from_parts(
             f: log,
             plugin_id: manifest.id.clone(),
         }),
+    }
+}
+
+/// 未注册插件的兜底 manifest：只放行"壳层级安全能力"。
+///
+/// 触发场景：随前端包一并编译进来的纯前端插件（kind=none）不在插件目录里，
+/// 宿主扫描不到、却仍会被前端 `ctx.call('svc.*')` 命中。这些能力即便放开也无法越权——
+/// settings/secret 一律按 `pluginId.` 前缀隔离，clipboard/log/notify/events 不触达用户数据。
+/// 反向地，db / process / net 一律不授予，避免"无 manifest 即无门控"的漏洞。
+fn shell_safe_manifest(plugin_id: &str) -> PluginManifest {
+    PluginManifest {
+        id: plugin_id.to_string(),
+        name: plugin_id.to_string(),
+        version: "0.0.0".to_string(),
+        api_version: "^1".to_string(),
+        trigger: String::new(),
+        description: String::new(),
+        permissions: [
+            "settings",
+            "clipboard:write",
+            "clipboard:read",
+            "notifications",
+            "events",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect(),
+        views: Vec::new(),
+        settings: Vec::new(),
+        backend: Default::default(),
+        command: None,
+    }
+}
+
+impl HostState {
+    /// 构造用于应答 `svc.*` 的门控上下文（设计文档 §4.6）。
+    ///
+    /// - **已注册插件**：按其 manifest 权限门控，与 init() 时完全一致
+    /// - **未注册插件**：退回 [`shell_safe_manifest`] 的安全权限集
+    pub(crate) fn svc_context(&self, plugin_id: &str) -> Result<PluginContext, String> {
+        let core_db = self
+            .core_db
+            .read()
+            .map_err(|_| "数据库句柄锁不可用".to_string())?
+            .clone()
+            .ok_or("数据库未初始化")?;
+
+        let manifest = {
+            let map = self
+                .plugins
+                .read()
+                .map_err(|_| "插件注册表锁不可用".to_string())?;
+            map.get(plugin_id).map(|e| e.backend.manifest())
+        }
+        .unwrap_or_else(|| shell_safe_manifest(plugin_id));
+
+        // 仅在声明 db 权限时才触碰插件库文件（避免为无 db 权限的插件凭空建库）
+        let plugin_conn = if manifest.permissions.iter().any(|p| p == "db") {
+            self.db_registry
+                .read()
+                .unwrap()
+                .as_ref()
+                .and_then(|r| r.cached(plugin_id).ok())
+        } else {
+            None
+        };
+
+        let app = self.app.read().unwrap().clone();
+        let log: LogFn = Arc::new(|_, _| {});
+        Ok(build_context_from_parts(
+            app.as_ref(),
+            &manifest,
+            plugin_conn,
+            core_db,
+            log,
+        ))
     }
 }

@@ -10,6 +10,10 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 /// 插件方法统一调用入口。async 命令 → 运行于工作线程，DB 操作不阻塞主线程
+///
+/// `svc.*` 是**宿主保留方法名空间**（设计文档 §4.6）：由宿主统一分发器直接应答，
+/// 不进入插件后端分发表。由此"纯前端插件（无 crate / 无 sidecar）"与"带后端插件"
+/// 看到的能力完全一致，插件形态与能力集合彻底解耦。
 #[tauri::command]
 pub async fn plugin_call(
     state: tauri::State<'_, HostState>,
@@ -17,6 +21,23 @@ pub async fn plugin_call(
     method: String,
     params: Value,
 ) -> Result<Value, String> {
+    if method.starts_with("svc.") {
+        // 已注册插件仍需尊重启用状态；未注册（纯前端插件）无此概念，直接放行
+        {
+            let map = state
+                .plugins
+                .read()
+                .map_err(|_| "插件注册表锁不可用".to_string())?;
+            if let Some(entry) = map.get(&plugin_id) {
+                if !entry.enabled {
+                    return Err(format!("插件已禁用: {}", plugin_id));
+                }
+            }
+        }
+        let ctx = state.svc_context(&plugin_id)?;
+        return crate::services::dispatch_svc(&ctx, &method, &params).map_err(|e| e.to_string());
+    }
+
     let backend = {
         let map = state
             .plugins

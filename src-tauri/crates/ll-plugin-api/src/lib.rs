@@ -29,6 +29,8 @@ pub enum PluginErrorCode {
     Window,
     /// 通知服务失败
     Notify,
+    /// 资源冲突（如全局热键已被其他插件占用）
+    Conflict,
     /// 其他内部错误
     Internal,
 }
@@ -311,6 +313,16 @@ pub trait EventApi: Send + Sync {
     fn emit(&self, event: &str, payload: JsonValue) -> Result<(), PluginError>;
 }
 
+/// 剪贴板（M5）：写入与读取**分别授权**（`clipboard:write` / `clipboard:read`）。
+/// 读取可能暴露用户隐私（密码、验证码），故与写入拆成两个权限；
+/// 无 GUI 会话（如 headless 启动）时宿主返回 Err，插件应自行降级
+pub trait ClipboardApi: Send + Sync {
+    /// 写入纯文本（覆盖剪贴板当前内容）
+    fn write(&self, text: &str) -> Result<(), PluginError>;
+    /// 读取纯文本；剪贴板为空或非文本内容 → Ok(None)
+    fn read(&self) -> Result<Option<String>, PluginError>;
+}
+
 /// HTTP 请求描述（M7）
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HttpRequest {
@@ -337,6 +349,123 @@ pub trait HttpApi: Send + Sync {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 屏幕捕获（D 组）：截图与取色
+//
+// 平台 API（xcap / GDI / CGDisplay …）全部关在 ll-host 里，插件只表达
+// "要哪块屏幕 / 哪个点"，坐标一律是**桌面全局物理像素**。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 显示器描述（`x`/`y` 为桌面全局物理坐标，可为负——副屏位于主屏左侧时）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorInfo {
+    /// 序号（0 起，与 `capture` 的 `monitor` 参数一致）
+    pub index: usize,
+    pub name: String,
+    pub primary: bool,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale_factor: f32,
+}
+
+/// 截屏请求
+#[derive(Debug, Clone, Default)]
+pub struct CaptureRequest {
+    /// `None` = 主显示器；`Some(-1)` = 光标所在显示器；`Some(n)` = 第 n 个（0 起）
+    pub monitor: Option<i32>,
+    /// 目标文件绝对路径（PNG；缺省位置由 `default_screenshot_dir` 决定）
+    pub path: std::path::PathBuf,
+    /// 为真时宿主先隐藏全部 LiteLauncher 窗口再捕获，收工后复原
+    /// （否则启动器自己会被拍进画面——截图工具的基本要求）
+    pub hide_windows: bool,
+    /// 隐藏后、捕获前的等待毫秒数（让用户收起菜单/移开鼠标），宿主上限 10s
+    pub delay_ms: u32,
+}
+
+/// 截屏结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureResult {
+    /// 落盘路径
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+    /// 实际捕获的显示器序号
+    pub monitor: usize,
+    /// 文件字节数
+    pub bytes: u64,
+}
+
+/// 单像素采样（`hex` 为规范大写 `#RRGGBB`）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PixelSample {
+    pub x: i32,
+    pub y: i32,
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    /// `#RRGGBB`（大写）
+    pub hex: String,
+}
+
+/// 放大镜取样：以 (x, y) 为中心的一片像素方格（行优先）
+///
+/// 不返回图片而返回颜色数组，是为了让前端用纯 CSS 网格放大——
+/// 省掉 PNG 编解码与 base64 往返，且放大后天然是"硬边像素"效果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PixelGrid {
+    pub x: i32,
+    pub y: i32,
+    /// 请求的取样半径（方格边长 = 2r+1，落到屏幕外时会被裁剪）
+    pub radius: u32,
+    pub cols: u32,
+    pub rows: u32,
+    /// 行优先的 `#RRGGBB` 数组，长度 = cols * rows
+    pub cells: Vec<String>,
+    /// 中心像素在 cells 中的下标（= 裁剪后中心所在位置）
+    pub center: usize,
+}
+
+/// 屏幕捕获（D 组）：manifest 需声明 `screen` 权限。
+///
+/// 宿主负责多显示器定位、坐标系归一化（物理像素）、PNG 编码落盘与窗口避让；
+/// 插件不接触任何平台 API，也无法读取屏幕以外的东西。
+pub trait ScreenApi: Send + Sync {
+    /// 列出全部显示器（顺序稳定，与 `capture` 的 `monitor` 参数对应）
+    fn list_monitors(&self) -> Result<Vec<MonitorInfo>, PluginError>;
+    /// 截图并落盘，返回路径与尺寸
+    fn capture(&self, req: &CaptureRequest) -> Result<CaptureResult, PluginError>;
+    /// 单点取色（x/y 为桌面全局物理坐标）
+    fn pixel(&self, x: i32, y: i32) -> Result<PixelSample, PluginError>;
+    /// 放大镜取样：以 (x, y) 为中心、边长 2*radius+1 的像素方格
+    fn pixel_grid(&self, x: i32, y: i32, radius: u32) -> Result<PixelGrid, PluginError>;
+    /// 当前鼠标位置（桌面全局物理坐标）；无 GUI 会话时返回错误
+    fn cursor_position(&self) -> Result<(i32, i32), PluginError>;
+    /// 本插件截图默认落盘目录（宿主按插件 id 隔离）
+    fn default_screenshot_dir(&self) -> std::path::PathBuf;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 全局热键（D 组）
+//
+// 设计文档 §4.5：权限声明为 `shortcut:<accel>`，**逐条白名单、无通配**。
+// 热键是"用户在任何界面下都能被唤起"的能力，因此比普通服务更敏感：
+// 宿主登记并仲裁冲突（先到先得），触发时以 `plugin-shortcut` 事件回传，
+// 由前端 `ctx.shortcuts.on(accel, handler)` 接收——插件拿不到原始按键流。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 全局热键（注册 / 注销 / 查询）
+pub trait ShortcutApi: Send + Sync {
+    /// 注册全局热键（accel 形如 `alt+p`；幂等：同一插件重复注册返回 Ok）。
+    /// 未在 manifest 声明、或已被其他插件占用 → Err
+    fn register(&self, accel: &str) -> Result<(), PluginError>;
+    /// 注销本插件注册的热键（未注册则静默成功）
+    fn unregister(&self, accel: &str) -> Result<(), PluginError>;
+    /// 本插件当前已注册的加速键（规范小写形式）
+    fn list(&self) -> Vec<String>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PluginContext 与插件 trait
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -349,6 +478,11 @@ pub struct PluginContext {
     pub process: Option<Arc<dyn ProcessApi>>,
     pub secrets: Option<Arc<dyn SecretApi>>,
     pub http: Option<Arc<dyn HttpApi>>,
+    pub clipboard: Option<Arc<dyn ClipboardApi>>,
+    /// 屏幕捕获（D 组）：声明 `screen` 权限时才注入
+    pub screen: Option<Arc<dyn ScreenApi>>,
+    /// 全局热键（D 组）：声明 `shortcut:<accel>` 时才注入
+    pub shortcuts: Option<Arc<dyn ShortcutApi>>,
     pub events: Arc<dyn EventApi>,
     pub settings: Arc<dyn SettingsApi>,
     pub log: Arc<dyn LogApi>,

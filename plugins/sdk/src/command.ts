@@ -50,6 +50,11 @@ export interface AfterSelect {
   toast?: string;
   /** 重新执行本插件 query 刷新面板（如切换待办完成状态后） */
   refresh?: boolean;
+  /**
+   * 复制文本到系统剪贴板（壳层执行 navigator.clipboard.writeText）。
+   * 壳层只认这个通用能力，不理解任何具体插件——工具类插件的"选中即复制"由此实现。
+   */
+  copy?: string;
 }
 
 /**

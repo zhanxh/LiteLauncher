@@ -8,6 +8,13 @@ description = "LiteLauncher 插件宿主：注册表、统一 IPC 通道、门�
 ll-plugin-api = { path = "../ll-plugin-api" }
 tauri = { version = "2" }
 tauri-plugin-notification = "2"
+tauri-plugin-clipboard-manager = "2"
+# 全局热键（D 组）：插件经 ShortcutApi 注册，宿主负责登记与冲突仲裁
+tauri-plugin-global-shortcut = "2"
+# 屏幕捕获（D 组）：xcap 跨平台截图；image 负责 PNG 编码落盘
+xcap = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+dirs = "5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled-full"] }
