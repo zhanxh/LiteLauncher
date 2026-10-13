@@ -393,6 +393,15 @@ fn open_on_main(
         let _ = window.show();
     }
 
+    // Windows 11 会给无边框窗口画一圈 1px 系统边框（浅色主题下是白色），
+    // 挂件类小窗上非常扎眼。用 DWM 属性去边；Win10 无此属性，调用失败无害。
+    // 必须在窗口可见后调：部分系统版本上不可见窗口的 DWM 属性会被重置。
+    if !spec.decorated {
+        // hwnd() 仅 cfg(windows) 存在；非 Windows 上窗口本来没有 DWM 边框
+        #[cfg(target_os = "windows")]
+        crate::desktop::remove_window_border(window.hwnd().map(|h| h.0 as isize).unwrap_or(0));
+    }
+
     // 兜底定时关闭：前端异常未自关时防弹窗残留
     if let Some(param_key) = spec.fallback_close_param.as_ref() {
         if let Some(dur) = params

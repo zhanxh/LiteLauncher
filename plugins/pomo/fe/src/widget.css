@@ -4,61 +4,53 @@
    颜色一律取 @ll/ui 的设计令牌（tokens.css），因此自动跟随宿主明暗主题，
    不需要在这里硬编码任何色值——硬编码会在用户切主题时变成一块脏斑。
 
-   尺寸按"贴在桌面上不碍事"设计：常态只有圆环+倒计时+标签，
-   操作按钮仅在悬停时出现（见 .pw-actions），避免小窗常驻按钮抢焦点。
-
-   ⚠️ 透明处理（踩过坑）：
-   index.html 里有一条全局的 `html, body, #root { background-color:#1a1d24 !important }`
-   ——带 `!important`，优先级高于插件的普通 CSS。挂件窗口若不透明，
-   这条底色会填满整个窗口，于是：
-     · `.pw-root` 的 border-radius 切出的四角露出 #1a1d24 矩形角
-     · 加上 border 只画在左右和下方 → 视觉上就是"挂件左右下有个怪边框"
-   所以挂件必须让窗口本身透明（manifest 的 transparent:true），
-   并在这里用 !important 强制把 html/body/#root 背景清成透明。
-   同理挂件自己的卡片圆角要画在**内层元素**上，而不是根元素——
-   根元素铺满窗口时圆角没有意义。
+   ⚠️ 底色策略（踩过两次坑后的决定）：
+   上一版赌「窗口透明 + CSS 清底色」能生效，真机上 WebView2 仍露白底——
+   挂件四周一圈白色。现在改为**不依赖透明**：
+   html/body/#root 底色直接用 --bg-solid（与卡片同色），
+   卡片铺满整个窗口。这样无论 WebView 透不透明，
+   窗口永远是一块干净的同色面板；圆角交给 Windows 11 的
+   DWM 系统圆角（宿主已用 DwmSetWindowAttribute 去掉了 DWM 白边）。
    ========================================================================== */
 
-/* 窗口底色清成透明。同样必须用 !important 才能压过 index.html 的全局声明。 */
 html,
 body,
 #root {
-  background: transparent !important;
-  background-color: transparent !important;
+  background: var(--bg-solid) !important;
+  background-color: var(--bg-solid) !important;
 }
 
 .pw-root {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  width: 100%;
   height: 100%;
   box-sizing: border-box;
   font-family: var(--font-family);
   color: var(--text-main);
-  /* 根元素只负责布局，背景与圆角交给 .pw-card：
-     根元素铺满窗口，此刻画边框/圆角会和窗口矩形打架 */
+  background: var(--bg-solid);
   overflow: hidden;
 }
 
-/* 真正的卡片：贴桌面时是"一块小挂件"而不是"一个窗口" */
+/* 卡片即窗口本身：铺满整个窗口，不再留缝 */
 .pw-card {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1 1 auto;
+  width: 100%;
   box-sizing: border-box;
   height: 100%;
   padding: 0 14px;
-  background-color: var(--bg-solid);
+  background: var(--bg-solid);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-window);
   overflow: hidden;
-  /* 常态半透明，悬停才实心——贴在桌面上时不该是一块抢眼的方块 */
-  opacity: 0.92;
-  transition: opacity 0.15s ease;
+  /* 悬停高亮：给"可以操作"一个视觉提示（代替上一版的整窗透明度变化，
+     那在不透明窗口上会透出白底，正是白框来源之一） */
+  transition: border-color 0.15s ease;
 }
 
 .pw-root.pw-hovered .pw-card {
-  opacity: 1;
+  border-color: var(--accent-text);
 }
 
 .pw-root.pw-idle .pw-arc {
@@ -110,8 +102,8 @@ body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  /* 悬停时会多出 3 个按钮，给标签让出宽度；否则省略号会在按钮弹出时跳动 */
-  max-width: 78px;
+  /* 悬停时会多出暂停/停止两个按钮，给标签让出宽度；否则省略号会在按钮弹出时跳动 */
+  max-width: 84px;
 }
 
 .pw-end {

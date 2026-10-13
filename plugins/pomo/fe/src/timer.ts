@@ -135,6 +135,40 @@ export function deriveView(snap: TimerSnapshot, now: number): TimerView {
 }
 
 /**
+ * 暂停态的展示推导。
+ *
+ * ## 为什么要单独一个函数
+ *
+ * sidecar 暂停时把 `target` 归零（防止 worker 线程继续走）、把剩余秒数
+ * 存进 `paused_remain`。于是挂件读到的快照是 target=0 —— 直接喂给
+ * `deriveView` 会得到 IDLE_VIEW（「准备开始 25:00」），冻结的剩余时间
+ * 和「已暂停」的状态全部丢失，UI 上也没有任何恢复入口——用户暂停后
+ * 只能干瞪眼，这是真机反馈的实际事故。
+ *
+ * 进度环仍按「已过比例」画：暂停在正中就是约 0.5。
+ */
+export function derivePaused(
+  pausedRemainSec: number,
+  label: string,
+  minutes: number,
+): TimerView {
+  const remainMs = Math.max(0, pausedRemainSec * 1000);
+  const totalMs = Math.max(1, minutes * 60_000);
+  const elapsedRatio = 1 - remainMs / totalMs;
+  return {
+    running: false,
+    text: formatCountdown(remainMs),
+    remainingSec: Math.ceil(remainMs / 1000),
+    progress: Math.min(1, Math.max(0, elapsedRatio)),
+    // 空标签回落「专注」，并标出暂停态——用户必须能一眼分清
+    // 「没在计时」和「暂停了」
+    label: `${label || '专注'} · 已暂停`,
+    minutes,
+    endAt: '',
+  };
+}
+
+/**
  * 进度环的 stroke-dasharray。
  *
  * 半径固定 26，周长 = 2πr ≈ 163.36；用 dasharray 表示"已走过的弧长"，

@@ -161,6 +161,34 @@ mod platform {
     const PROGMAN: &[u16] = &[80, 114, 111, 103, 109, 97, 110, 0]; // "Progman"
     const WORKERW: &[u16] = &[87, 111, 114, 107, 101, 114, 119, 0]; // "WorkerW"
 
+    /// 去掉 Windows 11 的窗口边框。
+    ///
+    /// ## 为什么需要
+    ///
+    /// `decorations: false` 只去掉标题栏和窗口按钮，**Windows 11 的 DWM 仍会给
+    /// 所有顶层窗口画一圈 1px 的系统边框**（浅色主题下就是白色）——用户看到的
+    /// 「挂件左右下白色边框」主要就是它。用 `DWMWA_BORDER_COLOR` 设为
+    /// `DWMWA_COLOR_NONE` 可彻底去边。
+    ///
+    /// 该属性是 Win11 (build 22000+) 才有的；Win10 上调用返回错误码，
+    /// 无害直接忽略（Win10 的无边框窗口本来就没有这圈边）。
+    pub fn remove_window_border(hwnd: isize) {
+        use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+
+        const DWMWA_BORDER_COLOR: u32 = 34;
+        // DWMWA_COLOR_NONE 的文档值
+        const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
+
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd as windows_sys::Win32::Foundation::HWND,
+                DWMWA_BORDER_COLOR,
+                &DWMWA_COLOR_NONE as *const u32 as *const core::ffi::c_void,
+                4,
+            );
+        }
+    }
+
     /// 找承载壁纸的 WorkerW 窗口。
     ///
     /// 机制：Explorer 启动时会创建若干 WorkerW，其中一个被设为壁纸宿主；
@@ -364,6 +392,16 @@ mod platform {
             on_wallpaper: false,
         }
     }
+}
+
+/// 去掉 Windows 11 的 DWM 窗口边框（平台无关入口，非 Windows 无操作）。
+///
+/// `decorations: false` 只去掉标题栏，Win11 的 DWM 仍给顶层窗口画一圈 1px
+/// 系统边框（浅色主题下是白色）——桌面挂件类小窗上非常扎眼。
+/// 见 [`platform::remove_window_border`] 的详细说明。
+pub fn remove_window_border(_hwnd: isize) {
+    #[cfg(target_os = "windows")]
+    platform::remove_window_border(_hwnd);
 }
 
 /// 平台无关入口。

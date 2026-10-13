@@ -31,5 +31,6 @@ winreg = "0.55"
 # 不单独声明新版本以免出现两份类型互不兼容的 windows-sys
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
+  "Win32_Graphics_Dwm",
   "Win32_UI_WindowsAndMessaging",
 ] }

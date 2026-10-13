@@ -257,9 +257,15 @@ def _arm(target, label, minutes):
     _persist(label, minutes, target)
 
 
-def _persist(label, minutes, target=0.0):
-    """把状态写进 settings —— 这是挂件（另一个进程）唯一能读到的地方。"""
-    for k, v in (("target", str(target)), ("label", label), ("minutes", str(minutes))):
+def _persist(label, minutes, target=0.0, paused_remain=0.0):
+    """把状态写进 settings —— 这是挂件（另一个进程）唯一能读到的地方。
+
+    paused_remain 必须一并持久化：挂件的「继续」按钮要靠它判断当前是否
+    处于暂停态（target=0 且 paused_remain>0）。漏掉它挂件就无从展示恢复入口，
+    用户暂停后只能干瞪眼——这是真机反馈过的实际事故。
+    """
+    for k, v in (("target", str(target)), ("label", label), ("minutes", str(minutes)),
+                 ("paused_remain", str(paused_remain))):
         try:
             fire("svc.settings.set", {"key": k, "value": v})
         except Exception:
@@ -279,7 +285,7 @@ def _pause():
         label, minutes = _state["label"], _state["minutes"]
         _state["target"] = 0.0
         _state["running"] = False
-    _persist(label, minutes, 0.0)
+    _persist(label, minutes, 0.0, paused_remain=remain)
     return True
 
 
@@ -290,6 +296,8 @@ def _resume():
             return False
         remain = _state["paused_remain"]
         label, minutes = _state["label"], _state["minutes"]
+        _state["paused"] = False
+        _state["paused_remain"] = 0.0
     _arm(time.time() + remain, label, minutes)
     return True
 
@@ -299,7 +307,9 @@ def _stop():
         was = _state["running"] or _state["paused"]
         _state.update({"running": False, "paused": False,
                        "target": 0.0, "paused_remain": 0.0})
-    _persist("", 0, 0.0)
+    # stopped 后暂停剩余也必须清零：挂件靠它判断是否显示「继续」，
+    # 残留会让停止后的挂件又冒出继续按钮
+    _persist("", 0, 0.0, paused_remain=0.0)
     return was
 
 
@@ -390,6 +400,9 @@ def _cmd_loop():
                     # 暂停态下再点暂停 = 继续（同一个按钮，省一个 UI 元素）
                     if not _pause():
                         _resume()
+                elif verb == "resume":
+                    # 挂件的「继续」按钮发独立动词，语义比复用 pause 清晰
+                    _resume()
                 elif verb == "stop":
                     _stop()
         except Exception:

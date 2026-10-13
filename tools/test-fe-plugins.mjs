@@ -1507,6 +1507,20 @@ function testPomoTimerModule() {
       `过半时进度应约 0.5，实得 ${half.progress}`);
     assert(half.label === '专注', '空标签应回落为「专注」');
 
+    // 4b) 回归：暂停态展示。sidecar 暂停时 target=0、剩余秒数在 paused_remain。
+    // 若挂件直接把该快照喂给 deriveView 会得到 IDLE_VIEW（"准备开始"），
+    // 冻结时间与恢复入口全部丢失——真机反馈"暂停后无法恢复"的根源。
+    const paused = T.derivePaused(4 * 60 + 54, 'nihc', 25);
+    assert(paused.text === '04:54', `暂停态应显示冻结的 04:54，实得 ${paused.text}`);
+    assert(paused.running === false, '暂停态 running 应为 false（显示继续按钮而非暂停）');
+    assert(paused.label.includes('已暂停'), `暂停态标签应带「已暂停」，实得 ${paused.label}`);
+    assert(paused.label.includes('nihc'), '暂停态标签应保留任务名');
+    assert(Math.abs(paused.progress - (1 - (4 * 60 + 54) / (25 * 60))) < 0.01,
+      '暂停态进度应按已过比例冻结，实得 ${paused.progress}');
+    assert(paused.endAt === '', '暂停态不应显示结束时刻');
+    assert(T.derivePaused(0, 'x', 25).text === '00:00', '剩余 0 应显示 00:00');
+    assert(T.derivePaused(-5, 'x', 25).text === '00:00', '负剩余应夹到 00:00');
+
     // 5) 快结束：进度应接近 1 但不越界
     const almost = T.deriveView({ target: now + 25 * 60_000, label: 'x', minutes: 25 }, now + 24.9 * 60_000);
     assert(almost.progress > 0.99 && almost.progress <= 1,

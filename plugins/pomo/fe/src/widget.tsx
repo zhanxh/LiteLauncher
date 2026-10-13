@@ -15,7 +15,7 @@
 import { createSignal, createMemo, onCleanup, onMount, Show } from 'solid-js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getPluginContext } from '@ll/sdk';
-import { deriveView, arcDasharray, normalizeTargetMs, type TimerSnapshot } from './timer';
+import { deriveView, derivePaused, arcDasharray, normalizeTargetMs, type TimerSnapshot } from './timer';
 import './widget.css';
 
 const ctx = getPluginContext('pomo');
@@ -34,6 +34,8 @@ export function PomoWidget() {
   const [target, setTarget] = createSignal(0);
   const [label, setLabel] = createSignal('');
   const [minutes, setMinutes] = createSignal(0);
+  /** 暂停时 sidecar 记下的剩余秒数。>0 且 target=0 即处于暂停态 */
+  const [pausedRemain, setPausedRemain] = createSignal(0);
   const [now, setNow] = createSignal(Date.now());
   /** 已到点的终态：到点后仍要显示 00:00 + "时间到"，不能退回未计时 */
   const [finished, setFinished] = createSignal(false);
@@ -49,6 +51,12 @@ export function PomoWidget() {
   }));
 
   const view = createMemo(() => {
+    // 暂停态优先判定：target=0 且 paused_remain>0。
+    // 不判定的话会落到 IDLE_VIEW（"准备开始 25:00"），冻结时间丢失、
+    // 也没有继续入口——正是"暂停后无法恢复"事故的根源。
+    if (target() <= 0 && pausedRemain() > 0) {
+      return derivePaused(pausedRemain(), label(), minutes());
+    }
     const v = deriveView(snap(), now());
     return finished() && !v.running ? { ...v, label: `${v.label} · 时间到` } : v;
   });
@@ -56,16 +64,18 @@ export function PomoWidget() {
   /** 拉一次 sidecar 写入的状态 */
   async function sync() {
     if (!alive) return;
-    const [t, l, m] = await Promise.all([
+    const [t, l, m, pr] = await Promise.all([
       readSetting('target'),
       readSetting('label'),
       readSetting('minutes'),
+      readSetting('paused_remain'),
     ]);
     if (!alive) return;
     const parsed = normalizeTargetMs(t);
     setTarget(parsed);
     setLabel(l ?? '');
     setMinutes(Number.parseInt(m ?? '0', 10) || 0);
+    setPausedRemain(Number.parseFloat(pr ?? '0') || 0);
 
     // 到点判定放在这里而不是 deriveView：
     // 后者对"target 已过"和"从未计时"都返回 running=false，无法区分，
@@ -135,7 +145,7 @@ export function PomoWidget() {
    * 本来就每秒读一次 settings 做同步。于是"前端写命令键 → sidecar 读到并清空"
    * 就是一条现成的反向通道，无需新增宿主能力或改协议。
    */
-  async function sendCommand(cmd: 'pause' | 'stop') {
+  async function sendCommand(cmd: 'pause' | 'resume' | 'stop') {
     // 带时间戳：确保值一定变化，否则"连点两次"可能被 KV 判为未变更而丢掉第二次
     await ctx.settings.set('cmd', `${cmd}:${Date.now()}`);
     await sync();
@@ -146,27 +156,24 @@ export function PomoWidget() {
     await sendCommand('pause');
   }
 
-  async function stop() {
-    await sendCommand('stop');
-    // 必须真的关窗：挂件是 decorated:false + skip_taskbar，
-    // 用户找不到系统关闭按钮，✕ 是唯一的出口。
-    // 先关窗再sync —— 关窗会销毁 JS 上下文，之后的调用不会再执行。
-    await getCurrentWindow()
-      .close()
-      .catch(() => undefined);
-    alive = false;
-    if (timer) clearInterval(timer);
+  /** 继续计时：sidecar 把暂停时记下的剩余时间重新变成绝对目标时刻 */
+  async function resume() {
+    if (view().running) return;
+    await sendCommand('resume');
   }
 
   /**
-   * 右键菜单：关窗但不停止计时。
+   * 停止计时并关闭挂件。
    *
-   * 与 stop() 的区别很关键——挂件窗口关掉后 sidecar 仍在计时（到点照常通知），
-   * 用户重新 /pomo 就能再打开。这是"收起"而非"停止"。
+   * ⚠️ 用 destroy() 而不是 close()：close() 会走 onCloseRequested 的
+   * "请求-确认"流程（JS handler 参与关闭决策），任何一环 promise 不 resolve
+   * 窗口就关不掉——这正是"关闭按钮无效"的观感来源之一。挂件关闭没有
+   * 任何需要确认的场景，直接销毁窗口是最可靠路径。
    */
-  async function dismiss() {
+  async function stop() {
+    await sendCommand('stop');
     await getCurrentWindow()
-      .close()
+      .destroy()
       .catch(() => undefined);
     alive = false;
     if (timer) clearInterval(timer);
@@ -212,7 +219,10 @@ export function PomoWidget() {
         </div>
 
         {/* 悬停才出现的操作区：不占常态视觉空间，也避免小窗被误触。
-            ⌃= 收起（计时继续），✕ = 停止并关窗 */}
+            ❚❚/▶ = 暂停或继续（随状态切换），✕ = 停止计时并关闭挂件。
+            上一版还有一个「⌃ 收起」按钮，已删：它只是隐藏窗口、计时继续、
+            需要 /pomo 找回——与「暂停」（时间冻结、状态可见）语义缠绕，
+            真机用户完全分不清两者差别。隐藏需求由 /pomo widget 覆盖即可。 */}
         <Show when={hovered()}>
           <div class="pw-actions">
             <Show when={view().running}>
@@ -220,9 +230,11 @@ export function PomoWidget() {
                 ❚❚
               </button>
             </Show>
-            <button class="pw-btn" title="收起挂件（计时继续）" onClick={() => void dismiss()}>
-              ⌃
-            </button>
+            <Show when={!view().running && pausedRemain() > 0}>
+              <button class="pw-btn" title="继续计时" onClick={() => void resume()}>
+                ▶
+              </button>
+            </Show>
             <button class="pw-btn pw-btn--danger" title="停止计时并关闭" onClick={() => void stop()}>
               ✕
             </button>

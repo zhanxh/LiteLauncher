@@ -20,7 +20,6 @@
       "min_height": 88.0,
       "resizable": false,
       "decorated": false,
-      "transparent": true,
       "always_on_top": true,
       "skip_taskbar": true,
       "focusable": false,
