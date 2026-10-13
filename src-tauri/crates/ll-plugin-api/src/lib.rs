@@ -179,9 +179,50 @@ pub enum WindowPosition {
     #[default]
     Center,
     BottomRight,
+    /// 贴屏幕右上角。桌面挂件类小窗常用——用户视线自然落在任务栏附近的角落，
+    /// 且右上角通常比右下角少被任务栏图标与托盘干扰。
+    TopRight,
     /// 全屏铺满某块显示器（区域框选截图 / 全屏遮罩取色这类"遮罩层"）。
     /// `WindowPosition::Fullscreen(MonitorSelector)` 的序列化形式为字符串。
     Fullscreen(MonitorSelector),
+}
+
+/// 是否是"贴边角落"定位（需要建窗后再手动摆位，而不是交给系统）。
+///
+/// 抽成函数而不是到处 `matches!`：这两个变体在宿主的**两处**分支里都要判断
+/// （建窗前设 visible(false) 避免闪烁，建窗后 set_position + show），
+/// 漏一处就会出现"窗口在原点闪一下才跳到角落"。
+pub fn is_corner_position(pos: WindowPosition) -> bool {
+    matches!(pos, WindowPosition::BottomRight | WindowPosition::TopRight)
+}
+
+/// 贴边角落的默认边距（逻辑像素）。
+pub const CORNER_MARGIN: f64 = 16.0;
+
+/// 算贴边角落窗口的左上角坐标（**逻辑像素**）。
+///
+/// 抽成纯函数是为了能单测——这段算术一旦写错，症状是"挂件有一半在屏幕外"
+/// 或"堆叠的第二个窗口盖住第一个"，都属于真机才能看出来的静默错误。
+///
+/// `stack_offset` 的方向随角落而变：右下角向上让位（y 减小），右上角向下（y 增大）。
+/// 写死正负号会让其中一个角落的堆叠完全错位。
+pub fn corner_origin(
+    pos: WindowPosition,
+    monitor_w: f64,
+    monitor_h: f64,
+    win_w: f64,
+    win_h: f64,
+    stack_offset: f64,
+) -> Option<(f64, f64)> {
+    if !is_corner_position(pos) {
+        return None;
+    }
+    let x = monitor_w - win_w - CORNER_MARGIN;
+    let y = match pos {
+        WindowPosition::TopRight => CORNER_MARGIN + stack_offset,
+        _ => monitor_h - win_h - CORNER_MARGIN - stack_offset,
+    };
+    Some((x, y))
 }
 
 /// 全屏窗口铺在哪块屏
@@ -773,4 +814,115 @@ pub trait PluginBackend: Send + Sync {
     fn on_core_event(&self, _ev: CoreEvent) {}
     /// 宿主停用插件或退出时调用：停内部线程、释放资源
     fn shutdown(&self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 1920×1080 主屏，262×88 的挂件，典型场景。
+    const MON_W: f64 = 1920.0;
+    const MON_H: f64 = 1080.0;
+    const WIN_W: f64 = 262.0;
+    const WIN_H: f64 = 88.0;
+
+    #[test]
+    fn bottom_right_sticks_to_corner() {
+        let (x, y) = corner_origin(
+            WindowPosition::BottomRight,
+            MON_W,
+            MON_H,
+            WIN_W,
+            WIN_H,
+            0.0,
+        )
+        .expect("bottom-right 应参与定位");
+        // 右边留 16px 边距，下边留 16px
+        assert_eq!(x, MON_W - WIN_W - CORNER_MARGIN);
+        assert_eq!(y, MON_H - WIN_H - CORNER_MARGIN);
+    }
+
+    #[test]
+    fn top_right_sticks_to_top() {
+        let (x, y) =
+            corner_origin(WindowPosition::TopRight, MON_W, MON_H, WIN_W, WIN_H, 0.0)
+                .expect("top-right 应参与定位");
+        assert_eq!(x, MON_W - WIN_W - CORNER_MARGIN, "右侧仍应留边距");
+        assert_eq!(y, CORNER_MARGIN, "顶部应留边距");
+    }
+
+    #[test]
+    fn corner_right_edge_is_never_outside_monitor() {
+        for pos in [WindowPosition::TopRight, WindowPosition::BottomRight] {
+            let (x, _) = corner_origin(pos, MON_W, MON_H, WIN_W, WIN_H, 0.0).unwrap();
+            assert!(
+                x + WIN_W <= MON_W,
+                "{pos:?} 的右边缘超出屏幕：x={x} w={WIN_W} monitor={MON_W}"
+            );
+            assert!(x >= 0.0, "{pos:?} 的 x 为负：{x}");
+        }
+    }
+
+    #[test]
+    fn stack_offset_moves_down_from_top_and_up_from_bottom() {
+        let step = WIN_H + 8.0;
+
+        let (_, top1) = corner_origin(
+            WindowPosition::TopRight,
+            MON_W,
+            MON_H,
+            WIN_W,
+            WIN_H,
+            step,
+        )
+        .unwrap();
+        let (_, top2) = corner_origin(
+            WindowPosition::TopRight,
+            MON_W,
+            MON_H,
+            WIN_W,
+            WIN_H,
+            step * 2.0,
+        )
+        .unwrap();
+        assert!(top2 > top1, "右上角堆叠应向下让位（y 增大）");
+
+        let (_, bot1) = corner_origin(
+            WindowPosition::BottomRight,
+            MON_W,
+            MON_H,
+            WIN_W,
+            WIN_H,
+            step,
+        )
+        .unwrap();
+        let (_, bot2) = corner_origin(
+            WindowPosition::BottomRight,
+            MON_W,
+            MON_H,
+            WIN_W,
+            WIN_H,
+            step * 2.0,
+        )
+        .unwrap();
+        assert!(bot2 < bot1, "右下角堆叠应向上让位（y 减小）");
+    }
+
+    #[test]
+    fn non_corner_positions_are_not_positioned() {
+        // Center / Fullscreen 交给系统或各自的分支，不能被角落逻辑接管
+        assert!(corner_origin(WindowPosition::Center, MON_W, MON_H, WIN_W, WIN_H, 0.0).is_none());
+        assert!(!is_corner_position(WindowPosition::Center));
+    }
+
+    #[test]
+    fn position_serializes_as_expected() {
+        // manifest 里写的是 kebab-case 字符串，改了枚举名会静默失效
+        let json = serde_json::to_string(&WindowPosition::TopRight).unwrap();
+        assert_eq!(json, "\"top-right\"");
+        let json = serde_json::to_string(&WindowPosition::BottomRight).unwrap();
+        assert_eq!(json, "\"bottom-right\"");
+        let back: WindowPosition = serde_json::from_str("\"top-right\"").unwrap();
+        assert_eq!(back, WindowPosition::TopRight);
+    }
 }

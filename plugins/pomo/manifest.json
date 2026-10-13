@@ -1,7 +1,7 @@
 {
   "id": "pomo",
   "name": "番茄钟",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "api_version": "^1",
   "trigger": "/pomo",
   "description": "番茄钟：/pomo start 25 写代码 开始计时并自动在桌面显示倒计时挂件，到点发系统通知；/pomo pause 暂停 / resume 继续 / stop 停止；/pomo pin 把挂件贴到桌面壁纸层（Wayland 下自动降级为置顶浮窗）。",
@@ -24,7 +24,7 @@
       "always_on_top": true,
       "skip_taskbar": true,
       "focusable": false,
-      "position": "bottom-right",
+      "position": "top-right",
       "on_existing": "focus",
       "version": "0.2.1"
     }

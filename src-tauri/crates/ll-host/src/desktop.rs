@@ -153,7 +153,7 @@ mod platform {
     use super::DesktopAttachResult;
     use windows_sys::Win32::Foundation::{HWND, LPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, SetParent, SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOZORDER,
+        FindWindowW, SetParent, SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
         SWP_SHOWWINDOW,
     };
 
@@ -257,7 +257,12 @@ mod platform {
                 };
             };
             let old = SetParent(hwnd, parent);
-            // SetParent 成功后需要手动调整 Z 序与显示，否则窗口可能不可见
+            // SetParent 成功后需要手动调整 Z 序与显示，否则窗口可能不可见。
+            //
+            // ⚠️ 必须带 SWP_NOMOVE：SetParent 会把窗口的坐标系从屏幕改为
+            // **相对于父窗口（WorkerW 壁纸层）**，此处的 (0,0) 若被应用就会把
+            // 窗口甩到壁纸层左上角。而窗口的期望位置（右上角/右下角）
+            // 是宿主按主显示器算好后用 set_position 设的，不该被这里覆盖。
             let _ = SetWindowPos(
                 hwnd,
                 HWND_TOP,
@@ -265,7 +270,7 @@ mod platform {
                 0,
                 0,
                 0,
-                SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOMOVE | SWP_SHOWWINDOW,
             );
             if old.is_null() {
                 // old 为 NULL 可能是"原本没有父窗口"（正常）也可能是失败，

@@ -9,6 +9,7 @@ use ll_plugin_api::{
     HttpApi, HttpRequest, LogApi, MonitorInfo, MonitorSelector, NotifyApi, PixelGrid, PixelSample,
     PluginContext, PluginError, PluginErrorCode, PluginManifest, ProcessApi, Region, SavedImage,
     ScreenApi, SecretApi, SettingsApi, ShortcutApi, ViewSpec, WindowApi, WindowPosition,
+    corner_origin, is_corner_position,
 };
 use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
@@ -305,8 +306,11 @@ fn open_on_main(
         url.push_str(&format!("&{}={}", k, percent_encode(v)));
     }
 
-    // 堆叠偏移在构建前统计（不含本次窗口）
-    let stack_offset = if spec.stacked {
+    // 堆叠偏移在构建前统计（不含本次窗口）。
+    // 方向必须跟角落匹配：右下角的第二个窗口要**向上**让位（y 减小），
+    // 右上角则要向下（y 增大）。写死正数会让右上角的堆叠窗口盖住第一个。
+    let corner_position = is_corner_position(spec.position);
+    let stack_offset = if corner_position && spec.stacked {
         let prefix = format!("{}-{}", plugin_id, spec.id);
         app.webview_windows()
             .keys()
@@ -358,7 +362,9 @@ fn open_on_main(
     if let (Some(mw), Some(mh)) = (spec.min_width, spec.min_height) {
         builder = builder.min_inner_size(mw, mh);
     }
-    if matches!(spec.position, WindowPosition::BottomRight) {
+    if corner_position {
+        // 建窗前先隐藏：Tauri 建窗时会用系统默认位置闪一下才落到角落，
+        // 挂件这类常驻小窗不能有这种闪烁。
         builder = builder.visible(false);
     }
 
@@ -366,14 +372,23 @@ fn open_on_main(
         .build()
         .map_err(|e| format!("创建窗口 {} 失败: {}", label, e))?;
 
-    if matches!(spec.position, WindowPosition::BottomRight) {
+    if corner_position {
         if let Ok(Some(monitor)) = app.primary_monitor() {
             let mon_logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
-            let margin = 16.0;
-            let _ = window.set_position(LogicalPosition::new(
-                mon_logical.width - spec.width - margin,
-                mon_logical.height - spec.height - margin - stack_offset,
-            ));
+            // 用逻辑像素与 spec.width/height 对齐：Tauri 的 set_position 收
+            // LogicalPosition，monitor.size() 是物理像素，不换算的话HiDPI
+            // 下窗口会明显偏出屏幕（这是遮罩层已经踩过的坑）。
+            // 具体算法在 ll-plugin-api::corner_origin，那里能单测。
+            if let Some((x, y)) = corner_origin(
+                spec.position,
+                mon_logical.width,
+                mon_logical.height,
+                spec.width,
+                spec.height,
+                stack_offset,
+            ) {
+                let _ = window.set_position(LogicalPosition::new(x, y));
+            }
         }
         let _ = window.show();
     }

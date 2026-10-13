@@ -37,6 +37,9 @@
 - **全局热键**：manifest 以 `shortcut:<accel>` **逐条声明、无通配**；宿主进程级 `accel→pluginId` 表先到先得仲裁（冲突回 `conflict`）；触发广播 `plugin-shortcut` 事件 `{pluginId, accel}`，插件只听事件、拿不到按键流。
 - **`ctx.shortcuts.on(accel, cb, {scope})` 默认 `scope:'main'`**：每个窗口加载都会跑一遍全部插件 `setup()`，不区分上下文热键会被执行两次。视图窗口内也要响应时显式传 `{scope:'any'}`。
 - **新增视图窗口必须登记 Tauri 能力**：`src-tauri/capabilities/default.json` 的 `windows` 是显式标签白名单（标签 = `<pluginId>-<viewId>`）。漏登记 → 该窗口零权限 → `plugin_call` 被拒、窗口变死窗。
+- `permissions` 也要逐条列全（不只 `windows`）：如窗口拖动需`core:window:allow-start-dragging`，漏了会**静默失败**，用户以为窗口卡死。
+- **窗口贴边定位**：`WindowPosition` 有 `Center | BottomRight | TopRight | Fullscreen`。corner 类走 `is_corner_position()` + `corner_origin()`（都在 `ll-plugin-api`，**放这里才测得了** —— `ll-host` 的 test 二进制本机加载失败）。`stack_offset` 方向随角落变：右下向上、右上向下。
+- `desktop.rs` 挂壁纸层时 `SetWindowPos` **必须带 `SWP_NOMOVE`**：`SetParent` 会把坐标系改为相对 WorkerW，不带它则 (0,0) 被应用，窗口被甩到左上角。
 - 多窗口共用插件状态（如"面板开着时主窗口热键让位"）走 `ctx.settings` KV 做标记，不要靠全局变量。
 - ⚠️ **Tauri 逻辑像素 vs 物理像素**：`Monitor::size()/position()` 给**物理**像素，而 `WebviewWindowBuilder::inner_size/position` 收**逻辑**像素。HiDPI 下必须除 `scaleFactor`，否则全屏遮罩只盖住屏幕一角。
 - **热键"谁拥有"的唯一来源是插件自报 `CommandPlugin.hotkeys`**（不是读 manifest——注册表里没有 manifest，且 `shortcut:` 是静态白名单无法运行时追加）。**只在 `register()` 成功后收录**，否则 `/hotkey` 速查表会教用户按一个不生效的键。`/hotkey` 插件消费此字段。

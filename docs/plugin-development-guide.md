@@ -84,7 +84,7 @@ npm run build && ./build.sh            # 全量构建
       "resizable": true, "decorated": true,
       "always_on_top": false, "skip_taskbar": false,
       "focusable": true,
-      "position": "center",            // center | bottom-right（右下角自动定位，适合弹窗类）
+      "position": "center",            // center | bottom-right | top-right（贴边角落自动定位，适合挂件/弹窗类）
       "stacked": false,                // true: 多实例向上堆叠（配合 unique_by）
       "unique_by": null,               // 传参数名则按参数值生成每实例唯一标签
       "on_existing": "focus",          // focus: 聚焦已有窗口 | replace: 关旧开新（提醒弹窗用）
