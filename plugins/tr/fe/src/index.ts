@@ -219,11 +219,19 @@ export const trPlugin: CommandPlugin = {
   id: PLUGIN_ID,
   trigger: '/tr',
   name: '翻译',
-  description:
-    '翻译：/tr hello world 自动中英互译，/tr en ja hello 指定语言对（数据源 MyMemory，免密，有每日额度）。',
+  description: '翻译：自动识别中英方向，也可指定语言对（数据源 MyMemory，免密，有每日额度）。',
   icon: '🌏',
+  argsHint: '[源语种 目标语种] <文本>',
+  examples: ['/tr hello world', '/tr en ja hello', '/tr zh hello'],
 
   isAction: () => false,
+
+  /**
+   * 声明 300ms 防抖：壳层"停止输入即出结果"，用户不必再按一次回车。
+   * 壳层对 query() 默认逐键调用且无防抖，直接联网会打爆接口；
+   * 有了这个字段就能安全地把两段式范式简化掉。
+   */
+  queryDebounceMs: 300,
 
   async query(input: ParsedInput): Promise<PanelData> {
     const q = parseQuery(input);
@@ -241,21 +249,19 @@ export const trPlugin: CommandPlugin = {
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
       return { items: hit.items, emptyText: '无结果' };
     }
-    return {
-      items: [
-        makeItem(
-          'fetch',
-          `翻译：${clip(q.text, 60)}`,
-          `${langName(q.src)} → ${langName(q.tgt)}，回车联网翻译`,
-          '查询',
-          undefined,
-          '🔎',
-          { fetch: key },
-        ),
-        makeItem('help', '/tr hello · /tr en ja hello', '可前置语言代码指定语言对', '用法', undefined, '💡'),
-      ],
-      emptyText: '回车翻译',
-    };
+    try {
+      const items = await fetchTr(q);
+      cache.set(key, { at: Date.now(), items });
+      return { items, emptyText: '无结果' };
+    } catch (err) {
+      return {
+        items: [
+          makeItem('retry', `翻译失败：${errText(err)}`, '回车重试', '失败', undefined, '⚠️', { fetch: key }),
+          makeItem('help', '/tr hello · /tr en ja hello', '可前置语言代码指定语言对', '用法', undefined, '💡'),
+        ],
+        emptyText: '翻译失败',
+      };
+    }
   },
 
   async onSelect(item: PanelItem): Promise<AfterSelect> {

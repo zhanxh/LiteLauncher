@@ -220,10 +220,19 @@ export const fxPlugin: CommandPlugin = {
   trigger: '/fx',
   name: '汇率换算',
   description:
-    '汇率换算：/fx 100 usd cny 精确换算，/fx usd cny 只看汇率，/fx usd 列出主要货币。数据源 open.er-api.com（每日更新）。',
+    '汇率换算：给出金额换算、单对汇率与主要货币列表。数据源 open.er-api.com（每日更新）。',
   icon: '💱',
+  argsHint: '[金额] <源币种> [目标币种]',
+  examples: ['/fx 100 usd cny', '/fx usd cny', '/fx usd', '/fx 100 eur jpy'],
 
   isAction: () => false,
+
+  /**
+   * 声明 300ms 防抖：壳层"停止输入即出结果"，用户不必再按一次回车。
+   * 壳层对 query() 默认逐键调用且无防抖，直接联网会打爆接口；
+   * 有了这个字段就能安全地把两段式范式简化掉。
+   */
+  queryDebounceMs: 300,
 
   async query(input: ParsedInput): Promise<PanelData> {
     const q = parseQuery(input);
@@ -244,13 +253,19 @@ export const fxPlugin: CommandPlugin = {
     }
 
     const label = q.target ? `${fmt(q.amount)} ${q.base} → ${q.target}` : `${q.base} 主要货币汇率`;
-    return {
-      items: [
-        makeItem('fetch', `查询 ${label}`, '回车联网获取（open.er-api.com）', '查询', undefined, '🔎', { fetch: key }),
-        makeItem('help', '/fx 100 usd cny', '格式：/fx [金额] <基准货币> [目标货币]', '用法', undefined, '💡'),
-      ],
-      emptyText: '回车查询',
-    };
+    try {
+      const items = await fetchFx(q);
+      cache.set(key, { at: Date.now(), items });
+      return { items, emptyText: '无结果' };
+    } catch (err) {
+      return {
+        items: [
+          makeItem('retry', `查询 ${label} 失败：${errText(err)}`, '回车重试', '失败', undefined, '⚠️', { fetch: key }),
+          makeItem('help', '/fx 100 usd cny', '格式：/fx [金额] <基准货币> [目标货币]', '用法', undefined, '💡'),
+        ],
+        emptyText: '查询失败',
+      };
+    }
   },
 
   async onSelect(item: PanelItem): Promise<AfterSelect> {

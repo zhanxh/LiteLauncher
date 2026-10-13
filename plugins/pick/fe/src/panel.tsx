@@ -10,7 +10,7 @@
  */
 import { createSignal, onCleanup, onMount, For } from 'solid-js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { getPluginContext, type PixelResult } from '@ll/sdk';
+import { getPluginContext, type PixelResult, type PixelSample } from '@ll/sdk';
 import { formatColor, readableOn, rgbToHsl, type ColorFormat } from './color';
 import { pushHistory, setPanelOpen } from './history';
 
@@ -18,8 +18,7 @@ const ctx = getPluginContext('pick');
 
 /** 采样间隔（ms）：约 7Hz——既跟手又不至于把宿主抓帧线程压满 */
 const POLL_MS = 140;
-/** 放大镜半径：7 → 15×15 方格 */
-const RADIUS = 7;
+/** 放大镜缩放档位（滚轮切换）：7 / 14 / 21 → 15×15 / 29×29 / 43×43 方格 */
 /** 与 manifest 的 `shortcut:alt+p` 声明保持一致 */
 const HOTKEY = 'alt+p';
 
@@ -28,6 +27,11 @@ export function PickPanel() {
   const [frozen, setFrozen] = createSignal(false);
   const [error, setError] = createSignal('');
   const [copied, setCopied] = createSignal('');
+  /** 放大镜缩放档位：0/1/2 → radius = 7 / 14 / 21（滚轮切换，对齐 PowerToys） */
+  const [zoom, setZoom] = createSignal(0);
+
+  const ZOOMS = [7, 14, 21];
+  const radius = () => ZOOMS[zoom()] ?? ZOOMS[0];
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   let alive = true;
@@ -54,7 +58,7 @@ export function PickPanel() {
     if (!alive) return;
     try {
       // 不传坐标：宿主自行取当前光标位置并采样，一次调用拿到"位置 + 颜色 + 放大镜"
-      const res = await ctx.screen.pixel({ radius: RADIUS });
+      const res = await ctx.screen.pixel({ radius: radius() });
       if (pointInside(res.sample.x, res.sample.y)) {
         // 光标在面板上 → 冻结，保留上一次"面板外"的采样
         setFrozen(true);
@@ -69,8 +73,24 @@ export function PickPanel() {
     if (alive) timer = setTimeout(() => void tick(), POLL_MS);
   }
 
+  /**
+   * 立即重采一次再复制。
+   *
+   * 轮询是 140ms，用户点按钮时屏幕上的颜色可能已经变了；更重要的是
+   * "光标处单击即取"要求取的就是点击那一刻的像素，而不是上一轮采样的结果。
+   */
+  async function sampleNow(): Promise<PixelSample | null> {
+    try {
+      const res = await ctx.screen.pixel({ radius: radius() });
+      // 采样点落在面板上说明光标已在面板内，此时不该"取色"（会取到面板自己）
+      return pointInside(res.sample.x, res.sample.y) ? pixel()?.sample ?? null : res.sample;
+    } catch {
+      return pixel()?.sample ?? null;
+    }
+  }
+
   async function confirm(format: ColorFormat): Promise<void> {
-    const current = pixel()?.sample;
+    const current = (await sampleNow()) ?? pixel()?.sample;
     if (!current) {
       setCopied('还没有取到颜色');
       return;
@@ -89,7 +109,46 @@ export function PickPanel() {
     }
   }
 
+  /** 滚轮缩放放大镜（PowerToys 的默认动作，向上=放大） */
+  function onWheel(e: WheelEvent): void {
+    e.preventDefault();
+    const next = zoom() + (e.deltaY < 0 ? 1 : -1);
+    setZoom(Math.max(0, Math.min(ZOOMS.length - 1, next)));
+  }
+
+  /**
+   * 面板区域内的单击 = 取当前光标处颜色并复制（不必去点按钮）。
+   *
+   * 但要排除点在自己按钮上时的误触：按钮自己 stopPropagation，
+   * 这里只处理"点空白/点色块"的情形——这是用户看到颜色后直接一按的肌肉动作。
+   */
+  function onPanelClick(): void {
+    void confirm('hex');
+  }
+
+  function onKeyDown(e: KeyboardEvent): void {
+    // Esc = 取消且不复制（PowerToys 同款）；Shift+Esc 或 Ctrl+W 才关闭
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      void setPanelOpen(false);
+      void getCurrentWindow().close();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      void confirm('hex');
+    } else if (e.key === '+' || e.key === '=') {
+      e.preventDefault();
+      setZoom((z) => Math.min(ZOOMS.length - 1, z + 1));
+    } else if (e.key === '-') {
+      e.preventDefault();
+      setZoom((z) => Math.max(0, z - 1));
+    }
+  }
+
   onMount(() => {
+    // 滚轮/键盘要挂在 window 上，否则焦点不在面板时收不到
+    window.addEventListener('wheel', onWheel, { passive: false });
+    window.addEventListener('keydown', onKeyDown);
+
     void (async () => {
       await setPanelOpen(true);
       await refreshRect();
@@ -103,6 +162,8 @@ export function PickPanel() {
 
     onCleanup(() => {
       alive = false;
+      window.removeEventListener('wheel', onWheel);
+      window.removeEventListener('keydown', onKeyDown);
       if (timer) clearTimeout(timer);
       if (unlisten) unlisten();
       void setPanelOpen(false);
@@ -131,11 +192,16 @@ export function PickPanel() {
         'box-sizing': 'border-box',
         'user-select': 'none',
       }}
+      onClick={onPanelClick}
     >
       <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
         <span style={{ 'font-weight': '600' }}>取色台</span>
         <span style={{ opacity: 0.55, 'font-size': '11px' }}>
           {frozen() ? '已冻结（鼠标在面板上）' : '跟随鼠标'}
+        </span>
+        {/* 快捷键就地提示：新增的三条动作否则用户无从知晓 */}
+        <span style={{ opacity: 0.4, 'font-size': '10px', 'margin-left': 'auto' }}>
+          滚轮缩放 · 单击取色 · 回车复制 · Esc 取消
         </span>
       </div>
 
@@ -144,8 +210,8 @@ export function PickPanel() {
         <div
           style={{
             display: 'grid',
-            'grid-template-columns': `repeat(${grid()?.cols ?? RADIUS * 2 + 1}, 12px)`,
-            'grid-template-rows': `repeat(${grid()?.rows ?? RADIUS * 2 + 1}, 12px)`,
+            'grid-template-columns': `repeat(${grid()?.cols ?? radius() * 2 + 1}, ${12 - zoom() * 2}px)`,
+            'grid-template-rows': `repeat(${grid()?.rows ?? radius() * 2 + 1}, ${12 - zoom() * 2}px)`,
             border: '1px solid #3a3a42',
             'border-radius': '4px',
             overflow: 'hidden',
@@ -192,16 +258,37 @@ export function PickPanel() {
       </div>
 
       <div style={{ display: 'flex', gap: '6px' }}>
-        <button style={buttonStyle} onClick={() => void confirm('hex')}>
+        <button
+          style={buttonStyle}
+          onClick={(e) => {
+            e.stopPropagation();
+            void confirm('hex');
+          }}
+        >
           复制 HEX
         </button>
-        <button style={buttonStyle} onClick={() => void confirm('rgb')}>
+        <button
+          style={buttonStyle}
+          onClick={(e) => {
+            e.stopPropagation();
+            void confirm('rgb');
+          }}
+        >
           RGB
         </button>
-        <button style={buttonStyle} onClick={() => void confirm('hsl')}>
+        <button
+          style={buttonStyle}
+          onClick={(e) => {
+            e.stopPropagation();
+            void confirm('hsl');
+          }}
+        >
           HSL
         </button>
-        <button style={{ ...buttonStyle, 'margin-left': 'auto' }} onClick={() => void getCurrentWindow().close()}>
+        <button style={{ ...buttonStyle, 'margin-left': 'auto' }} onClick={(e) => {
+          e.stopPropagation();
+          void getCurrentWindow().close();
+        }}>
           关闭
         </button>
       </div>

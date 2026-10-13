@@ -118,10 +118,19 @@ export const ipPlugin: CommandPlugin = {
   id: PLUGIN_ID,
   trigger: '/ip',
   name: 'IP 查询',
-  description: 'IP 归属查询：/ip 查本机公网 IP 与归属地，/ip 8.8.8.8 查指定 IP 的运营商与时区（数据源 ipwho.is）。',
+  description: 'IP 归属查询：查公网 IP 的运营商、时区与坐标（数据源 ipwho.is）。不带参数查本机。',
   icon: '🌐',
+  argsHint: '[IP 或域名]',
+  examples: ['/ip', '/ip 8.8.8.8', '/ip example.com'],
 
   isAction: () => false,
+
+  /**
+   * 声明 300ms 防抖：壳层"停止输入即出结果"，用户不必再按一次回车。
+   * 壳层对 query() 默认逐键调用且无防抖，直接联网会打爆接口；
+   * 有了这个字段就能安全地把两段式范式简化掉。
+   */
+  queryDebounceMs: 300,
 
   async query(input: ParsedInput): Promise<PanelData> {
     const target = targetOf(input);
@@ -130,13 +139,19 @@ export const ipPlugin: CommandPlugin = {
       return { items: hit.items, emptyText: '无结果' };
     }
     const label = target || '本机公网 IP';
-    return {
-      items: [
-        makeItem('fetch', `查询 ${label}`, '回车联网获取（ipwho.is）', '查询', undefined, '🔎', { fetch: target }),
-        makeItem('help', '/ip · /ip 8.8.8.8', '不带参数查本机公网 IP，带参数查指定 IPv4 / IPv6', '用法', undefined, '💡'),
-      ],
-      emptyText: '回车查询',
-    };
+    try {
+      const items = await fetchIp(target);
+      cache.set(target, { at: Date.now(), items });
+      return { items, emptyText: '无结果' };
+    } catch (err) {
+      return {
+        items: [
+          makeItem('retry', `查询 ${label} 失败：${errText(err)}`, '回车重试', '失败', undefined, '⚠️', { fetch: target }),
+          makeItem('help', '/ip · /ip 8.8.8.8', '不带参数查本机公网 IP，带参数查指定 IPv4 / IPv6', '用法', undefined, '💡'),
+        ],
+        emptyText: '查询失败',
+      };
+    }
   },
 
   async onSelect(item: PanelItem): Promise<AfterSelect> {

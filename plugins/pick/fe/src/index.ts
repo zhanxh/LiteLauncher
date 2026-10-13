@@ -19,6 +19,7 @@ import {
   type PanelData,
   type PanelItem,
   type ParsedInput,
+  type PluginHotkey,
 } from '@ll/sdk';
 import { PickPanel } from './panel';
 import { formatColor, hexToRgb, type ColorFormat } from './color';
@@ -30,6 +31,13 @@ const VIEW_ID = 'panel';
 const HOTKEY = 'alt+p';
 
 const ctx = getPluginContext(PLUGIN_ID);
+
+/**
+ * 实际注册成功的全局热键（`/hotkey` 速查表的数据源）。
+ * 用可变数组而不是字面量：注册在 setup() 之后才异步完成，
+ * 插件对象早已交给注册表，只能靠共享引用把结果送回去。
+ */
+const hotkeys: PluginHotkey[] = [];
 
 const FORMATS: { id: ColorFormat; label: string }[] = [
   { id: 'hex', label: 'HEX' },
@@ -54,8 +62,10 @@ export const pickPlugin: CommandPlugin = {
   id: PLUGIN_ID,
   trigger: '/pick',
   name: '取色器',
-  description: '取色器：alt+p 取光标处颜色；/pick 打开浮动取色台或复制最近取色。',
+  description: '取色器：取光标处屏幕颜色，HEX/RGB/HSL 三种格式一键复制。',
   icon: '🎨',
+  examples: ['Alt+P 免开启动器取色', '/pick 打开取色台', '取色台内：滚轮缩放 · 单击取色 · 回车复制 · Esc 取消'],
+  hotkeys,
 
   isAction: () => false,
 
@@ -202,6 +212,10 @@ async function setupHotkey(): Promise<void> {
     ctx.log.warn(`全局热键 ${HOTKEY} 注册失败（可能被其他程序或插件占用）：${messageOf(err)}`);
     return;
   }
+
+  // 只在注册**成功后**才让速查表收录：否则 /hotkey 会教用户按一个不生效的键
+  hotkeys.length = 0;
+  hotkeys.push({ accel: HOTKEY, description: '取光标处颜色并复制 HEX' });
 
   await ctx.shortcuts.on(HOTKEY, () => {
     void (async () => {

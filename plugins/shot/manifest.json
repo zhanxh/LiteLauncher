@@ -1,17 +1,48 @@
 {
   "id": "shot",
   "name": "屏幕截图",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "api_version": "^1",
   "trigger": "/shot",
-  "description": "屏幕截图：/shot 截取光标所在屏幕、/shot 2 指定显示器、/shot -d3 延时 3 秒；截图前自动隐藏 LiteLauncher，存盘后路径进剪贴板，可用系统查看器打开或打开所在文件夹。全局热键 alt+shift+s 免开启动器直接截图。",
+  "description": "屏幕截图：回车区域框选（推荐）、整屏截图，或框选后进标注层画箭头/马赛克/文字；/shot -d3 延时 3 秒。图片本体自动进剪贴板可直接粘贴。",
   "permissions": [
     "screen",
     "clipboard:write",
     "notifications",
     "settings",
     "process",
+    "windows",
     "shortcut:alt+shift+s"
+  ],
+  "views": [
+    {
+      "id": "select",
+      "title": "LiteLauncher - 区域截图",
+      "width": 800.0,
+      "height": 600.0,
+      "resizable": false,
+      "decorated": false,
+      "always_on_top": true,
+      "skip_taskbar": true,
+      "focusable": true,
+      "position": "fullscreen",
+      "transparent": true,
+      "on_existing": "replace"
+    },
+    {
+      "id": "annotate",
+      "title": "LiteLauncher - 截图标注",
+      "width": 900.0,
+      "height": 700.0,
+      "min_width": 520.0,
+      "min_height": 420.0,
+      "resizable": true,
+      "decorated": true,
+      "always_on_top": true,
+      "focusable": true,
+      "position": "center",
+      "on_existing": "replace"
+    }
   ],
   "backend": {
     "kind": "none"
@@ -19,6 +50,6 @@
   "command": {
     "icon": "📸",
     "action_subcommands": [],
-    "hint": "回车截图；路径自动进剪贴板"
+    "hint": "回车区域框选；Alt+Shift+S 免开启动器整屏截图；/hotkey 查全部全局热键"
   }
 }

@@ -1,28 +1,42 @@
 /**
  * @ll/plugin-shot —— /shot 屏幕截图（纯前端插件，backend.kind = "none"）
  *
- * 插件本身不含任何平台代码：截图、多屏定位、窗口避让、PNG 落盘全在宿主侧
- * （`svc.screen.*`，manifest 声明 `screen` 权限）。插件只做三件事：
- *   1. 把"哪块屏 × 延时几秒"表达成可选条目；
- *   2. 把结果路径送进剪贴板 / 交给系统查看器；
- *   3. 用全局热键把"免开启动器直接截图"接上（`svc.shortcut.*`）。
+ * 插件本身不含任何平台代码：截图、多屏定位、窗口避让、区域裁剪、PNG 落盘、
+ * 图片入剪贴板全在宿主侧（`svc.screen.*`，manifest 声明 `screen` 权限）。
+ * 插件只做四件事：
+ *   1. 把"哪块屏 × 延时几秒 × 整屏还是框选"表达成可选条目；
+ *   2. 开全屏透明遮罩层做区域框选（view: select）；
+ *   3. 把结果交给剪贴板（图片本体）/ 系统查看器（打开、打开文件夹）；
+ *   4. 用全局热键把"免开启动器直接整屏截图"接上（`svc.shortcut.*`）。
  */
 import {
   getPluginContext,
   pluginRegistry,
+  registerView,
   type AfterSelect,
   type CommandPlugin,
   type MonitorInfo,
   type PanelData,
   type PanelItem,
   type ParsedInput,
+  type PluginHotkey,
 } from '@ll/sdk';
+import { ShotSelect } from './select';
+import { ShotAnnotate } from './annotate-view';
 
 const PLUGIN_ID = 'shot';
 const ctx = getPluginContext(PLUGIN_ID);
 
+/** 区域框选视图（manifest 的 views[].id 必须一致） */
+const VIEW_SELECT = 'select';
+/** 标注视图（区域框选后画箭头/马赛克/文字） */
+const VIEW_ANNOTATE = 'annotate';
+
 /** 全局热键：不打开启动器，直接把光标所在屏幕存盘（manifest 需声明同值 shortcut: 权限） */
 const HOTKEY = 'alt+shift+s';
+
+/** 实际注册成功的全局热键（供 `/hotkey` 速查表；注册失败则不收录） */
+const hotkeys: PluginHotkey[] = [];
 
 /** 上一次截图（跨会话记住路径，便于"打开所在文件夹"） */
 let lastShot: { path: string; width: number; height: number } | null = null;
@@ -111,16 +125,28 @@ function monitorLabel(list: MonitorInfo[], index: number): string {
   return `显示器 ${index}（${found.width}×${found.height}${found.primary ? ' 主屏' : ''}）`;
 }
 
-/** 截图：隐藏壳层 → 捕获 → 记住最近一次 → 刷新面板 */
+/** 截图：隐藏壳层 → 捕获 → 记住最近一次 → 刷新面板
+ *
+ * `toClipboard: true` 让**图片本体**进剪贴板——这是桌面截图工具的默认交付物
+ * （用户要的是"看到就粘"，而不是"拿到一个路径再去文件夹里找图"）。
+ * 同时仍落盘，供"打开/打开文件夹"兜底。
+ */
 async function capture(target: number, delayMs: number): Promise<AfterSelect> {
   try {
-    const shot = await ctx.screen.capture({ monitor: target, hideWindows: true, delayMs });
+    const shot = await ctx.screen.capture({ monitor: target, hideWindows: true, delayMs, toClipboard: true });
     lastShot = { path: shot.path, width: shot.width, height: shot.height };
     lastShotLoaded = true;
     await ctx.settings.setJson('lastShot', lastShot);
-    // 路径进剪贴板：截图最常见的下一步就是粘贴到聊天窗口/文档里
-    await ctx.clipboard.write(shot.path);
-    return { refresh: true, toast: `已截图 ${shot.width}×${shot.height}，路径已复制` };
+    // 图片没进剪贴板时（权限缺失/无 GUI 会话）退而求其次给路径
+    if (!shot.clipboardImage) {
+      await ctx.clipboard.write(shot.path).catch(() => undefined);
+    }
+    return {
+      refresh: true,
+      toast: shot.clipboardImage
+        ? `已截图 ${shot.width}×${shot.height}，图片已复制，可直接粘贴`
+        : `已截图 ${shot.width}×${shot.height}，路径已复制`,
+    };
   } catch (err) {
     return { toast: `截图失败：${messageOf(err)}` };
   }
@@ -131,8 +157,11 @@ export const shotPlugin: CommandPlugin = {
   trigger: '/shot',
   name: '屏幕截图',
   description:
-    '屏幕截图：/shot 截取光标所在屏幕、/shot 2 指定显示器、/shot -d3 延时 3 秒；路径自动进剪贴板。',
+    '屏幕截图：回车区域框选（推荐）；也可指定显示器整屏截图、延时截图。图片本体自动进剪贴板可直接粘贴。',
   icon: '📸',
+  argsHint: '[屏序号] [-d秒]',
+  examples: ['/shot', '/shot 2', '/shot -d3', '/hotkey 查全部全局热键'],
+  hotkeys,
 
   isAction: () => false,
 
@@ -144,20 +173,42 @@ export const shotPlugin: CommandPlugin = {
     const target = monitor ?? -1;
     const items: PanelItem[] = [];
 
+    // 区域框选放在首位：桌面截图工具的主路径是"框一块"，整屏只是兜底。
+    // 延时档位对框选同样有意义（先把菜单收起来/切到目标窗口再框）。
+    items.push({
+      id: `${PLUGIN_ID}:region`,
+      title: delayMs > 0 ? `${delayMs / 1000} 秒后框选区域截图` : '框选区域截图',
+      description: '拖拽选择范围，回车确认，Esc 取消；图片直接进剪贴板',
+      icon: '✂️',
+      badge: delayMs > 0 ? `延时 ${delayMs / 1000}s` : '推荐',
+      metadata: { action: 'region', monitor: target, delayMs },
+    });
+
     items.push({
       id: `${PLUGIN_ID}:now`,
-      title: delayMs > 0 ? `${delayMs / 1000} 秒后截取${monitorLabel(list, target)}` : `截取${monitorLabel(list, target)}`,
-      description: '先隐藏 LiteLauncher 再截取；完成后面板自动刷新',
+      title: delayMs > 0 ? `${delayMs / 1000} 秒后截取${monitorLabel(list, target)}` : `截取${monitorLabel(list, target)}整屏`,
+      description: '整屏存图，图片同样直接进剪贴板',
       icon: '📸',
-      badge: delayMs > 0 ? `延时 ${delayMs / 1000}s` : '截图',
+      badge: '整屏',
       metadata: { action: 'capture', monitor: target, delayMs },
+    });
+
+    // 标注入口：框选后进标注层画箭头/马赛克/文字，确认后才出图。
+    // 紧跟在框选项之后——两者是同一条路径的两种收尾方式。
+    items.push({
+      id: `${PLUGIN_ID}:annotate`,
+      title: delayMs > 0 ? `${delayMs / 1000} 秒后框选并标注` : '框选区域并标注',
+      description: '框选后进入标注层：箭头 / 矩形 / 文字 / 马赛克 / 步骤号，完成后图片进剪贴板',
+      icon: '✏️',
+      badge: '标注',
+      metadata: { action: 'region', monitor: target, delayMs, annotate: true },
     });
 
     // 每块屏一条：把"指定显示器"变成可点选项，不必记序号
     for (const m of list) {
       items.push({
         id: `${PLUGIN_ID}:mon${m.index}`,
-        title: `截取显示器 ${m.index} · ${m.width}×${m.height}`,
+        title: `截取显示器 ${m.index} · ${m.width}×${m.height} 整屏`,
         description: `${m.name || '显示器'}${m.primary ? ' · 主屏' : ''} · 缩放 ${Math.round(m.scaleFactor * 100)}%`,
         icon: '🖥️',
         badge: m.primary ? '主屏' : '副屏',
@@ -169,11 +220,11 @@ export const shotPlugin: CommandPlugin = {
     for (const seconds of [3, 5]) {
       items.push({
         id: `${PLUGIN_ID}:delay${seconds}`,
-        title: `${seconds} 秒后截取${monitorLabel(list, target)}`,
+        title: `${seconds} 秒后框选区域截图`,
         description: '留出收起菜单、摆放窗口的时间',
         icon: '⏱️',
         badge: `${seconds}s`,
-        metadata: { action: 'capture', monitor: target, delayMs: seconds * 1000 },
+        metadata: { action: 'region', monitor: target, delayMs: seconds * 1000 },
       });
     }
 
@@ -196,31 +247,13 @@ export const shotPlugin: CommandPlugin = {
       });
       items.push({
         id: `${PLUGIN_ID}:copy`,
-        title: '复制最近截图路径',
+        title: '复制最近截图的路径',
         description: lastShot.path,
         icon: '📋',
-        badge: '复制',
+        badge: '路径',
         metadata: { action: 'copy', path: lastShot.path },
       });
-    } else {
-      items.push({
-        id: `${PLUGIN_ID}:where`,
-        title: '截图的存放位置',
-        description: '首次截图后落在这里：数据目录/LiteLauncher/plugins/shot/screenshots/',
-        icon: '📂',
-        badge: '说明',
-        metadata: { action: 'none' },
-      });
     }
-
-    items.push({
-      id: `${PLUGIN_ID}:hotkey`,
-      title: `全局热键 ${HOTKEY}`,
-      description: '任意界面按下即截图，无需打开启动器（结果以系统通知反馈）',
-      icon: '⌨️',
-      badge: '热键',
-      metadata: { action: 'none' },
-    });
 
     return { items, emptyText: '无可用截图选项' };
   },
@@ -228,6 +261,26 @@ export const shotPlugin: CommandPlugin = {
   async onSelect(item: PanelItem): Promise<AfterSelect> {
     const meta = item.metadata ?? {};
     const action = String(meta.action ?? '');
+
+    // 区域框选：关掉主窗口 → 开全屏透明遮罩层 → 用户拖拽 → 遮罩层自行截图并关闭
+    if (action === 'region') {
+      const monitor = typeof meta.monitor === 'number' ? meta.monitor : -1;
+      const delayMs = typeof meta.delayMs === 'number' ? meta.delayMs : 0;
+      // 标注模式只是给遮罩层多传一个标志，由它决定截图后是收尾还是转标注层
+      const annotate = meta.annotate === true;
+      try {
+        await ctx.windows.open('select', {
+          monitor: String(monitor),
+          delayMs: String(delayMs),
+          ...(annotate ? { annotate: '1' } : {}),
+        });
+        // 遮罩层接管后续流程，这里必须关掉主窗口，
+        // 否则遮罩层底图里会拍到启动器自己
+        return { close: true };
+      } catch (err) {
+        return { toast: `无法打开框选层：${messageOf(err)}` };
+      }
+    }
 
     if (action === 'capture') {
       const monitor = typeof meta.monitor === 'number' ? meta.monitor : -1;
@@ -252,7 +305,7 @@ export const shotPlugin: CommandPlugin = {
       return path ? { copy: path, toast: '路径已复制' } : { toast: '没有可复制的路径' };
     }
 
-    return {};
+    return { toast: '该项仅用于说明' };
   },
 };
 
@@ -270,16 +323,34 @@ async function setupHotkey(): Promise<void> {
     return;
   }
 
+  // 只在注册成功后收录，理由同/pick
+  hotkeys.length = 0;
+  hotkeys.push({ accel: HOTKEY, description: '免开启动器整屏截图，图片直接进剪贴板' });
+
   await ctx.shortcuts.on(HOTKEY, () => {
     void (async () => {
       try {
-        const shot = await ctx.screen.capture({ monitor: -1, hideWindows: true, delayMs: 0 });
+        // 图片本体进剪贴板：启动器不可见，用户看不到 toast，
+        // 粘贴一次成功才是唯一可靠的"成了"信号
+        const shot = await ctx.screen.capture({
+          monitor: -1,
+          hideWindows: true,
+          delayMs: 0,
+          toClipboard: true,
+        });
         lastShot = { path: shot.path, width: shot.width, height: shot.height };
         lastShotLoaded = true;
         await ctx.settings.setJson('lastShot', lastShot);
-        await ctx.clipboard.write(shot.path);
+        if (!shot.clipboardImage) {
+          await ctx.clipboard.write(shot.path).catch(() => undefined);
+        }
         // 启动器不可见，只能靠系统通知把结果交回用户
-        await ctx.notify.send('截图已保存', `${shot.width}×${shot.height} · 路径已复制到剪贴板`);
+        await ctx.notify.send(
+          '截图已保存',
+          shot.clipboardImage
+            ? `${shot.width}×${shot.height} · 图片已复制，可直接粘贴`
+            : `${shot.width}×${shot.height} · 路径已复制到剪贴板`,
+        );
       } catch (err) {
         await ctx.notify.send('截图失败', messageOf(err)).catch(() => undefined);
       }
@@ -289,5 +360,7 @@ async function setupHotkey(): Promise<void> {
 
 export function setup(): void {
   pluginRegistry.register(shotPlugin);
+  registerView(VIEW_SELECT, ShotSelect);
+  registerView(VIEW_ANNOTATE, ShotAnnotate);
   void setupHotkey();
 }

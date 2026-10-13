@@ -189,10 +189,19 @@ export const dictPlugin: CommandPlugin = {
   id: PLUGIN_ID,
   trigger: '/dict',
   name: '英文词典',
-  description: '英文词典：/dict hello 查音标、词性与释义，回车联网查询、再回车复制释义或打开发音（数据源 dictionaryapi.dev）。',
+  description: '英文词典：查音标、词性、释义与例句，可复制释义或打开发音（数据源 dictionaryapi.dev）。',
   icon: '📖',
+  argsHint: '<英文单词>',
+  examples: ['/dict hello', '/dict serendipity', '/dict ephemeral'],
 
   isAction: () => false,
+
+  /**
+   * 声明 300ms 防抖：壳层"停止输入即出结果"，用户不必再按一次回车。
+   * 壳层对 query() 默认逐键调用且无防抖，直接联网会打爆接口；
+   * 有了这个字段就能安全地把两段式范式简化掉。
+   */
+  queryDebounceMs: 300,
 
   async query(input: ParsedInput): Promise<PanelData> {
     const word = wordOf(input);
@@ -209,15 +218,22 @@ export const dictPlugin: CommandPlugin = {
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
       return { items: hit.items, emptyText: '无结果' };
     }
-    return {
-      items: [
-        makeItem('fetch', `查询「${word}」`, '回车联网获取音标与释义（dictionaryapi.dev）', '查询', undefined, '🔎', {
-          fetch: key,
-        }),
-        makeItem('help', '/dict hello', '输入英文单词，回车联网查询', '用法', undefined, '💡'),
-      ],
-      emptyText: '回车查询',
-    };
+    try {
+      const items = await fetchDict(key);
+      cache.set(key, { at: Date.now(), items });
+      return { items, emptyText: '无结果' };
+    } catch (err) {
+      // 404（词典未收录）与网络异常要区分开：前者是"词不存在"，重试无用
+      return {
+        items: [
+          makeItem('retry', `「${word}」查询失败：${errText(err)}`, '回车重试', '失败', undefined, '⚠️', {
+            fetch: key,
+          }),
+          makeItem('help', '/dict hello', '仅收录英文词条；发音交由系统浏览器播放', '用法', undefined, '💡'),
+        ],
+        emptyText: '查询失败',
+      };
+    }
   },
 
   async onSelect(item: PanelItem): Promise<AfterSelect> {

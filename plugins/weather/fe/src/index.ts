@@ -4,10 +4,11 @@
  * 数据源 wttr.in（免费 / 免密 / 返回 JSON）。请求经宿主代理 `ctx.http`（即 `svc.http.send`），
  * 因此不受 webview 的 CORS 限制；manifest 需声明 `net:wttr.in`。
  *
- * 关键设计：壳层对 `query()` 是**逐键调用且无防抖**的，所以绝不在 query 里发请求——
- * 输入时只渲染一个「查询」项，真正的抓取发生在 onSelect（用户显式回车），
- * 结果按输入缓存 5 分钟，抓取完成后返回 `refresh` 让面板就地刷新。
- * 这套「显式触发 + 缓存 + 刷新」是全部网络类插件的统一范式。
+ * 关键设计：壳层支持插件声明 `queryDebounceMs`，本插件设为 300ms——
+ * 停止输入即自动联网出结果，用户不必再按一次回车。
+ * 请求经宿主代理 `ctx.http`（即 `svc.http.send`），不受 webview 的 CORS 限制；
+ * manifest 需声明 `net:wttr.in`。结果按查询位置缓存 5 分钟，避免逐键重复打 API。
+ * 抓取失败时给一条带 `metadata.fetch` 的重试项，由 onSelect 承接。
  */
 import {
   getPluginContext,
@@ -236,10 +237,20 @@ export const weatherPlugin: CommandPlugin = {
   trigger: '/weather',
   name: '天气查询',
   description:
-    '天气查询：/weather 北京 联网获取实况与今日预报（数据源 wttr.in）。不带城市用本机网络位置，回车查询、再回车复制结果。',
+    '天气查询：联网获取实况与今日预报（数据源 wttr.in）。不带城市用本机网络位置，停止输入即自动出结果。',
   icon: '🌤️',
+  argsHint: '<城市名>',
+  examples: ['/weather 北京', '/weather Tokyo', '/weather New York'],
 
   isAction: () => false,
+
+  /**
+   * 声明 300ms 防抖：壳层据此"停止输入即出结果"，用户不用再按一次回车。
+   *
+   * 此前是"query 只给一条『查询』项 → 回车才联网"的两段式，代价是一次多余
+   * 的按键。壳层加 queryDebounceMs 后，逐键打 API 的问题被解决，范式得以简化。
+   */
+  queryDebounceMs: 300,
 
   async query(input: ParsedInput): Promise<PanelData> {
     const loc = locationOf(input);
@@ -248,20 +259,36 @@ export const weatherPlugin: CommandPlugin = {
       return { items: hit.items, emptyText: '无结果' };
     }
     const label = loc || '当前位置';
-    return {
-      items: [
-        makeItem('fetch', `查询「${label}」天气`, '回车联网获取（wttr.in，约 1 秒）', '查询', undefined, '🔎', {
-          fetch: loc,
-        }),
-        makeItem('help', '/weather 上海 · /weather Tokyo', '输入城市名（支持中英文），不带则按本机定位', '用法', undefined, '💡'),
-      ],
-      emptyText: '回车查询',
-    };
+    // 还没输入城市名：只给用法提示，不联网
+    if (!loc) {
+      return {
+        items: [
+          makeItem('help', '输入城市名即可查询天气', '/weather 上海 · /weather Tokyo', '用法', undefined, '💡'),
+        ],
+        emptyText: '请输入城市名',
+      };
+    }
+
+    try {
+      const items = await fetchWeather(loc);
+      cache.set(loc, { at: Date.now(), items });
+      return { items, emptyText: '无结果' };
+    } catch (err) {
+      return {
+        items: [
+          makeItem('retry', `查询「${label}」失败：${errText(err)}`, '回车重试', '失败', undefined, '⚠️', {
+            fetch: loc,
+          }),
+        ],
+        emptyText: '查询失败',
+      };
+    }
   },
 
   async onSelect(item: PanelItem): Promise<AfterSelect> {
     const loc = item.metadata?.fetch;
     if (typeof loc === 'string') {
+      // 仅用于"失败后重试"这条路径（成功结果已由 query 直接给出）
       try {
         const items = await fetchWeather(loc);
         cache.set(loc, { at: Date.now(), items });
@@ -269,9 +296,6 @@ export const weatherPlugin: CommandPlugin = {
       } catch (err) {
         return { toast: `查询失败：${errText(err)}` };
       }
-    }
-    if (item.badge === '用法') {
-      return { toast: '输入城市名后回车查询' };
     }
     const value = item.metadata?.value;
     if (typeof value === 'string' && value) {
