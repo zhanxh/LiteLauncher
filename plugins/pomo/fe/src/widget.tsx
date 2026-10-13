@@ -15,7 +15,7 @@
 import { createSignal, createMemo, onCleanup, onMount, Show } from 'solid-js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getPluginContext } from '@ll/sdk';
-import { deriveView, arcDasharray, type TimerSnapshot } from './timer';
+import { deriveView, arcDasharray, normalizeTargetMs, type TimerSnapshot } from './timer';
 import './widget.css';
 
 const ctx = getPluginContext('pomo');
@@ -62,8 +62,8 @@ export function PomoWidget() {
       readSetting('minutes'),
     ]);
     if (!alive) return;
-    const parsed = Number.parseFloat(t ?? '0');
-    setTarget(Number.isFinite(parsed) ? parsed : 0);
+    const parsed = normalizeTargetMs(t);
+    setTarget(parsed);
     setLabel(l ?? '');
     setMinutes(Number.parseInt(m ?? '0', 10) || 0);
 
@@ -72,9 +72,8 @@ export function PomoWidget() {
     // 而 UI 必须区分（前者显示"时间到"，后者显示"准备开始"）
     const t0 = Date.now();
     setNow(t0);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      if (parsed <= t0) setFinished(true);
-      else setFinished(false);
+    if (parsed > 0) {
+      setFinished(parsed <= t0);
     } else {
       setFinished(false);
     }
@@ -105,6 +104,25 @@ export function PomoWidget() {
     if (timer) clearInterval(timer);
   });
 
+  /**
+   * 拖动窗口。
+   *
+   * 为什么必须做：挂件是 `decorated: false`，没有标题栏，系统不提供拖动区。
+   * 用户想挪开它时如果拖不动，体感就是"这窗口卡死了/关不掉"——
+   * 这正是最初反馈的问题之一。
+   *
+   * 挂在 `.pw-card` 上而不是挂件根元素：按钮区的 mousedown 会冒泡到卡片，
+   * 那样点按钮会顺带拖一下窗口，故用 closest 判断落在按钮上就放弃拖动。
+   */
+  function beginDrag(ev: MouseEvent) {
+    const target = ev.target as HTMLElement | null;
+    if (target?.closest?.('.pw-actions')) return;
+    ev.preventDefault();
+    void getCurrentWindow()
+      .startDragging()
+      .catch(() => undefined);
+  }
+
   /** 暂停/继续：把剩余时间写回 settings 由 sidecar 接管，视图只负责发意图 */
   /**
    * 跨进程下发命令。
@@ -130,7 +148,28 @@ export function PomoWidget() {
 
   async function stop() {
     await sendCommand('stop');
-    await sync();
+    // 必须真的关窗：挂件是 decorated:false + skip_taskbar，
+    // 用户找不到系统关闭按钮，✕ 是唯一的出口。
+    // 先关窗再sync —— 关窗会销毁 JS 上下文，之后的调用不会再执行。
+    await getCurrentWindow()
+      .close()
+      .catch(() => undefined);
+    alive = false;
+    if (timer) clearInterval(timer);
+  }
+
+  /**
+   * 右键菜单：关窗但不停止计时。
+   *
+   * 与 stop() 的区别很关键——挂件窗口关掉后 sidecar 仍在计时（到点照常通知），
+   * 用户重新 /pomo 就能再打开。这是"收起"而非"停止"。
+   */
+  async function dismiss() {
+    await getCurrentWindow()
+      .close()
+      .catch(() => undefined);
+    alive = false;
+    if (timer) clearInterval(timer);
   }
 
   const dash = () => arcDasharray(view().progress, RADIUS);
@@ -142,46 +181,54 @@ export function PomoWidget() {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <div class="pw-ring">
-        <svg viewBox="0 0 64 64" width="64" height="64" aria-hidden="true">
-          <circle class="pw-track" cx="32" cy="32" r={RADIUS} fill="none" stroke-width="4" />
-          <circle
-            class="pw-arc"
-            cx="32"
-            cy="32"
-            r={RADIUS}
-            fill="none"
-            stroke-width="4"
-            stroke-linecap="round"
-            stroke-dasharray={dash()}
-            transform="rotate(-90 32 32)"
-          />
-        </svg>
-        <div class="pw-text">{view().text}</div>
-      </div>
-
-      <div class="pw-meta">
-        <div class="pw-label" title={view().label}>
-          {view().label}
+      {/* 卡片单独一层：根元素铺满窗口，背景/圆角/边框画在内层才不会被窗口矩形切出四角。
+          mousedown 触发拖动，让无边框窗口也能挪位置 */}
+      <div class="pw-card" onMouseDown={beginDrag}>
+        <div class="pw-ring">
+          <svg viewBox="0 0 64 64" width="64" height="64" aria-hidden="true">
+            <circle class="pw-track" cx="32" cy="32" r={RADIUS} fill="none" stroke-width="4" />
+            <circle
+              class="pw-arc"
+              cx="32"
+              cy="32"
+              r={RADIUS}
+              fill="none"
+              stroke-width="4"
+              stroke-linecap="round"
+              stroke-dasharray={dash()}
+              transform="rotate(-90 32 32)"
+            />
+          </svg>
+          <div class="pw-text">{view().text}</div>
         </div>
-        <Show when={view().running && view().endAt}>
-          <div class="pw-end">{view().endAt} 结束</div>
+
+        <div class="pw-meta">
+          <div class="pw-label" title={view().label}>
+            {view().label}
+          </div>
+          <Show when={view().running && view().endAt}>
+            <div class="pw-end">{view().endAt} 结束</div>
+          </Show>
+        </div>
+
+        {/* 悬停才出现的操作区：不占常态视觉空间，也避免小窗被误触。
+            ⌃= 收起（计时继续），✕ = 停止并关窗 */}
+        <Show when={hovered()}>
+          <div class="pw-actions">
+            <Show when={view().running}>
+              <button class="pw-btn" title="暂停" onClick={() => void pause()}>
+                ❚❚
+              </button>
+            </Show>
+            <button class="pw-btn" title="收起挂件（计时继续）" onClick={() => void dismiss()}>
+              ⌃
+            </button>
+            <button class="pw-btn pw-btn--danger" title="停止计时并关闭" onClick={() => void stop()}>
+              ✕
+            </button>
+          </div>
         </Show>
       </div>
-
-      {/* 悬停才出现的操作区：不占常态视觉空间，也避免小窗被误触 */}
-      <Show when={hovered()}>
-        <div class="pw-actions">
-          <Show when={view().running}>
-            <button class="pw-btn" title="暂停" onClick={() => void pause()}>
-              ❚❚
-            </button>
-          </Show>
-          <button class="pw-btn" title="停止并收起" onClick={() => void stop()}>
-            ✕
-          </button>
-        </div>
-      </Show>
     </div>
   );
 }

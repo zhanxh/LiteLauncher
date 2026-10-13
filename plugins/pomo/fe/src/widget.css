@@ -6,17 +6,48 @@
 
    尺寸按"贴在桌面上不碍事"设计：常态只有圆环+倒计时+标签，
    操作按钮仅在悬停时出现（见 .pw-actions），避免小窗常驻按钮抢焦点。
+
+   ⚠️ 透明处理（踩过坑）：
+   index.html 里有一条全局的 `html, body, #root { background-color:#1a1d24 !important }`
+   ——带 `!important`，优先级高于插件的普通 CSS。挂件窗口若不透明，
+   这条底色会填满整个窗口，于是：
+     · `.pw-root` 的 border-radius 切出的四角露出 #1a1d24 矩形角
+     · 加上 border 只画在左右和下方 → 视觉上就是"挂件左右下有个怪边框"
+   所以挂件必须让窗口本身透明（manifest 的 transparent:true），
+   并在这里用 !important 强制把 html/body/#root 背景清成透明。
+   同理挂件自己的卡片圆角要画在**内层元素**上，而不是根元素——
+   根元素铺满窗口时圆角没有意义。
    ========================================================================== */
+
+/* 窗口底色清成透明。同样必须用 !important 才能压过 index.html 的全局声明。 */
+html,
+body,
+#root {
+  background: transparent !important;
+  background-color: transparent !important;
+}
 
 .pw-root {
   display: flex;
   align-items: center;
   gap: 10px;
   height: 100%;
-  padding: 0 14px;
   box-sizing: border-box;
   font-family: var(--font-family);
   color: var(--text-main);
+  /* 根元素只负责布局，背景与圆角交给 .pw-card：
+     根元素铺满窗口，此刻画边框/圆角会和窗口矩形打架 */
+  overflow: hidden;
+}
+
+/* 真正的卡片：贴桌面时是"一块小挂件"而不是"一个窗口" */
+.pw-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  height: 100%;
+  padding: 0 14px;
   background-color: var(--bg-solid);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-window);
@@ -26,7 +57,7 @@
   transition: opacity 0.15s ease;
 }
 
-.pw-root.pw-hovered {
+.pw-root.pw-hovered .pw-card {
   opacity: 1;
 }
 
@@ -79,7 +110,8 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 96px;
+  /* 悬停时会多出 3 个按钮，给标签让出宽度；否则省略号会在按钮弹出时跳动 */
+  max-width: 78px;
 }
 
 .pw-end {
@@ -120,4 +152,10 @@
 
 .pw-btn:active {
   opacity: 0.7;
+}
+
+/* 停止是唯一的不可逆操作，给个区别于"收起/暂停"的视觉标识 */
+.pw-btn--danger:hover {
+  background-color: color-mix(in srgb, var(--red, #ef4444) 22%, transparent);
+  color: var(--red, #ef4444);
 }

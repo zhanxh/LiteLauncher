@@ -6,7 +6,8 @@
  * 而这些恰好都能用纯函数测。
  */
 
-/** 一个番茄钟的对外快照 */
+/**
+ * 一个番茄钟的对外快照 */
 export interface TimerSnapshot {
   /** 绝对结束时间戳（ms）。0 表示未在计时 */
   target: number;
@@ -14,6 +15,33 @@ export interface TimerSnapshot {
   label: string;
   /** 总时长（分钟） */
   minutes: number;
+}
+
+/**
+ * 把 sidecar 写进 settings 的 `target` 归一成**毫秒**。
+ *
+ * ## 为什么必须做
+ *
+ * sidecar 是 Python，内部计时全用 `time.time()` —— **秒级**时间戳（约 1.79e9）。
+ * 而 `deriveView` 要拿 `target` 和 `Date.now()`（**毫秒**，约 1.79e12）相减。
+ * 两者直接相比恒为巨大负数 → 永远命中 `remainingMs <= 0` 分支 →
+ * 挂件恒显示 `00:00`、进度环恒为走满，**且全程零报错**。
+ *
+ * 这个 bug 极隐蔽：类型都是 number，TS 查不出来，只有真机看倒计时才发现。
+ *
+ * ## 为什么按量级自动判定而不是写死 `* 1000`
+ *
+ * settings 是**持久化**的。若将来 sidecar 改用毫秒，或用户本地留着旧数据，
+ * 硬编码换算会再次静默出错——而且错的方向相反，更难察觉。
+ *
+ * 阈值 1e11 的依据：秒级时间戳到公元 2286 年才到 1e10（现在约 1.79e9）；
+ * 毫秒级时间戳 1973 年之后就超过 1e11（现在约 1.79e12）。中间留了三个数量级余量。
+ */
+export function normalizeTargetMs(raw: string | number | null | undefined): number {
+  if (raw === null || raw === undefined || raw === '') return 0;
+  const v = typeof raw === 'number' ? raw : Number.parseFloat(raw);
+  if (!Number.isFinite(v) || v <= 0) return 0;
+  return v < 1e11 ? v * 1000 : v;
 }
 
 /** 面板/挂件的展示态 */

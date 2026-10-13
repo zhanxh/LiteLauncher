@@ -1470,6 +1470,30 @@ function testPomoTimerModule() {
 
     // 3) 进度是"已过比例"：刚开始应接近 0，快结束应接近 1
     const now = 1_700_000_000_000;
+
+    // 3a) 回归：sidecar 用 Python time.time() 写的是**秒级**时间戳，
+    // 而 deriveView 要拿它和 Date.now()（毫秒）比。若不归一，
+    // remainingMs 恒为巨大负数 → 永远显示 00:00 且进度走满，且零报错。
+    const secNow = 1_700_000_000;
+    assert(T.normalizeTargetMs(String(secNow + 25 * 60)) === (secNow + 25 * 60) * 1000,
+      '秒级 target 应被换算成毫秒');
+    assert(T.normalizeTargetMs(String(now)) === now,
+      '已是毫秒的 target 应原样保留（不能重复 ×1000）');
+    assert(T.normalizeTargetMs('') === 0 && T.normalizeTargetMs(null) === 0,
+      '空值应归零而不是变成 NaN');
+    assert(T.normalizeTargetMs('abc') === 0, '非数字应归零');
+    assert(T.normalizeTargetMs('0') === 0 && T.normalizeTargetMs('-5') === 0,
+      '0 与负数应归零');
+    // 端到端：归一后喂给 deriveView，必须得到正常的 25:00 而非 00:00
+    const normalized = T.deriveView(
+      { target: T.normalizeTargetMs(String(secNow + 25 * 60)), label: '写代码', minutes: 25 },
+      secNow * 1000,
+    );
+    assert(normalized.text === '25:00',
+      `归一后应显示 25:00 而非 00:00（秒/毫秒混用的回归），实得 ${normalized.text}`);
+    assert(normalized.running === true, '归一后应处于计时中');
+    assert(normalized.progress < 0.01, `归一后进度应接近 0，实得 ${normalized.progress}`);
+
     const started = T.deriveView({ target: now + 25 * 60_000, label: '写代码', minutes: 25 }, now);
     assert(started.running === true, '未到点应running=true');
     assert(started.text === '25:00', `刚开始应显示 25:00，实得 ${started.text}`);
