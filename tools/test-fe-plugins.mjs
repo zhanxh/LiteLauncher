@@ -188,6 +188,38 @@ const CAPTURE_FIXTURE = {
   bytes: 204800,
 };
 
+// ── 剪贴板历史桩（P1 /clip）────────────────────────────────────────────────────
+// 内存实现；行为对齐宿主侧的隐私策略：疑似凭据不落盘 + 条数上限。
+const clipStore = {
+  /** 当前系统剪贴板内容（ingest 时被读走） */
+  text: '',
+  entries: [],
+  seq: 0,
+  watching: true,
+  maxEntries: 200,
+  maxBytes: 64 * 1024,
+  retentionDays: 7,
+};
+
+function resetClipStore() {
+  clipStore.text = '';
+  clipStore.entries = [];
+  clipStore.seq = 0;
+  clipStore.watching = true;
+}
+
+/** 与 Rust 侧 looks_like_secret 同口径的测试端实现（用于验"疑似凭据不入库"） */
+function looksLikeSecret(text) {
+  const t = String(text || '').trim();
+  if (t.length < 8 || t.length > 512) return false;
+  if (t.startsWith('-----BEGIN') && t.includes('PRIVATE KEY')) return true;
+  const lower = t.toLowerCase();
+  for (const key of ['password', 'passwd', 'secret', 'api_key', 'apikey', 'token', 'pwd']) {
+    if (lower.includes(`${key}=`) || lower.includes(`${key}:`)) return true;
+  }
+  return t.split((c) => !/[a-zA-Z0-9]/.test(c)).some((seg) => seg.length >= 24);
+}
+
 // ── 壳层依赖桩 ────────────────────────────────────────────────────────────────
 const registered = [];
 const svcCalls = [];
@@ -203,10 +235,53 @@ const sdkStub = {
     getById(id) {
       return registered.find((p) => p.id === id);
     },
+    // /hotkey 速查表要遍历全部插件收集自报热键，缺这个方法会直接抛错
+    getAll() {
+      return registered.slice();
+    },
   },
   getPluginContext(pluginId) {
     const call = async (method, params) => {
       svcCalls.push({ pluginId, method, params });
+      // 剪贴板历史按方法分派，让插件侧的策略展示与开关切换能被真实断言
+      if (method === 'svc.clipboard.history.ingest') {
+        if (!looksLikeSecret(clipStore.text) && clipStore.text && clipStore.text !== clipStore.entries[0]?.text) {
+          clipStore.entries.unshift({ id: ++clipStore.seq, text: clipStore.text, ts: Date.now() });
+          clipStore.entries.length = Math.min(clipStore.entries.length, clipStore.maxEntries);
+        }
+        return null;
+      }
+      if (method === 'svc.clipboard.history.recent') {
+        return clipStore.entries.slice(0, Number(params?.limit ?? 50));
+      }
+      if (method === 'svc.clipboard.history.search') {
+        const kw = String(params?.keyword ?? '').toLowerCase();
+        return clipStore.entries.filter((e) => e.text.toLowerCase().includes(kw)).slice(0, Number(params?.limit ?? 50));
+      }
+      if (method === 'svc.clipboard.history.recall') {
+        const hit = clipStore.entries.find((e) => e.id === params?.id);
+        if (!hit) throw new Error(`未找到该条目: ${params?.id}`);
+        clipStore.text = hit.text;
+        return null;
+      }
+      if (method === 'svc.clipboard.history.clear') {
+        clipStore.entries = [];
+        return null;
+      }
+      if (method === 'svc.clipboard.history.watching') {
+        if (params?.on === undefined) return clipStore.watching;
+        clipStore.watching = Boolean(params.on);
+        return null;
+      }
+      if (method === 'svc.clipboard.history.policy') {
+        return {
+          max_entries: clipStore.maxEntries,
+          max_bytes: clipStore.maxBytes,
+          retention_days: clipStore.retentionDays,
+          excluded_apps: ['1password', 'bitwarden'],
+          detect_secrets: true,
+        };
+      }
       return null;
     };
     const svc = (method, params = {}) => call(`svc.${method}`, params);
@@ -276,9 +351,25 @@ const sdkStub = {
         },
         capture: async (opts = {}) => {
           svcCalls.push({ pluginId, method: 'svc.screen.capture', params: opts });
+          // 区域框选：直接以区域尺寸为准，并按宿主约定回传 region
+          if (opts.region && opts.region.width > 0 && opts.region.height > 0) {
+            return {
+              ...CAPTURE_FIXTURE,
+              width: opts.region.width,
+              height: opts.region.height,
+              region: opts.region,
+              clipboardImage: Boolean(opts.toClipboard),
+            };
+          }
           const monitor = typeof opts.monitor === 'number' ? opts.monitor : 0;
           const target = MONITORS_FIXTURE[monitor] ?? MONITORS_FIXTURE[0];
-          return { ...CAPTURE_FIXTURE, monitor, width: target.width, height: target.height };
+          return {
+            ...CAPTURE_FIXTURE,
+            monitor,
+            width: target.width,
+            height: target.height,
+            clipboardImage: Boolean(opts.toClipboard),
+          };
         },
       },
       shortcuts: {
@@ -294,6 +385,61 @@ const sdkStub = {
       windows: {
         open: async (view, params = {}) => {
           svcCalls.push({ pluginId, method: 'svc.window.open', params: { view, params } });
+        },
+      },
+      // 剪贴板历史（P1 /clip）：内存实现，行为对齐宿主（隐私策略强制 + 上限 + 过期）
+      clipboardHistory: {
+        ingest: async () => {
+          svcCalls.push({ pluginId, method: 'svc.clipboard.history.ingest', params: {} });
+          // 宿主侧的"疑似凭据不落盘"过滤，这里也照做，保证用例能验到
+          if (looksLikeSecret(clipStore.text)) return;
+          if (clipStore.text && clipStore.text !== clipStore.entries[0]?.text) {
+            clipStore.entries.unshift({
+              id: ++clipStore.seq,
+              text: clipStore.text,
+              ts: Date.now(),
+            });
+            clipStore.entries.length = Math.min(clipStore.entries.length, clipStore.maxEntries);
+          }
+        },
+        recent: async (limit = 50) => {
+          svcCalls.push({ pluginId, method: 'svc.clipboard.history.recent', params: { limit } });
+          return clipStore.entries.slice(0, limit);
+        },
+        search: async (keyword, limit = 50) => {
+          svcCalls.push({ pluginId, method: 'svc.clipboard.history.search', params: { keyword, limit } });
+          const kw = String(keyword ?? '').toLowerCase();
+          return clipStore.entries.filter((e) => e.text.toLowerCase().includes(kw)).slice(0, limit);
+        },
+        recall: async (id) => {
+          svcCalls.push({ pluginId, method: 'svc.clipboard.history.recall', params: { id } });
+          const hit = clipStore.entries.find((e) => e.id === id);
+          if (!hit) throw new Error(`未找到该条目: ${id}`);
+          clipStore.text = hit.text;
+        },
+        remove: async (id) => {
+          svcCalls.push({ pluginId, method: 'svc.clipboard.history.remove', params: { id } });
+          clipStore.entries = clipStore.entries.filter((e) => e.id !== id);
+        },
+        clear: async () => {
+          svcCalls.push({ pluginId, method: 'svc.clipboard.history.clear', params: {} });
+          clipStore.entries = [];
+        },
+        watching: async (on) => {
+          svcCalls.push({ pluginId, method: 'svc.clipboard.history.watching', params: { on } });
+          if (on === undefined) return clipStore.watching;
+          clipStore.watching = Boolean(on);
+          return undefined;
+        },
+        policy: async () => {
+          svcCalls.push({ pluginId, method: 'svc.clipboard.history.policy', params: {} });
+          return {
+            maxEntries: clipStore.maxEntries,
+            maxBytes: clipStore.maxBytes,
+            retentionDays: clipStore.retentionDays,
+            excludedApps: ['1password', 'bitwarden'],
+            detectSecrets: true,
+          };
         },
       },
       log: { debug() {}, info() {}, warn() {}, error() {} },
@@ -401,9 +547,13 @@ function toParsed(tokens) {
 }
 
 // 每个插件的用例：输入 token 数组 + 对产出条目的断言
-//   drive: true → 走「query → onSelect(查询项) → 再 query」的网络插件范式，expect 断言刷新后的面板
-//   expectFirst  → 断言首次 query（未联网）的面板
-//   after        → 额外的异步断言（如 dict 打开发音）
+//   expect      → 断言 query 返回的面板
+//   expectFirst → 断言首次 query 后面板里某个"中间态"（如加载中/用法提示）
+//   before      → 预置桩状态（如剪贴板历史），必须早于首个 query
+//   after       → 额外的异步断言（如 dict 打开发音）
+//
+// 注：网络插件已改为「输入即出结果」（query 直接联网 + queryDebounceMs 防抖），
+// 所以这里**不再有** drive 两段式机制——query 一次就该给出真实解析结果。
 const CASES = {
   text: [
     {
@@ -578,15 +728,13 @@ const CASES = {
     },
   ],
 
-  // ── C 组：网络插件（显式触发 + 缓存 + refresh 范式）────────────────────────
+  // ── C 组：网络插件（输入即出结果 + 缓存）────────────────────────────────
+  // 壳层加 queryDebounceMs 后，两段式（query 给「查询」项 → 回车才联网）范式已被淘汰：
+  // query 一次就该直接返回真实解析结果。这些用例因此直接断言解析结果本身。
   weather: [
     {
       tokens: ['Beijing'],
-      drive: true,
-      expectFirst: (items) => {
-        assert(items[0].badge === '查询', 'weather 首次输入不应联网，应给「查询」项');
-        assert(items[0].metadata?.fetch === 'Beijing', 'weather 查询项应携带缓存键');
-      },
+      queryDebounceMs: 300,
       expect: (items) => {
         const summary = items.find((i) => i.badge === '摘要');
         assert(summary?.metadata?.value?.includes('晴'), `weather 应把 Sunny 译为晴，实得 ${summary?.title}`);
@@ -599,13 +747,22 @@ const CASES = {
         assert(items.find((i) => i.badge === '湿度')?.metadata?.value === '14%', 'weather 湿度错误');
         assert(items.find((i) => i.badge === '今日')?.metadata?.value === '17~21°C', 'weather 今日温度区间错误');
         assert(items.find((i) => i.badge === '日出日落')?.metadata?.value === '日出 06:22 AM 日落 05:39 PM', 'weather 日出日落错误');
+        // 新范式下不应再出现「点一下才查」的中间项
+        assert(!items.some((i) => i.metadata?.fetch), 'weather 成功后不应再有 fetch 中间项');
+      },
+    },
+    {
+      // 空输入：只给用法提示，绝不联网（否则每次开面板都白打一次 API）
+      tokens: [],
+      expect: (items) => {
+        assert(items[0].badge === '用法', `weather 空输入应给用法提示，实得 ${items[0].badge}`);
       },
     },
   ],
   fx: [
     {
       tokens: ['100', 'usd', 'cny'],
-      drive: true,
+      queryDebounceMs: 300,
       expect: (items) => {
         const conv = items.find((i) => i.badge === '换算');
         assert(conv?.metadata?.value === '100 USD = 670.582 CNY', `fx 换算错误，实得 ${conv?.metadata?.value}`);
@@ -616,7 +773,7 @@ const CASES = {
     },
     {
       tokens: ['usd'],
-      drive: true,
+      queryDebounceMs: 300,
       expect: (items) => {
         assert(items.find((i) => i.badge === '基准')?.title === '1 USD 美元', 'fx 基准展示错误');
         assert(items.some((i) => i.badge === 'CNY'), 'fx 列表模式应含 CNY');
@@ -628,7 +785,7 @@ const CASES = {
   ip: [
     {
       tokens: ['8.8.8.8'],
-      drive: true,
+      queryDebounceMs: 300,
       expect: (items) => {
         assert(items.find((i) => i.badge === 'IP')?.title === '8.8.8.8', 'ip 应显示查询的 IP');
         assert(
@@ -645,7 +802,7 @@ const CASES = {
   dict: [
     {
       tokens: ['hello'],
-      drive: true,
+      queryDebounceMs: 300,
       expect: (items) => {
         assert(items.find((i) => i.badge === '单词')?.title === 'hello', 'dict 单词错误');
         assert(items.find((i) => i.badge === '音标')?.metadata?.value === '/həˈləʊ/', 'dict 音标错误');
@@ -670,7 +827,7 @@ const CASES = {
     },
     {
       tokens: ['nonexistent'],
-      drive: true,
+      queryDebounceMs: 300,
       expect: (items) => {
         assert(items[0].badge === '未找到', `dict 404 应提示「未找到」，实得 ${items[0].badge}`);
         assert(items[0].title.includes('nonexistent'), 'dict 404 应回显查询词');
@@ -680,7 +837,7 @@ const CASES = {
   tr: [
     {
       tokens: ['hello', 'world'],
-      drive: true,
+      queryDebounceMs: 300,
       expect: (items) => {
         assert(items.find((i) => i.badge === '译文')?.metadata?.value === '你好世界', 'tr 译文错误');
         assert(
@@ -698,14 +855,13 @@ const CASES = {
     },
     {
       tokens: ['zh', 'hello'],
-      drive: true,
-      expectFirst: (items) => {
+      queryDebounceMs: 300,
+      expect: (items) => {
         assert(
           items[0].description?.includes('中文 → 英语'),
           `tr「/tr zh hello」应判为中文→英语，实得 ${items[0].description}`,
         );
       },
-      expect: () => {},
     },
   ],
 
@@ -714,26 +870,50 @@ const CASES = {
     {
       tokens: [],
       expect: (items) => {
-        const now = items[0];
-        assert(now.metadata?.action === 'capture', 'shot 首项应为截图动作');
+        // 区域框选是桌面截图工具的主路径，必须排第一
+        const first = items[0];
+        assert(first.metadata?.action === 'region', `shot 首项应为区域框选，实得 ${first.metadata?.action}`);
         assert(
-          now.metadata?.monitor === -1,
-          `shot 默认应截光标所在屏幕（-1），实得 ${now.metadata?.monitor}`,
+          first.metadata?.monitor === -1,
+          `shot 默认应基于光标所在屏幕（-1），实得 ${first.metadata?.monitor}`,
+        );
+        // 整屏项降为第二项，仍保留（"截整个屏"是真实需求，只是不再是默认）
+        assert(
+          items[1]?.metadata?.action === 'capture',
+          `shot 第二项应为整屏截图，实得 ${items[1]?.metadata?.action}`,
         );
         assert(
-          items.filter((i) => i.metadata?.action === 'capture').length >= 4,
-          'shot 应给出主项 + 每块屏 + 延时档位',
+          items.filter((i) => i.metadata?.action === 'capture').length >= 3,
+          'shot 应给出整屏主项 + 每块屏',
+        );
+        assert(
+          items.filter((i) => i.metadata?.action === 'region').length >= 3,
+          'shot 应给出框选主项 + 3s/5s 延时框选档位',
         );
         assert(
           items.some((i) => i.badge === '副屏' && i.title.includes('2560×1440')),
           'shot 应列出副屏尺寸（来自 svc.screen.list）',
         );
+        // 说明类条目不该再混进可执行列表（G-3：它们曾造成"按回车无反应"的死条目）
         assert(
-          items.some((i) => i.badge === '热键' && i.title.includes('alt+shift+s')),
-          'shot 应提示全局热键',
+          !items.some((i) => i.metadata?.action === 'none'),
+          'shot 面板不应混入不可执行的说明条目',
         );
       },
       after: async (plugin, items) => {
+        // 区域框选：开全屏透明遮罩层 + 关主窗口
+        const openBefore = svcCalls.length;
+        const regionAfter = await plugin.onSelect(items[0]);
+        assert(
+          svcCalls.slice(openBefore).some((c) => c.method === 'svc.window.open' && c.params?.view === 'select'),
+          'shot 框选应开 select 视图（manifest views 声明的 id）',
+        );
+        assert(
+          regionAfter?.close === true,
+          `shot 框选后应关掉主窗口（否则遮罩底图会拍到启动器），实得 ${JSON.stringify(regionAfter)}`,
+        );
+
+        // 整屏截图：图片本体进剪贴板
         const before = svcCalls.length;
         const after = await plugin.onSelect(items.find((i) => i.metadata?.action === 'capture'));
         assert(after?.refresh === true, `shot onSelect 应返回 refresh=true，实得 ${JSON.stringify(after)}`);
@@ -741,25 +921,25 @@ const CASES = {
         assert(call, 'shot 应调用 svc.screen.capture');
         assert(call.params?.hideWindows === true, 'shot 截图前应隐藏 LiteLauncher 窗口');
         assert(
-          svcCalls.some((c) => c.method === 'svc.clipboard.write' && String(c.params?.text).endsWith('.png')),
-          'shot 应把截图路径写入剪贴板',
+          call.params?.toClipboard === true,
+          'shot 应要求图片本体进剪贴板（截图工具的默认交付物）',
         );
 
         // 刷新后应出现「最近截图」的三个操作项
         const fresh = await plugin.query(toParsed([]));
         const badges = fresh.items.map((i) => i.badge);
         assert(
-          ['打开', '文件夹', '复制'].every((b) => badges.includes(b)),
-          `shot 刷新后应出现 打开/文件夹/复制，实得 ${JSON.stringify(badges)}`,
+          ['打开', '文件夹', '路径'].every((b) => badges.includes(b)),
+          `shot 刷新后应出现 打开/文件夹/路径，实得 ${JSON.stringify(badges)}`,
         );
         const folder = fresh.items.find((i) => i.badge === '文件夹');
         assert(
           folder?.description?.endsWith('screenshots'),
           `shot「打开文件夹」应指向 screenshots 目录，实得 ${folder?.description}`,
         );
-        // 复制项走壳层通用 copy 契约
-        const copyAfter = await plugin.onSelect(fresh.items.find((i) => i.badge === '复制'));
-        assert(String(copyAfter?.copy).endsWith('.png'), 'shot 复制项应回传文件路径');
+        // 复制项走壳层通用 copy 契约（此处是**路径**，图片走剪贴板本体）
+        const copyAfter = await plugin.onSelect(fresh.items.find((i) => i.badge === '路径'));
+        assert(String(copyAfter?.copy).endsWith('.png'), 'shot 路径项应回传文件路径');
 
         // 打开项走 svc.process.launch
         const launchBefore = svcCalls.length;
@@ -779,7 +959,15 @@ const CASES = {
           items[0].metadata?.monitor === 2,
           `shot 2 应指定显示器 2，实得 ${items[0].metadata?.monitor}`,
         );
-        assert(items[0].title.includes('显示器 2'), `shot 2 标题应含显示器序号，实得 ${items[0].title}`);
+        assert(
+          items[0].title.includes('区域') || items[0].title.includes('框选'),
+          `shot 2 首项应是框选动作，实得 ${items[0].title}`,
+        );
+        // 副屏整屏项应带上显示器序号
+        assert(
+          items.some((i) => i.title.includes('显示器 2')),
+          'shot 2 应给出显示器 2 的整屏项',
+        );
       },
     },
     {
@@ -790,6 +978,109 @@ const CASES = {
           `shot -d3 应解析为 3000ms，实得 ${items[0].metadata?.delayMs}`,
         );
         assert(items[0].title.includes('3 秒后'), `shot -d3 标题应体现延时，实得 ${items[0].title}`);
+      },
+    },
+  ],
+  clip: [
+    {
+      tokens: [],
+      expect: (items) => {
+        // 隐私策略与开关必须在最前面：用户第一眼就该看到、随手能关
+        assert(
+          items[0].metadata?.action === 'toggle-watch',
+          `clip 首项应为监听开关，实得 ${items[0].metadata?.action}`,
+        );
+        assert(
+          items[1].metadata?.action === 'clear',
+          `clip 第二项应为清空，实得 ${items[1].metadata?.action}`,
+        );
+        assert(
+          items[0].description?.includes('本机'),
+          `clip 隐私说明应强调数据只存本机，实得 ${items[0].description}`,
+        );
+        assert(
+          items[0].description?.includes('疑似凭据不记录'),
+          `clip 隐私说明应体现"疑似凭据不记录"，实得 ${items[0].description}`,
+        );
+        // 无历史时给明确空态提示，而不是空白面板
+        assert(
+          items.some((i) => i.badge === '空'),
+          'clip 无历史时应给出空态提示项',
+        );
+      },
+      after: async (plugin, items) => {
+        // 1) 普通过程：打开面板时把当前剪贴板入库，然后能看到它
+        clipStore.text = 'npm run check 通过 ✅';
+        const after = await plugin.query(toParsed([]));
+        assert(
+          after.items.some((i) => i.metadata?.value === 'npm run check 通过 ✅'),
+          `clip 应把当前剪贴板入库并展示，实得 ${JSON.stringify(after.items.map((i) => i.title))}`,
+        );
+        const entry = after.items.find((i) => i.metadata?.action === 'recall');
+        assert(entry, 'clip 应给出可回填条目');
+
+        // 2) 回填：走宿主 recall 并回传 copy 契约，然后关窗（用户要能直接粘）
+        const recallAfter = await plugin.onSelect(entry);
+        assert(String(recallAfter?.copy).includes('npm run check'), 'clip 回填项应回传 copy');
+        assert(recallAfter?.close === true, 'clip 回填后应关窗，让用户直接粘贴');
+        assert(
+          svcCalls.some((c) => c.method === 'svc.clipboard.history.recall' && c.params?.id === entry.metadata.id),
+          'clip 回填应调 svc.clipboard.history.recall',
+        );
+
+        // 3) 隐私过滤：疑似凭据不得入库
+        clipStore.text = 'password=SuperSecret123456';
+        await plugin.query(toParsed([]));
+        assert(
+          !clipStore.entries.some((e) => e.text.includes('SuperSecret')),
+          'clip 疑似凭据内容不应入库（隐私策略必须生效）',
+        );
+
+        // 4) 监听开关：能暂停（处理凭据时用户需要这个动作）
+        const toggled = await plugin.onSelect(after.items.find((i) => i.metadata?.action === 'toggle-watch'));
+        assert(toggled?.refresh === true, 'clip 切换监听应刷新面板');
+        assert(clipStore.watching === false, 'clip 切换监听应真的关掉开关');
+        const paused = await plugin.query(toParsed([]));
+        assert(
+          paused.items[0].badge === '已暂停',
+          `clip 暂停后首项应标出"已暂停"，实得 ${paused.items[0].badge}`,
+        );
+        // 恢复开启，避免影响后续用例
+        await plugin.onSelect(paused.items.find((i) => i.metadata?.action === 'toggle-watch'));
+
+        // 5) 清空
+        const cleared = await plugin.onSelect((await plugin.query(toParsed([]))).items.find((i) => i.metadata?.action === 'clear'));
+        assert(cleared?.refresh === true, 'clip 清空应刷新面板');
+        assert(clipStore.entries.length === 0, 'clip 清空后历史应为空');
+        void items;
+      },
+    },
+    {
+      tokens: ['kubectl'],
+      // 预置必须在首个 query 之前，否则 expect 看到的是空态。
+      // 直接写 entries 而不是靠 ingest 灌：harness 每个用例前会 reset 桩，
+      // 靠前一个用例留下的数据会因执行顺序而 flaky。
+      before: async () => {
+        clipStore.entries = [
+          { id: 1, text: 'git push origin master', ts: Date.now() },
+          { id: 2, text: 'kubectl rollout restart api', ts: Date.now() },
+        ];
+        clipStore.seq = 2;
+        clipStore.text = 'kubectl rollout restart api';
+      },
+      expect: (items) => {
+        assert(
+          items.some((i) => i.badge === '搜索' && i.title.includes('kubectl')),
+          'clip 带关键词时应给出搜索上下文项',
+        );
+        assert(
+          items.some((i) => i.title.includes('rollout restart')),
+          `clip 搜索应命中 kubectl 那条，实得 ${JSON.stringify(items.map((i) => i.title))}`,
+        );
+        assert(
+          !items.some((i) => i.title.includes('git push')),
+          'clip 搜索不应带出无关条目',
+        );
       },
     },
   ],
@@ -888,6 +1179,72 @@ const CASES = {
       },
     },
   ],
+// ── P2 /hotkey 全局热键速查（数据源是各插件自报的 hotkeys）────────────────
+  // 注意：下面每个 before 都自行push 桩插件，且**不能清理** registered
+  //（被测插件自己就在里面）。因此各用例用不同的桩插件名，避免跨用例累积——
+  // 否则搜"截图"会命中上一个用例残留的同名桩。
+  hotkey: [
+    {
+      tokens: [],
+      // 速查表的数据来自插件注册表，而每个用例前 registered 会被清空，
+      // 所以这里要自己造出"别的插件"，模拟真实的跨插件汇总场景。
+      before: () => {
+        registered.push(
+          {
+            id: 'shot-hk', trigger: '/shot-hk', name: '屏幕截图', icon: '📸', description: '',
+            hotkeys: [{ accel: 'alt+shift+s', description: '免开启动器整屏截图' }],
+          },
+          {
+            id: 'pick-hk', trigger: '/pick-hk', name: '取色器', icon: '🎨', description: '',
+            hotkeys: [{ accel: 'alt+p', description: '取光标处颜色并复制 HEX' }],
+          },
+          {
+            id: 'text-hk', trigger: '/text-hk', name: '文本转换', icon: '📝', description: '',
+            // 无热键的插件不该凭空出现在速查表里
+          },
+        );
+      },
+      expect: (items) => {
+        const accels = items.filter((i) => i.metadata?.value).map((i) => i.title);
+        assert(accels.includes('Alt + Shift + S'), `速查表应含截图热键，实得 ${JSON.stringify(accels)}`);
+        assert(accels.includes('Alt + P'), `速查表应含取色热键，实得 ${JSON.stringify(accels)}`);
+        assert(accels.length === 2, `只应收录 2 个热键，实得 ${accels.length}：${JSON.stringify(accels)}`);
+        // 无搜索时保留分组标题（速查表的价值是一眼看全）
+        assert(items.some((i) => i.badge === '分组'), '速查表应保留分组标题');
+        assert(items.some((i) => i.badge === '屏幕截图'), '热键项应标出归属插件');
+      },
+    },
+    {
+      tokens: ['截图'],
+      expect: (items) => {
+        // 搜"截图"只该命中截图热键，且搜索态不打分组（用户要的是找到那一个）
+        const accels = items.filter((i) => i.metadata?.value).map((i) => i.title);
+        assert(accels.length === 1 && accels[0] === 'Alt + Shift + S',
+          `搜索应只命中截图热键，实得 ${JSON.stringify(accels)}`);
+        assert(!items.some((i) => i.badge === '分组'), '搜索态不应显示分组标题');
+      },
+    },
+    {
+      tokens: ['不存在的键'],
+      // 不可执行项（分组标题/空态/无匹配）必须给反馈，不能是按了没反应的死条目
+      expect: (items) => {
+        assert(items[0].badge === '无匹配', `无命中应明确提示，实得 ${items[0].badge}`);
+      },
+      after: async (plugin, items) => {
+        const after = await plugin.onSelect(items[0]);
+        assert(after?.toast, `不可执行项应给明确反馈，实得 ${JSON.stringify(after)}`);
+      },
+    },
+    {
+      tokens: [],
+      // isolate：跑这个用例前把桩插件从注册表清空，只留被测插件自己。
+      // /hotkey 自身不声明 hotkeys，于是等价于"全局一个热键都没有"的真实场景。
+      isolate: true,
+      expect: (items) => {
+        assert(items[0].badge === '空', `无热键时应明确说明而不是空白，实得 ${items[0].badge}`);
+      },
+    },
+  ],
 };
 
 function assert(condition, message) {
@@ -936,6 +1293,7 @@ async function testPlugin({ id, entry }) {
   registered.length = 0;
   moduleCache.clear();
   settingsStore.clear();
+  resetClipStore();
   let mod;
   try {
     mod = loadPluginModule(entry);
@@ -961,37 +1319,32 @@ async function testPlugin({ id, entry }) {
   for (const testCase of cases) {
     const label = testCase.tokens.length > 0 ? testCase.tokens.join(' ') : '(空输入)';
     try {
-      let data = await plugin.query(toParsed(testCase.tokens));
+      // before 钩子：预置桩状态（如剪贴板内容/历史），必须早于首个 query，
+      // 否则 expect 看到的还是空态。用例想自证"先造数据再看结果"时用它。
+      if (typeof testCase.before === 'function') await testCase.before(plugin);
+
+      // isolate：清掉 before 灌进来的桩插件，只留被测插件自己。
+      // 有些空态分支（如"全局一个热键都没有"）必须先造数据、再造空数据才能覆盖到。
+      if (testCase.isolate === true) registered.splice(0, registered.length, plugin);
+
+      // 防抖回归护栏：网络插件一旦去掉 queryDebounceMs，壳层会退回逐键调用 query()
+      // → 每敲一个字母打一次接口。这类 bug 肉眼看不见，所以在这里钉死。
+      if (typeof testCase.queryDebounceMs === 'number') {
+        const actual = plugin.queryDebounceMs;
+        if (typeof actual !== 'number' || actual < 200 || actual > 600) {
+          failures.push(
+            `${id} 声明了联网用例，却未设置合理的 queryDebounceMs（实得 ${JSON.stringify(actual)}，期望 200–600）`,
+          );
+          continue;
+        }
+      }
+
+      const data = await plugin.query(toParsed(testCase.tokens));
       if (!validatePanel(data.items, `query(${label})`, failures)) continue;
       if (typeof testCase.expectFirst === 'function') testCase.expectFirst(data.items);
 
-      let lastItems = data.items;
-
-      if (testCase.drive) {
-        // 网络插件范式：首查不应联网；onSelect(查询项) 触发抓取并声明 refresh；再查应得结果
-        const before = httpCalls.length;
-        const fetchItem = data.items.find((i) => typeof i.metadata?.fetch === 'string');
-        if (!fetchItem) {
-          failures.push(`query(${label}) 未产出可抓取的 fetch 项（drive 用例）`);
-          continue;
-        }
-        const after = await plugin.onSelect(fetchItem);
-        if (after?.refresh !== true) {
-          failures.push(`onSelect(查询项) 应返回 refresh=true，实得 ${JSON.stringify(after)}`);
-          continue;
-        }
-        if (httpCalls.length === before) {
-          failures.push(`onSelect(查询项) 未发起 svc.http.send 请求`);
-        }
-        data = await plugin.query(toParsed(testCase.tokens));
-        if (!validatePanel(data.items, `刷新后 query(${label})`, failures)) continue;
-        if (data.items.some((i) => typeof i.metadata?.fetch === 'string')) {
-          failures.push(`刷新后 query(${label}) 仍在给「查询」项——缓存未生效`);
-        }
-        lastItems = data.items;
-      }
-
-      if (typeof testCase.expect === 'function') testCase.expect(lastItems);
+      if (typeof testCase.expect === 'function') testCase.expect(data.items);
+      const lastItems = data.items;
 
       // onSelect 复制契约：任一可复制项回传 copy
       const copyable = lastItems.find((i) => typeof i.metadata?.value === 'string' && i.metadata.value);
@@ -1011,6 +1364,339 @@ async function testPlugin({ id, entry }) {
   return { id, failures };
 }
 
+/**
+ * 纯函数模块测试：`.tsx` 在本脚手架里只能返回空模块（solid JSX 需编译期），
+ * 所以插件里**可测的纯逻辑必须抽到 .ts**。这里覆盖最容易出错的几何换算——
+ * 区域框选的坐标系一旦算错，截出来的是"另一块地方"，且很难一眼看出。
+ */
+function testGeometryModule() {
+  const failures = [];
+  const file = path.join(pluginsDir, 'shot', 'fe', 'src', 'geometry.ts');
+  if (!existsSync(file)) return ['shot/fe/src/geometry.ts 不存在'];
+
+  let g;
+  try {
+    moduleCache.clear();
+    g = loadPluginModule(file);
+  } catch (err) {
+    return [`加载失败: ${err.message}`];
+  }
+
+  try {
+    // 1) 反向拖拽（右下→左上）必须归一化成正宽高，否则 u32 转换会溢出成天文数字
+    const r1 = g.normalizeDrag({ startX: 800, startY: 600, curX: 200, curY: 100 });
+    assert(r1.x === 200 && r1.y === 100, `反向拖拽起点应为 min，实得 ${JSON.stringify(r1)}`);
+    assert(r1.width === 600 && r1.height === 500, `反向拖拽宽高应为 abs 差，实得 ${JSON.stringify(r1)}`);
+
+    // 2) 正向拖拽
+    const r2 = g.normalizeDrag({ startX: 100, startY: 100, curX: 400, curY: 250 });
+    assert(r2.x === 100 && r2.y === 100 && r2.width === 300 && r2.height === 150,
+      `正向拖拽应保持原值，实得 ${JSON.stringify(r2)}`);
+
+    // 3) 误触阈值：单击（宽高 0）应判为 tiny
+    assert(g.isTinyDrag({ x: 0, y: 0, width: 0, height: 0 }) === true, '零面积应判为误触');
+    assert(g.isTinyDrag({ x: 0, y: 0, width: 2, height: 40 }) === true, '宽度过小应判为误触');
+    assert(g.isTinyDrag({ x: 0, y: 0, width: 100, height: 100 }) === false, '正常选区不应判为误触');
+
+    // 4) 100% 缩放：CSS 坐标 == 物理坐标
+    const g1 = g.cssToGlobal({ x: 10, y: 20, width: 300, height: 200 }, 1, { x: 0, y: 0 });
+    assert(g1.x === 10 && g1.y === 20 && g1.width === 300 && g1.height === 200,
+      `scale=1 时应原样透传，实得 ${JSON.stringify(g1)}`);
+
+    // 5) HiDPI 150%：CSS → 物理要乘 scale
+    const g2 = g.cssToGlobal({ x: 10, y: 20, width: 300, height: 200 }, 1.5, { x: 0, y: 0 });
+    assert(g2.x === 15 && g2.y === 30, `150% 下原点应乘 1.5，实得 ${JSON.stringify(g2)}`);
+    assert(g2.width === 450 && g2.height === 300, `150% 下宽高应乘 1.5，实得 ${JSON.stringify(g2)}`);
+
+    // 6) 副屏在主屏右侧：必须加上屏原点，否则整体偏移一个屏幕宽
+    const g3 = g.cssToGlobal({ x: 0, y: 0, width: 100, height: 100 }, 1, { x: 1920, y: 0 });
+    assert(g3.x === 1920 && g3.y === 0, `应叠加显示器原点，实得 ${JSON.stringify(g3)}`);
+
+    // 7) 副屏在主屏左侧（负坐标）：仍应正确叠加
+    const g4 = g.cssToGlobal({ x: 10, y: 10, width: 50, height: 50 }, 1, { x: -1280, y: 0 });
+    assert(g4.x === -1270 && g4.y === 10, `负原点屏应正确叠加，实得 ${JSON.stringify(g4)}`);
+
+    // 8) 零/负宽高必须被夹到 1，避免宿主 u32 转换溢出
+    const g5 = g.cssToGlobal({ x: 0, y: 0, width: 0, height: 0 }, 1, { x: 0, y: 0 });
+    assert(g5.width >= 1 && g5.height >= 1, `零宽高应夹到至少 1，实得 ${JSON.stringify(g5)}`);
+
+    // 9) 尺寸描述按物理像素呈现（用户看到的是真实像素数）
+    assert(g.describeSize({ x: 0, y: 0, width: 200, height: 100 }, 1.5) === '300 × 150',
+      `描述应按物理像素，实得 ${g.describeSize({ x: 0, y: 0, width: 200, height: 100 }, 1.5)}`);
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
+/**
+ * 纯函数模块测试：`/pomo` 桌面挂件的倒计时推导与进度环。
+ *
+ * 这块是挂件最容易出错的地方，而且错得**很显眼**（用户盯着桌面看）：
+ *   - 剩余 59.6 秒若用 floor 会显示 00:59，凭空少一秒 → 必须 ceil
+ *   - 进度是"已过比例"，写成"剩余比例"会让环在开始时是满的
+ *   - 到点后不能退回"未计时"，否则挂件会闪回 25:00 而不是停在 00:00
+ *   - 时钟取整：59.999 秒要显示 01:00
+ */
+function testPomoTimerModule() {
+  const failures = [];
+  const file = path.join(pluginsDir, 'pomo', 'fe', 'src', 'timer.ts');
+  if (!existsSync(file)) return ['pomo/fe/src/timer.ts 不存在'];
+
+  let T;
+  try {
+    moduleCache.clear();
+    T = loadPluginModule(file);
+  } catch (err) {
+    return [`加载失败: ${err.message}`];
+  }
+
+  try {
+    // 1) 倒计时取整用 ceil：59.6s 应显示 01:00（还有一分钟），不是 00:59
+    assert(T.formatCountdown(59_600) === '01:00',
+      `59.6s 应显示 01:00（ceil），实得 ${T.formatCountdown(59_600)}`);
+    assert(T.formatCountdown(59_000) === '00:59',
+      `59s 应显示 00:59，实得 ${T.formatCountdown(59_000)}`);
+    assert(T.formatCountdown(60_000) === '01:00', '60s 应显示 01:00');
+    assert(T.formatCountdown(0) === '00:00', '0 应显示 00:00');
+    assert(T.formatCountdown(-5000) === '00:00',
+      `负数应夹到 00:00 而非显示负值，实得 ${T.formatCountdown(-5000)}`);
+    assert(T.formatCountdown(NaN) === '00:00', 'NaN 应兜成 00:00');
+    assert(T.formatCountdown(25 * 60_000) === '25:00', '25 分钟应为 25:00');
+
+    // 2) HH:MM 补零
+    const hhmm = T.formatClock(new Date(2026, 0, 1, 9, 5).getTime());
+    assert(hhmm === '09:05', `9:05 应补零为 09:05，实得 ${hhmm}`);
+
+    // 3) 进度是"已过比例"：刚开始应接近 0，快结束应接近 1
+    const now = 1_700_000_000_000;
+    const started = T.deriveView({ target: now + 25 * 60_000, label: '写代码', minutes: 25 }, now);
+    assert(started.running === true, '未到点应running=true');
+    assert(started.text === '25:00', `刚开始应显示 25:00，实得 ${started.text}`);
+    assert(started.progress < 0.01,
+      `刚开始进度应接近 0（已过比例，不是剩余比例），实得 ${started.progress}`);
+    assert(started.label === '写代码', '标签应透传');
+
+    // 4) 跑了一半：进度约 0.5
+    const half = T.deriveView({ target: now + 25 * 60_000, label: '', minutes: 25 }, now + 12.5 * 60_000);
+    assert(Math.abs(half.progress - 0.5) < 0.01,
+      `过半时进度应约 0.5，实得 ${half.progress}`);
+    assert(half.label === '专注', '空标签应回落为「专注」');
+
+    // 5) 快结束：进度应接近 1 但不越界
+    const almost = T.deriveView({ target: now + 25 * 60_000, label: 'x', minutes: 25 }, now + 24.9 * 60_000);
+    assert(almost.progress > 0.99 && almost.progress <= 1,
+      `临近结束进度应接近 1 且不越界，实得 ${almost.progress}`);
+
+    // 6) 到点：running=false、文本 00:00、进度走满 1
+    //    关键是**不能**退回IDLE_VIEW（否则挂件会闪回 25:00）
+    const done = T.deriveView({ target: now - 1, label: '写代码', minutes: 25 }, now);
+    assert(done.running === false, '到点后 running 应为 false');
+    assert(done.text === '00:00', `到点应显示 00:00，实得 ${done.text}`);
+    assert(done.progress === 1, `到点进度应为 1，实得 ${done.progress}`);
+    assert(done.label === '写代码', '到点后仍应保留标签（UI 据此显示"时间到"）');
+
+    // 7) 未计时（target=0）：走IDLE_VIEW 兜底
+    const idle = T.deriveView({ target: 0, label: '', minutes: 0 }, now);
+    assert(idle.running === false, '未计时 running 应为 false');
+    assert(idle.progress === 0, '未计时进度应为 0');
+    assert(idle.text === T.IDLE_VIEW.text, '未计时应显示 IDLE_VIEW 的默认文本');
+
+    // 8) 进度越界防御：目标时间早于现在很多（时钟回拨）也不得产生负进度
+    const skewed = T.deriveView({ target: now - 3_600_000, label: 'x', minutes: 25 }, now);
+    assert(skewed.progress >= 0 && skewed.progress <= 1,
+      `进度必须夹在 0~1，实得 ${skewed.progress}`);
+
+    // 9) 进度环 dasharray：满进度应等于整圈，且两个数都在
+    const full = T.arcDasharray(1, 26).split(' ').map(Number);
+    const circ = 2 * Math.PI * 26;
+    assert(Math.abs(full[0] - circ) < 0.01, `满进度弧长应等于周长 ${circ.toFixed(2)}，实得 ${full[0]}`);
+    assert(Math.abs(full[1] - circ) < 0.01, `第二段应也是周长（留空隙），实得 ${full[1]}`);
+
+    const zero = T.arcDasharray(0, 26).split(' ').map(Number);
+    assert(zero[0] === 0, `零进度弧长应为 0，实得 ${zero[0]}`);
+
+    // 10) 越界进度要被夹住（浮点误差 / 上游脏数据都不该让环消失）
+    const over = T.arcDasharray(1.8, 26).split(' ').map(Number);
+    assert(Math.abs(over[0] - circ) < 0.01, `超过 1 的进度应夹到满圈，实得 ${over[0]}`);
+    const under = T.arcDasharray(-0.5, 26).split(' ').map(Number);
+    assert(under[0] === 0, `负进度应夹到 0，实得 ${under[0]}`);
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
+/**
+ * 纯函数模块测试：`/hotkey` 速查表的分组与格式化。
+ * 这块容易错的点：多修饰键组合（ctrl+alt+k）若归组不当会在多组里重复出现；
+ * 修饰键顺序若按输入顺序渲染，同一个组合会出现两种写法。
+ */
+function testHotkeyModule() {
+  const failures = [];
+  const file = path.join(pluginsDir, 'hotkey', 'fe', 'src', 'hotkeys.ts');
+  if (!existsSync(file)) return ['hotkey/fe/src/hotkeys.ts 不存在'];
+
+  let h;
+  try {
+    moduleCache.clear();
+    h = loadPluginModule(file);
+  } catch (err) {
+    return [`加载失败: ${err.message}`];
+  }
+
+  try {
+    // 1) 基础归组
+    assert(h.groupOf('ctrl+k') === 'ctrl', `ctrl 应归 Ctrl 组，实得 ${h.groupOf('ctrl+k')}`);
+    assert(h.groupOf('alt+p') === 'alt', `alt 应归 Alt 组，实得 ${h.groupOf('alt+p')}`);
+    assert(h.groupOf('shift+s') === 'shift', `shift 应归 Shift 组，实得 ${h.groupOf('shift+s')}`);
+    assert(h.groupOf('win+l') === 'win', `win 应归 Win 组，实得 ${h.groupOf('win+l')}`);
+    assert(h.groupOf('f5') === 'other', `无修饰键应归「其他」，实得 ${h.groupOf('f5')}`);
+
+    // 2) 多修饰键：按"最强修饰键"归组，不可在多组重复
+    assert(h.groupOf('ctrl+alt+shift+k') === 'ctrl',
+      `多修饰键应归最强者 Ctrl，实得 ${h.groupOf('ctrl+alt+shift+k')}`);
+    assert(h.groupOf('alt+shift+s') === 'alt',
+      `alt+shift 应归 Alt，实得 ${h.groupOf('alt+shift+s')}`);
+
+    // 3) 别名归一：control/option/super/cmd 与ctrl/alt/win 等价
+    assert(h.groupOf('control+k') === 'ctrl', 'control 应等价于 ctrl');
+    assert(h.groupOf('option+p') === 'alt', 'option 应等价于 alt');
+    assert(h.groupOf('super+l') === 'win', 'super 应等价于 win');
+    assert(h.groupOf('cmd+space') === 'win', 'cmd 应等价于 win');
+
+    // 4) 可读化：单字符主键大写
+    assert(h.prettyAccel('alt+p') === 'Alt + P', `alt+p 应渲染为「Alt + P」，实得 ${h.prettyAccel('alt+p')}`);
+    assert(h.prettyAccel('alt+shift+s') === 'Alt + Shift + S',
+      `alt+shift+s 应渲染为「Alt + Shift + S」，实得 ${h.prettyAccel('alt+shift+s')}`);
+
+    // 5) 修饰键顺序归一：ctrl+alt 与 alt+ctrl 必须渲染成同一个串
+    assert(h.prettyAccel('ctrl+alt+k') === h.prettyAccel('alt+ctrl+k'),
+      `同组合不应因输入顺序不同而有两种写法：${h.prettyAccel('ctrl+alt+k')} vs ${h.prettyAccel('alt+ctrl+k')}`);
+    assert(h.prettyAccel('ctrl+alt+k') === 'Ctrl + Alt + K',
+      `应按 Ctrl→Alt 固定顺序，实得 ${h.prettyAccel('ctrl+alt+k')}`);
+
+    // 6) 功能键保持小写原样（不被当成单字符大写）
+    assert(h.prettyAccel('ctrl+f5') === 'Ctrl + f5', `功能键应保持原样，实得 ${h.prettyAccel('ctrl+f5')}`);
+
+    // 7) 拆分：修饰键与主键分离
+    const sp = h.splitAccel('alt+shift+s');
+    assert(sp.key === 's' && sp.mods.length === 2, `拆分应得 mods=[alt,shift] key=s，实得 ${JSON.stringify(sp)}`);
+
+    // 8) 分组排序：组间 Ctrl→Alt→Shift→Win→其他
+    const mk = (accel, pluginId) => ({
+      accel, pluginId, description: 'd', trigger: `/${pluginId}`, pluginName: pluginId, icon: 'x',
+    });
+    const groups = h.groupHotkeys([mk('win+l', 'w'), mk('alt+p', 'p'), mk('ctrl+k', 'c'), mk('f5', 'o')]);
+    assert(groups.map((g) => g.id).join(',') === 'ctrl,alt,win,other',
+      `组间应按 Ctrl→Alt→Win→其他 排序，实得 ${groups.map((g) => g.id).join(',')}`);
+
+    // 9) 同一热键不得出现在两个组里（多修饰键归组唯一性）
+    const total = groups.reduce((n, g) => n + g.entries.length, 0);
+    assert(total === 4, `每条热键只应出现一次，实得 ${total} 条`);
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
+/**
+ * 纯函数模块测试：截图标注的几何计算。
+ * 这里最容易错的三处：反向拖拽的归一化、箭头头部的向量运算、
+ * 步骤号必须按**阅读顺序**而非点击顺序编号。
+ */
+function testAnnotateModule() {
+  const failures = [];
+  const file = path.join(pluginsDir, 'shot', 'fe', 'src', 'annotate.ts');
+  if (!existsSync(file)) return ['shot/fe/src/annotate.ts 不存在'];
+
+  let a;
+  try {
+    moduleCache.clear();
+    a = loadPluginModule(file);
+  } catch (err) {
+    return [`加载失败: ${err.message}`];
+  }
+
+  try {
+    // 1) 反向拖拽归一化：canvas 的 strokeRect 遇负宽高会朝反方向画
+    const b1 = a.normBox({ kind: 'rect', x1: 300, y1: 200, x2: 100, y2: 50 });
+    assert(b1.x === 100 && b1.y === 50 && b1.w === 200 && b1.h === 150,
+      `反向拖拽应归一化为左上+正宽高，实得 ${JSON.stringify(b1)}`);
+
+    // 2) 正向拖拽不变
+    const b2 = a.normBox({ kind: 'rect', x1: 100, y1: 50, x2: 300, y2: 200 });
+    assert(b2.x === 100 && b2.y === 50 && b2.w === 200 && b2.h === 150,
+      `正向拖拽应保持原值，实得 ${JSON.stringify(b2)}`);
+
+    // 3) 过短拖拽判定
+    assert(a.isTooShort({ kind: 'arrow', x1: 10, y1: 10, x2: 12, y2: 11 }) === true, '微小拖拽应判为过短');
+    assert(a.isTooShort({ kind: 'arrow', x1: 10, y1: 10, x2: 60, y2: 10 }) === false, '正常拖拽不应判为过短');
+
+    // 4) 箭头单位向量：向右拖(1,0)、向下拖(0,1)
+    const v1 = a.arrowVector(0, 0, 10, 0);
+    assert(Math.abs(v1.x - 1) < 1e-9 && Math.abs(v1.y) < 1e-9, `右向单位向量应为(1,0)，实得 ${JSON.stringify(v1)}`);
+    const v2 = a.arrowVector(0, 0, 0, 10);
+    assert(Math.abs(v2.x) < 1e-9 && Math.abs(v2.y - 1) < 1e-9, `下向单位向量应为(0,1)，实得 ${JSON.stringify(v2)}`);
+
+    // 5) 零长度拖拽不能返回 NaN（canvas 收到 NaN 会静默不画，用户看不到任何东西）
+    const v0 = a.arrowVector(5, 5, 5, 5);
+    assert(Number.isFinite(v0.x) && Number.isFinite(v0.y), `零长度应给默认方向而非 NaN，实得 ${JSON.stringify(v0)}`);
+
+    // 6) 箭头头部两翼：应落在终点附近、且分居两侧
+    const [h1, h2] = a.arrowHead(0, 0, 100, 0, 12);
+    assert(Number.isFinite(h1.x) && Number.isFinite(h2.x), '箭头头部坐标应为有限值');
+    assert(h1.y !== h2.y, `箭头两翼应在两侧，实得 y=${h1.y} 与 ${h2.y}`);
+    // 头部尖端回退，故x 应略小于终点 100
+    assert(h1.x < 100 && h2.x < 100, `头部应从终点回退 size，实得 x=${h1.x},${h2.x}`);
+
+    // 7) 马赛克分块：块数与覆盖范围
+    const blocks = a.mosaicBlocks(0, 0, 100, 100, 10);
+    assert(blocks.length === 100, `100×100 按 10px 分块应为 100 块，实得 ${blocks.length}`);
+    const mb = a.normBox({ kind: 'mosaic', x1: 100, y1: 100, x2: 0, y2: 0 });
+    assert(mb.x === 0 && mb.y === 0, '反向马赛克拖拽应归一化');
+
+    // 8) 马赛克块数上限：拖整个 4K 屏也不能产出上十万块拖慢渲染。
+    //    关键不只是"数量少"，更不能出现"边缘没打码的空白"——
+    //    那是安全问题，所以块数可以放大到刚好上限，但绝不能超出。
+    const huge = a.mosaicBlocks(0, 0, 3840, 2160, 8);
+    assert(huge.length <= 4096, `块数应受上限保护（4096），实得 ${huge.length}`);
+    // 覆盖完整：所有块的并集应铺满整个选区（首块贴左上、末块贴右下）
+    assert(huge.length > 0, '4K 选区应产生块');
+    const first = huge[0];
+    const last = huge[huge.length - 1];
+    assert(Math.abs(first.x) < 1e-6 && Math.abs(first.y) < 1e-6,
+      `首块应贴住选区左上角，实得 (${first.x},${first.y})`);
+    assert(last.x + last.size >= 3840 - 1 && last.y + last.size >= 2160 - 1,
+      `末块应贴住选区右下角，不留未打码空白，实得末块 (${last.x},${last.y}) size=${last.size}`);
+
+    // 9) 步骤号按阅读顺序（先y 再 x）而非点击顺序
+    const steps = [
+      { id: 'c', kind: 'step', x1: 300, y1: 100, x2: 300, y2: 100, text: undefined, color: '#fff', size: 0 },
+      { id: 'a', kind: 'step', x1: 50, y1: 100, x2: 50, y2: 100, text: undefined, color: '#fff', size: 0 },
+      { id: 'b', kind: 'step', x1: 50, y1: 50, x2: 50, y2: 50, text: undefined, color: '#fff', size: 0 },
+    ];
+    const nums = a.stepNumbers(steps);
+    assert(nums.get('b') === 1, `最上方的应编号 1，实得 ${nums.get('b')}`);
+    assert(nums.get('a') === 2, `同一行靠左的应编号 2，实得 ${nums.get('a')}`);
+    assert(nums.get('c') === 3, `同一行靠右的应编号 3，实得 ${nums.get('c')}`);
+
+    // 10) 非步骤标注不参与编号
+    const mixed = [
+      ...steps,
+      { id: 'r', kind: 'rect', x1: 0, y1: 0, x2: 10, y2: 10, text: undefined, color: '#fff', size: 2 },
+    ];
+    assert(a.stepNumbers(mixed).size === 3, `只有步骤标注参与编号，实得 ${a.stepNumbers(mixed).size}`);
+
+    // 11) 导出尺寸：HiDPI 下要乘缩放，且不小于 1
+    assert(a.exportSize(200, 100, 1.5).width === 300, `150% 下宽应乘缩放，实得 ${a.exportSize(200, 100, 1.5).width}`);
+    assert(a.exportSize(0, 0, 1).width === 1, '零宽应夹到至少 1');
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
 async function main() {
   const plugins = listFrontendPlugins();
   console.log(`[plugin:test:fe] 发现 ${plugins.length} 个纯前端插件\n`);
@@ -1025,6 +1711,46 @@ async function main() {
       console.log(`  ✗ ${id}`);
       for (const f of failures) console.log(`      - ${f}`);
     }
+  }
+
+  // 纯函数模块：区域框选的几何换算（坐标系错了截图就错位，且不易察觉）
+  const geoFailures = testGeometryModule();
+  if (geoFailures.length === 0) {
+    console.log('\n  ✓ 纯函数：/shot 区域框选几何换算（缩放 × 屏原点叠加）');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ 纯函数：/shot geometry');
+    for (const f of geoFailures) console.log(`      - ${f}`);
+  }
+
+  // 纯函数模块：/pomo 挂件的倒计时推导（ceil 取整 / 已过比例 / 到点终态）
+  const pomoFailures = testPomoTimerModule();
+  if (pomoFailures.length === 0) {
+    console.log('\n  ✓ 纯函数：/pomo 挂件倒计时与进度环');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ 纯函数：/pomo timer');
+    for (const f of pomoFailures) console.log(`      - ${f}`);
+  }
+
+  // 纯函数模块：全局热键速查表的分组与格式化（多修饰键归组、修饰键顺序归一）
+  const hotkeyFailures = testHotkeyModule();
+  if (hotkeyFailures.length === 0) {
+    console.log('\n  ✓ 纯函数：/hotkey 速查表分组与格式化（多修饰键归组唯一 · 修饰键顺序归一）');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ 纯函数：/hotkey hotkeys');
+    for (const f of hotkeyFailures) console.log(`      - ${f}`);
+  }
+
+  // 纯函数模块：截图标注几何（反向拖拽归一化 · 箭头向量 · 步骤号阅读顺序）
+  const annotateFailures = testAnnotateModule();
+  if (annotateFailures.length === 0) {
+    console.log('\n  ✓ 纯函数：/shot 标注几何（反向拖拽 · 箭头向量 · 步骤号按阅读顺序）');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ 纯函数：/shot annotate');
+    for (const f of annotateFailures) console.log(`      - ${f}`);
   }
 
   // svc 桥接抽查：qr 打开二维码走 process.launch；网络插件应覆盖全部声明的域名

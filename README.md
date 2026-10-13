@@ -190,7 +190,7 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 | `/memo` | 备忘速记 | 速记与检索 |
 | `/cheat` | 命令速查 | 内置 git/docker/k8s 等常用命令，可增删 |
 | `/time` | 世界时钟 | 主要城市时间与时差 |
-| `/pomo` | 番茄钟 | 后台计时，到点发系统通知 |
+| `/pomo` | 番茄钟 | 开始计时即在桌面显示倒计时挂件，到点发系统通知；`/pomo pin` 可贴到壁纸层 |
 | `/sysinfo` | 系统信息 | 平台/CPU/内存/磁盘探测 |
 
 > 所有"回车复制"依赖壳层的通用 `AfterSelect.copy` 能力（工具类插件的标准交互），落点为**宿主原生剪贴板**（`clipboard_write`），而非 webview 的 `navigator.clipboard`——后者在窗口即将隐藏时会被浏览器策略拒绝。

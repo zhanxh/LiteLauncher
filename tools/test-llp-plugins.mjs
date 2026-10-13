@@ -33,6 +33,8 @@ const SAMPLES = {
   time: [""],
   pomo: [""],
   sysinfo: [""],
+  // /find 的样例要能命中真实条目；用 Everything 索引里几乎必然存在的词
+  find: ["", "annotate-view.tsx", "path:plugins", "ext:rs clippy"],
 };
 
 const SVC_STUB = {

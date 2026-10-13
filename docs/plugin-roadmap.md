@@ -1,23 +1,50 @@
 # LiteLauncher 常用插件规划（Plugin Roadmap）
 
-> 配套：[plugin-architecture-design.md](./plugin-architecture-design.md)（架构）、[plugin-development-guide.md](./plugin-development-guide.md)（开发指南）
+>配套：[plugin-architecture-design.md](./plugin-architecture-design.md)（架构）、[plugin-development-guide.md](./plugin-development-guide.md)（开发指南）
 > 目标：盘点"还有哪些常用插件值得做"，并按**当前宿主能力**区分"现在就能落地"与"要先扩宿主能力"。
+
+---
+
+## ⚠️ 状态说明（先读这里）
+
+本文档 §0 / §1 / §6.2 / §7 写于 **2026-10-13 之前**，是当时的原始盘点。其中多处"❌ 缺"
+已被后续实现推翻，**直接照着看会得出"做不了"的错误结论**。最新状态如下：
+
+| 文档里写的（已过时） | 实际现状（2026-10-13 更新） |
+|---|---|
+| `ctx.clipboard` 缺 | ✅ 已实现（`clipboard:read/write`，`svc.clipboard.write/read`）；另有独立的 `clipboard:history` 权限供 `/clip` |
+| `ctx.shortcuts` 缺 | ✅ 已实现（`shortcut:<accel>` 逐条白名单，宿主做冲突仲裁） |
+| 屏幕捕获 `ctx.screen` 缺 | ✅ 已实现（`list/capture/pixel/cursor/savePng`） |
+| "纯前端插件尚未实现" | ✅ 已实现（`backend.kind = "none"`，前端经 `svc.*` 调宿主；已有 21 个） |
+| `ctx.fs` / `ctx.dialog` 缺 | ❌ **仍然缺**，但 `/find` 已绕开它：走 Everything SDK（见下） |
+| `ctx.index` 缺 | ❌仍然缺 |
+| `ctx.scheduler` 变通 | ❌ 仍然缺（现靠插件自实现） |
+
+已落地的能力包分四组（A 纯计算 / B 系统信息 / C 网络 / D 屏幕与全局热键），
+交互与市场对标另见 [plugin-ux-review.md](./plugin-ux-review.md)。
+
+**`/find`（文件搜索）已落地，走 Everything 官方 SDK，不需要自己读 MFT**——
+实测 `Everything64.dll`（91KB）经 sidecar 的 ctypes 调用，查询 10~25ms、免管理员、免 NTFS 限制。
+判断依据：Everything 已经把 NTFS MFT + USN Journal 那套做好了，接它的成本远低于自研；
+自己遍历做出来的东西打不过 Windows 搜索自身。
+详见下方状态说明与 `plugins/find/`。
 
 ---
 
 ## 0. 结论先行
 
-1. **你现在想的三件事，可行性差别很大**：
-   - `hash64 md5 加密` → **现在就能做**，纯计算，最轻的一类。
-   - `截图` → **做不了**，卡在宿主能力，不是插件问题（缺"屏幕捕获"句柄 + 全局热键）。
-   - `取色器` → **同样卡宿主能力**（缺"屏幕像素采样" + 全局热键，否则切到启动器就取不到别的窗口颜色）。
-2. **宿主当前只有 9 个句柄**：`db / windows / notify / process / secrets / http / events / settings / log`。
-   设计文档里规划但**尚未实现**的关键能力：`clipboard`、`shortcuts(全局热键)`、`fs(作用域文件)`、`dialog`、`index(共享搜索索引)`、`scheduler`。
-3. **建议节奏**：先做一批"零宿主改动、当场能上线"的高频小工具（编码/文本/换算/随机），把设置面板填满、把 `/help` 撑起来；同时**并行补一个宿主能力包**（clipboard + 全局热键 + 屏幕捕获），补完再上截图/取色器/剪贴板历史这三件"桌面级"插件。
+> ⚠️ 以下三条为**原始判断，已被推翻**。截图与取色器当时"做不了"，如今均已落地（见上方状态说明）。
+
+1. **~~`截图` → 做不了~~** →✅ **已落地**：`/shot`（区域框选 / 整屏 / 延时 / 标注）+ `Alt+Shift+S` 免开启动器整屏截图。
+2. **~~`取色器` → 卡宿主能力~~** → ✅ **已落地**：`/pick`（放大镜取色台，HEX/RGB/HSL）+ `Alt+P` 免开启动器取色。
+3. **~~`hash64 md5 加密` → 现在就能做~~** → ✅ **已落地**：`/hash`（LLP 侧实现，因 WebCrypto 无 MD5）。
+4. 剪贴板历史（Ditto 的核心能力）→ ✅ **已落地**：`/clip`，**隐私优先设计**（按需入库不后台监听、疑似凭据不落盘、条数/字节/过期三重上限）。
 
 ---
 
 ## 1. 宿主能力基线（决定插件能做什么）
+
+> ⚠️ 现状列已于 2026-10-13 更新，见上方状态表；保留原表以便对照当时的规划。
 
 | 能力句柄 | 权限 | 现状 | 备注 |
 |---|---|---|---|
@@ -30,14 +57,14 @@
 | `ctx.http` | `net:<host>` | ✅ 已实现 | 宿主代理 HTTP（含 SSE 流式） |
 | `ctx.events` | 自动 | ✅ 已实现 | 后端 → 前端推送（流式/进度） |
 | `ctx.log` | 无 | ✅ 已实现 | 生命周期日志 |
-| `ctx.clipboard` | `clipboard:read/write` | ❌ **缺** | 复制结果、剪贴板历史、粘贴即搜 |
-| `ctx.shortcuts` | `shortcut:<accel>` | ❌ **缺** | 插件注册全局热键（截图/取色/速记必须） |
+| `ctx.clipboard` | `clipboard:read/write` | ✅ **已补** | 原"缺"。`clipboard:history` 为独立权限 |
+| `ctx.shortcuts` | `shortcut:<accel>` | ✅ **已补** | 原"缺"。逐条静态声明，宿主先到先得仲裁 |
+| `ctx.screen` | `screen` | ✅ **已补** | 原"缺"。`list/capture/pixel/cursor/savePng`，坐标一律桌面全局物理像素 |
 | `ctx.fs` / `ctx.dialog` | `fs:dir:<scope>` | ❌ **缺** | 文件搜索、保存截图到文件、选目录 |
 | `ctx.index` | 无 | ❌ **缺** | 轻插件零后端接入裸文本全局搜索 |
-| `ctx.scheduler` | `scheduler` | ⚠️ 变通 | 现靠插件内 `std::thread` 自实现（todo 即此模式） |
-| 屏幕捕获（新服务，暂命名 `ctx.screen`） | 待定义 | ❌ **缺** | 截图 / 取色器的硬依赖 |
+| `ctx.scheduler` | `scheduler` | ⚠️变通 | 现靠插件内 `std::thread` 自实现（todo 即此模式） |
 
-> 说明：**"纯前端插件"（`backend: none` + 宿主内置 `svc:*`）当前尚未实现**，所以现阶段所有插件仍需要一个（哪怕很薄的）be crate 或 LLP sidecar。这是可做性判断的前提。
+> 说明：**"纯前端插件"（`backend: none` + 宿主内置 `svc:*`）已实现**，`/shot` `/pick` `/clip` `/hotkey` 等21 个插件走的就是这条路。
 
 ---
 
@@ -99,7 +126,7 @@
 | **截图** | `/shot` | ✅ 屏幕捕获 + 全局热键（已落地）；`fs`/`dialog` 仍未做 | 全屏/指定屏/延时截图已实现；**区域框选**待全屏透明遮罩 |
 | **取色器** | `/pick` | ✅ 屏幕像素采样 + 全局热键（已落地） | 热键即时取色 + 浮动取色台（放大镜/历史/HEX·RGB·HSL）已实现 |
 | 剪贴板历史 | `/clip` | clipboard:read + 后台监听 + db | 记录复制历史，搜索回填；隐私需谨慎（密码类要排除） |
-| 文件快速搜索 | `/find` | fs 作用域 + index | Everything 式文件名/内容搜索 |
+| 文件快速搜索 | `/find` | ✅ 已落地（LLP + Everything SDK） | 原生语法 `ext:`/`size:`/`dm:`，毫秒级 |
 | 全局热键速记 | `/hotkey` | ✅ shortcuts（已落地） | 任意窗口一键唤起速记弹窗 —— 现在只差一个插件 |
 | 系统信息 | `/sysinfo` | 无（LLP 已有示例） | 已存在，可作为 LLP 插件模板 |
 
@@ -161,7 +188,7 @@
 一次补齐 hotkey 与 screen capture，随后上 **`/shot`（截图）**、**`/pick`（取色器）**、**`/clip`（剪贴板历史）** 三件桌面级插件。
 
 **批次 4（按需）——网络类与文件类**
-`/weather`、`/fx`、`/tr`、`/dict`（依赖 `net:`），`/find`（依赖 `fs`）。
+`/weather`、`/fx`、`/tr`、`/dict`（依赖 `net:`）—— 均已落地；`/find`（走 Everything SDK，不依赖 `fs`）也已落地。
 
 ---
 
