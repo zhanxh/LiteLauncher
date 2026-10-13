@@ -53,6 +53,11 @@ cargo check --workspace     # Rust 全量编译校验
 - 改完插件**必跑**对应的 plugin:test 系列。
 - 开发期宿主 debug 构建会自动扫描仓库 `plugins/`，无需 plugin:install。
 
+## 版本控制
+- 远端：`origin` = `git@gitcode.com:zhanxiaohai/LiteLauncher.git`，主分支 `master`。
+- `.workbuddy/memory/` **已纳入版本控制**（随功能改动一起提交，保持记忆与代码同步）。
+- 提交风格：按关注点拆分（能力层 / 插件 / 测试工具 / 文档），conventional commits（`feat|fix|test|docs|build|…`）。
+
 ## 环境（本机）
 - Node（managed）：`C:/Users/zhanxh/.workbuddy/binaries/node/versions/22.22.2-6/node.exe`
 - Python（managed）：`C:/Users/zhanxh/.workbuddy/binaries/python/versions/3.13.12/python.exe`（跑 LLP 测试时用 `LLP_PYTHON=` 指定）
