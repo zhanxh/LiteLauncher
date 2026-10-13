@@ -14,6 +14,8 @@
     "tauri": "tauri",
     "build:exe": "tauri build --no-bundle",
     "plugin:install": "node tools/install-plugin.mjs",
+    "plugin:test": "node tools/test-llp-plugins.mjs",
+    "plugin:test:fe": "node tools/test-fe-plugins.mjs",
     "check": "cargo check --workspace && tsc --noEmit",
     "plugin:deploy": "node tools/deploy-portable-plugins.mjs"
   },
