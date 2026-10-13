@@ -1,18 +1,35 @@
 {
   "id": "pomo",
   "name": "番茄钟",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "api_version": "^1",
   "trigger": "/pomo",
-  "description": "番茄钟：/pomo start 25 写代码 开始计时（默认 25 分钟），到点发系统通知；/pomo 查看剩余时间；/pomo stop 停止。",
-  "permissions": ["notifications", "settings"],
+  "description": "番茄钟：/pomo start 25 写代码 开始计时并自动在桌面显示倒计时挂件，到点发系统通知；/pomo pause 暂停 / resume 继续 / stop 停止；/pomo pin 把挂件贴到桌面壁纸层（Wayland 下自动降级为置顶浮窗）。",
+  "permissions": ["notifications", "settings", "windows"],
+  "views": [
+    {
+      "id": "widget",
+      "title": "番茄钟",
+      "width": 240.0,
+      "height": 88.0,
+      "min_width": 240.0,
+      "min_height": 88.0,
+      "resizable": false,
+      "decorated": false,
+      "always_on_top": true,
+      "skip_taskbar": true,
+      "focusable": false,
+      "position": "bottom-right",
+      "on_existing": "focus"
+    }
+  ],
   "backend": {
     "kind": "llp",
     "entry": ["python3", "pomo.py"]
   },
   "command": {
     "icon": "🍅",
-    "action_subcommands": ["start", "stop"],
-    "hint": "回车开始 / 停止计时"
+    "action_subcommands": ["start", "stop", "pause", "resume", "pin", "widget", "where"],
+    "hint": "start [分钟] [标签] 开始并显示桌面挂件；pin 贴壁纸层；悬停挂件可暂停/停止"
   }
 }

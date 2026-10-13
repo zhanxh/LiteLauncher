@@ -1,0 +1,9 @@
+{
+  "name": "@ll/plugin-pomo",
+  "version": "0.2.0",
+  "private": true,
+  "description": "番茄钟挂件（纯前端）：桌面倒计时视图，逻辑在 fe/src/index.ts，视图在 fe/src/widget.tsx",
+  "type": "module",
+  "main": "src/index.ts",
+  "llplugin": true
+}
