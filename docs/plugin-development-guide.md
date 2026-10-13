@@ -461,6 +461,11 @@ export function setup(): void {
 ## 7. 测试、调试与门禁
 
 - **单测**：纯函数放 be crate 里（`cargo test -p ll-plugin-todo`）；前端契约测试可用 fake ctx（浏览器模式自带回退数据，`npx tsc --noEmit` 全量类型检查）。
+- **插件级测试（改完插件必跑）**：
+  ```bash
+  npm run plugin:test      # LLP（Python）插件：走一遍 initialize/search/execute 协议
+  npm run plugin:test:fe   # 纯前端插件：Node 内直跑逻辑，断言真实计算结果
+  ```
 - **独立编译验证**：`cargo build -p ll-plugin-<id>` 必须通过——这保证插件没偷依赖宿主。
 - **运行时排查**：`release/lifecycle.log`（`[plugin:<id>]` 前缀 = 插件日志；`init FAILED` = init 抛错）；窗口内 F12 打开 DevTools（devtools feature 已启用）。
 - **依赖门禁**（手工 grep，后续进 CI）：
@@ -471,11 +476,18 @@ export function setup(): void {
 
 ---
 
-## 8. 路线图：未来的插件形态
+## 8. 插件形态总览
 
-- **纯前端插件**（`backend: { kind: "none" }`）：宿主内置 `svc:*` 方法（settings/index/clipboard/dialog/log），fe 包无 be crate——书签、剪贴板历史这类插件收敛为"单文件 TS + manifest"。接口已预留，暂未实现。
-- **LLP/1 外部进程插件**（二期）：`~/.litelauncher/plugins/<id>/` 安装任意语言实现的 sidecar，宿主经 JSON-RPC 分发；**前端 fe 代码与本文档完全同构**（`ctx.call` 不感知后端形态），届时只需换 manifest 的 backend 声明。
-- **跨插件事件总线 / 插件全局热键 / AI（SecretStore + HTTP 白名单代理）**：见设计文档 §4.5 服务目录与 §6。
+四种形态，共用同一注册表、同一 `plugin_call` 通道、同一份 `svc.*` 能力。**壳层对它们零特判**——`ctx.call()` 只认方法名，不感知后端形态。
+
+| 形态 | `backend.kind` | 代码位置 | 运行时依赖 | 需要重编译主程序 | 指南 |
+|---|---|---|---|---|---|
+| 编译期插件 | `builtin`（默认） | `plugins/<id>/{be,fe}` | 无 | ✅ 需要 | §2–§5 |
+| 外部插件（LLP/1） | `llp` | `plugins/<id>/{manifest.json, 脚本}` | 任意语言运行时 | ❌ 拷目录即装 | §9 |
+| **纯前端插件** | `none` | `plugins/<id>/{manifest.json, fe/}` | **无** | ❌ | **§11** |
+| 编译期 + 前端零代码 | `llp` 但 fe 省略 | 同 LLP | 任意语言运行时 | ❌ | §9（宿主按 `command` 生成通用指令插件） |
+
+- **跨插件事件总线 / 插件全局热键 / AI（SecretStore + HTTP 白名单代理）**：见设计文档 §4.5 服务目录与 §6；HTTP/事件/密钥的既有实现见 §10。
 
 ---
 
@@ -542,10 +554,16 @@ Python 版 sidecar 依赖机器上有一个 Python 3 解释器。宿主按以下
 
 | 插件 → 宿主（反向请求） | 说明 |
 |---|---|
+| `svc.db.migrate` | `{statements[]}` —— 建表/迁移，仅 DDL（须声明 `db` 权限） |
 | `svc.db.execute` / `svc.db.query` | `{sql, params[]}` —— 本插件专属库（须声明 `db` 权限） |
+| `svc.clipboard.write` / `read` | `{text}` / 无参 —— 宿主原生剪贴板（须声明 `clipboard:write` / `clipboard:read`） |
+| `svc.http.send` | `{method, url, headers, body}` → `{status, body}`（须声明 `net:<host>`） |
 | `svc.notify.send` | `{title, body}` 系统通知 |
 | `svc.process.launch` | `{target}` 受控启动（须声明 `process` 权限） |
+| `svc.events.emit` | `{event, payload}` 前端事件广播（前端按 pluginId 过滤） |
 | `svc.settings.get/set`、`svc.log.write` | 设置 KV（自动前缀隔离）、日志 |
+
+> 这些方法与前端 `ctx.call('svc.*')` 走的是**同一个分发器**（`services.rs::dispatch_svc`），并非只对 LLP 开放。
 
 参考实现：`plugins/sysinfo/sysinfo.py`（Python 标准库，~150 行，含完整握手/分发/svc 调用）。
 
@@ -566,3 +584,211 @@ M7 为 `PluginContext` 新增三个门控句柄（完整示例见 `plugins/ai/`�
 AI 插件（`plugins/ai/`）是三者的组合范例：`/ai` 打开对话窗口 → 前端经 `ctx.call('chat')` 触发 → 后端从 secrets 取密钥、http 流式请求 OpenAI 兼容端点、SSE 解析后 events 推 delta → 前端增量渲染；中断走回调返回 false。
 
 **注意**：`net:` 白名单是逐域名精确匹配（含子域名需逐一声明）；接口地址可在对话窗口配置（默认 `https://api.openai.com`，换端点需同步在 manifest 增加对应 `net:` 权限）。
+
+---
+
+## 11. 纯前端插件（`backend.kind = "none"`）：无 crate、无 sidecar
+
+**适用**：纯计算 / 文本处理 / 格式转换 / 换算类。**不适用**：需要自定义窗口、长任务、或运行时不提供的标准库能力（如 WebCrypto 没有 MD5）。
+
+### 11.1 目录结构（两个文件 + 一个包声明）
+
+```
+plugins/myplug/
+├─ manifest.json                 # backend.kind = "none"（+ 权限声明）
+└─ fe/
+   ├─ package.json               # { "name": "@ll/plugin-myplug", "llplugin": true, "main": "src/index.ts" }
+   └─ src/index.ts               # 全部逻辑在这里，唯一允许 import 的壳层依赖是 @ll/sdk
+```
+
+完整可抄的例子：`plugins/unit/fe/src/index.ts`（多条目面板 + 复制）、`plugins/qr/fe/src/index.ts`（调用 `svc.*`）。
+
+### 11.2 manifest
+
+```jsonc
+{
+  "id": "myplug",
+  "name": "我的工具",
+  "version": "0.1.0",
+  "api_version": "^1",
+  "trigger": "/myplug",
+  "description": "……（/help 与候选展示用）",
+  "permissions": [],                       // 按需：db / clipboard:write / net:<host> / process / notifications …
+  "backend": { "kind": "none" },            // ✅ 与 builtin/llp 的唯一区别
+  "command": { "icon": "🧰", "action_subcommands": [], "hint": "……" }
+}
+```
+
+`command` 声明仅用于图标/提示等元数据；纯前端插件**自己注册 CommandPlugin**，不走宿主生成的通用指令插件。
+
+### 11.3 插件代码模板
+
+```ts
+import {
+  pluginRegistry,
+  type AfterSelect, type CommandPlugin, type PanelData, type PanelItem, type ParsedInput,
+} from '@ll/sdk';
+
+const PLUGIN_ID = 'myplug';
+
+const plugin: CommandPlugin = {
+  id: PLUGIN_ID,
+  trigger: '/myplug',
+  name: '我的工具',
+  description: '……',
+  icon: '🧰',
+  isAction: () => false,
+
+  async query(input: ParsedInput): Promise<PanelData> {
+    // input.subcommand = 首个 token；input.args = 其余；input.queryText = 剔除子命令后的关键词
+    const text = [input.subcommand ?? '', ...input.args].join(' ').trim();
+    if (!text) return { items: [{ id: 'hint', title: '输入内容', badge: '用法' }], emptyText: '输入内容' };
+    return {
+      items: [{
+        id: `${PLUGIN_ID}:r0`,
+        title: '结果预览',
+        description: '回车复制',
+        badge: '结果',
+        icon: '🧰',
+        metadata: { value: text.toUpperCase() },   // metadata.value = 要复制的文本
+      }],
+    };
+  },
+
+  async onSelect(item: PanelItem): Promise<AfterSelect> {
+    const value = item.metadata?.value;
+    if (typeof value !== 'string' || !value) return { toast: '无内容可复制' };
+    return { copy: value, toast: '已复制' };
+  },
+};
+
+export function setup(): void {
+  pluginRegistry.register(plugin);
+}
+```
+
+`AfterSelect` 的其余字段：`close`（关窗）、`clearInput`、`refresh`（重跑 query 刷新面板）、`toast`。
+
+### 11.4 能用的能力：`svc.*`
+
+宿主保留方法名空间，**由宿主直接应答**，不进入插件后端分发表（所以纯前端插件也能用）。SDK 已封装成同名属性：
+
+| SDK 属性 | 等价 `svc.*` | 权限 |
+|---|---|---|
+| `ctx.settings.get/set/getJson/setJson` | `svc.settings.get` / `set` | —（宿主强制 `${pluginId}.` 前缀隔离） |
+| `ctx.clipboard.write/read` | `svc.clipboard.write` / `read` | `clipboard:write` / `clipboard:read` |
+| `ctx.http.send/get/json` | `svc.http.send` | `net:<host>` |
+| `ctx.notify.send` | `svc.notify.send` | `notifications` |
+| `ctx.events.emit` | `svc.events.emit` | — |
+| `ctx.log.debug/info/warn/error` | `svc.log.write` | — |
+| `ctx.screen.list/cursor/pixel/capture` | `svc.screen.list` / `cursor` / `pixel` / `capture` | `screen` |
+| `ctx.shortcuts.register/unregister/list/on` | `svc.shortcut.register` / `unregister` / `list` | `shortcut:<accel>`（逐条、无通配） |
+| `ctx.windows.open(view, params?)` | `svc.window.open` | `windows` |
+| `ctx.call('svc.db.migrate' / 'svc.db.execute' / 'svc.db.query')` | 同左 | `db` |
+| `ctx.call('svc.process.launch', { target })` | 同左 | `process` |
+
+```ts
+import { getPluginContext } from '@ll/sdk';
+const ctx = getPluginContext('myplug');
+await ctx.clipboard.write('复制这段');         // svc.clipboard.write
+await ctx.settings.setJson('items', [1, 2]);   // svc.settings.set（自动 JSON 序列化）
+const data = await ctx.http.json<MyResp>(url); // svc.http.send（非 2xx / 非 JSON 会抛可读错误）
+```
+
+> `isHostAvailable()` 可判断是否在宿主中（浏览器 `vite dev` 预览时为 false），据此降级。
+
+#### 桌面能力插件：截图与取色（`screen` / `shortcut:<accel>`）
+
+这两项是"插件形态 + 宿主能力包"的组合，参考实现见 `plugins/shot` 与 `plugins/pick`。
+
+**`ctx.screen`——坐标一律是桌面全局物理像素**（与 `getCurrentWindow().outerPosition()` 同一坐标系）：
+
+```ts
+await ctx.screen.list();                                  // [{index,name,primary,x,y,width,height,scaleFactor}]
+await ctx.screen.cursor();                                // {x,y}
+await ctx.screen.pixel({ radius: 7 });                    // {sample:{x,y,r,g,b,hex}, grid:{cols,rows,cells,center}}
+await ctx.screen.capture({ monitor: -1, hideWindows: true, delayMs: 3000 });
+```
+
+- `capture` 的 `monitor`：`-1` = 光标所在那块屏、`0..n` = 序号、缺省 = 主显示器；
+- `hideWindows: true` 会**先隐藏全部 LiteLauncher 窗口再截图**（否则截出来的图里有启动器自己），截完自动复原并回焦；`delayMs` 宿主侧硬上限 **10 秒**；
+- `pixel` 不传坐标 = 取**当前光标处**；传 `radius` 时额外返回一片 `#RRGGBB` 方格（不是图片，前端用 CSS 网格铺出来即是硬边像素放大镜）。取色台靠**一次调用同时拿到位置、颜色与放大镜**在 7Hz 下轮询；
+- 缺省落盘位置：`<数据目录>/LiteLauncher/plugins/<id>/screenshots/`，插件可用 `path` 覆盖。
+
+**`ctx.shortcuts`——全局热键（逐条声明，无通配）**：
+
+```jsonc
+// manifest
+"permissions": ["shortcut:alt+p"]
+```
+
+```ts
+await ctx.shortcuts.register('alt+p');        // 幂等；未声明 / 被占用 → 抛错
+await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ });
+await ctx.shortcuts.on('alt+p', cb, { scope: 'any' }); // 视图窗口内也要响应时必须显式声明
+```
+
+- 宿主维护 `加速键 → 插件` 的注册表做**先到先得仲裁**，冲突返回 `conflict` 错误；触发时广播 `plugin-shortcut` 事件（载荷 `{pluginId, accel}`），**插件拿不到原始按键流**；
+- `on()` 默认 `scope: 'main'`，**只在没有 `?view=` 的主窗口生效**——每个窗口加载都会把全部插件的 `setup()` 跑一遍，不区分上下文的话打开任意视图窗口后热键会被执行两次；
+- 多个窗口共用一份插件状态时（如"面板开着时主窗口让位"），用 `ctx.settings` 做标记即可：取色台把 `panelOpen` 写进 KV，主窗口的热键处理器读到就让位。
+
+**开视图窗口**：纯前端插件没有 `ctx.windows` 之外的途径，且 `view` 必须是 manifest `views` 里声明过的 id：
+
+```ts
+await ctx.windows.open('panel', { id: 'x' });   // → 窗口标签 pick-panel?view=panel&id=x
+```
+
+> ⚠️ **新增视图窗口必须同步登记 Tauri 能力**：`src-tauri/capabilities/default.json` 的 `windows` 是**显式标签白名单**（标签 = `<pluginId>-<viewId>`）。漏登记 → 该窗口权限为零 → `plugin_call` 被拒、窗口变死窗。例如取色台加的是 `pick-*`。
+
+#### 网络类插件：**不要在 `query()` 里发请求**
+
+壳层对 `query()` 是**逐键调用且无防抖**的，把请求写进 `query` 会变成“打一个字发一次 API”。统一范式：
+
+```
+query(input)     → 命中缓存则渲染结果；否则只渲染一条「查询」项（metadata.fetch = 缓存键）
+onSelect(查询项)  → 真正抓取（ctx.http.json/send）→ 写缓存 → 返回 { refresh: true }
+onSelect(结果项)  → 返回 { copy: metadata.value }
+```
+
+需要按状态码分支时用 `ctx.http.send`（返回 `{status, body}`），例如词典要区分「404 未收录」与「网络异常」。参考实现：`plugins/weather`、`plugins/fx`、`plugins/ip`、`plugins/dict`、`plugins/tr`。
+
+### 11.5 权限门控怎么生效（重要）
+
+宿主对 `svc.*` 构造门控上下文时按插件是否在注册表中分两种情况：
+
+| 情况 | 门控依据 |
+|---|---|
+| manifest 能被宿主读到（部署在 plugins/ 里） | 严格按 `manifest.permissions` 门控 |
+| manifest 读不到（只随前端包编译进来） | 退回 `shell_safe_manifest`：仅 `settings / clipboard:* / notifications / events`，**db / process / net 一律拒绝** |
+
+因此**只要用到 `db` / `process` / `net:*`，就必须把 manifest 部署到宿主能看到的地方**：
+
+```bash
+npm run plugin:install -- myplug              # 用户目录
+npm run plugin:install -- myplug --portable   # 便携目录（随 release/ 分发）
+```
+
+开发期不用手动装：宿主在 debug 构建下会**自动扫描仓库 `plugins/`**，manifest 与 fe 都能对上。
+
+### 11.6 测试
+
+```bash
+npm run plugin:test:fe     # Node 内直跑插件逻辑（转译 TS + 桩化壳层依赖），断言真实计算结果
+```
+
+在 `tools/test-fe-plugins.mjs` 的 `CASES` 里加用例：给输入 token、断言产出条目（`badge` / `metadata.value` / `description`）。
+
+网络类插件在用例里加 `drive: true`，测试会走「query → `onSelect(查询项)` → 再 query」的完整范式，并断言刷新后的解析结果；`svc.http.send` 由测试内的域名 fixture 桩应答（见 `HTTP_FIXTURES`），可用函数形式模拟 404 等分支。也可用 `expectFirst` 断言首次（未联网）的面板、`after` 追加异步断言（如“打开发音应调用 `svc.process.launch`”）。
+
+屏幕类插件同理：`svc.screen.*` 由 `MONITORS_FIXTURE` / `PIXEL_FIXTURE` / `CAPTURE_FIXTURE` 桩应答，`svc.shortcut.*`、`svc.window.open`、`svc.clipboard.write` 都会记进 `svcCalls`，因此可以在 `after` 里断言「截图前 hideWindows 为 true」「路径确实进了剪贴板」「开的是哪个视图」这类行为。
+
+测试支持**包内相对导入**（`./color`、`./history` 递归转译），但 `.tsx` 视图组件返回空模块——solid 的 JSX 需要编译期，Node 端只验命令插件逻辑。所以**把可测的纯逻辑抽到 `.ts` 里**（如 `plugins/pick/fe/src/color.ts` 的色彩换算），`.tsx` 只留渲染与轮询。
+
+### 11.7 从 LLP 迁到纯前端
+
+1. 把 sidecar 的逻辑改写成 `fe/src/index.ts` 的 `query`/`onSelect`（面板条目结构不变：`id`/`title`/`description`/`badge`/`icon`/`metadata.value`）；
+2. `manifest.backend` 改成 `{"kind": "none"}`，删掉 `entry`；
+3. 新增 `fe/package.json`（`"llplugin": true`），删除 sidecar 脚本；
+4. `npm run gen && npx tsc --noEmit && npm run plugin:test:fe`。
+
+**边界判断**：算法密集、依赖 Python 标准库（`hashlib`/`ipaddress`）、或依赖系统命令的实现，**留在 LLP 更省事**——例如 `/hash`（WebCrypto 无 MD5）、`/cidr`、`/cron`。

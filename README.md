@@ -92,6 +92,137 @@ flowchart TD
 
 ---
 
+## 🧩 插件体系
+
+LiteLauncher 遵循**"一切皆插件"**：功能不硬编码进壳层，一律以插件形态接入。按落地形态分三类，三者共用同一注册表、同一 IPC 通道（`plugin_call`）与同一份能力集合，**壳层对它们零特判**。
+
+| 形态 | `backend.kind` | 代码位置 | 运行时依赖 | 重编译主程序 | 典型场景 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 编译期插件 | `builtin`（默认） | `plugins/<id>/{be,fe}` | 无 | 需要 | 需自定义窗口 / 高频核心：`todo` `apps` `notes` `ai` |
+| 外部插件（LLP/1） | `llp` | `plugins/<id>/{manifest.json, 脚本}` | 任意语言运行时（Python 等） | 不需要，拷目录即装 | 依赖系统命令 / 平台探测：`sysinfo` |
+| **纯前端插件** | `none` | `plugins/<id>/{manifest.json, fe/}` | **无** | 不需要 | 纯计算 / 文本 / 换算类小工具 |
+
+### ✨ 纯前端插件（`backend.kind = "none"`）
+
+没有 Rust crate、也没有 sidecar——**全部逻辑就是一个 TS 文件**（`fe/src/index.ts` + `fe/package.json`），随前端包编译进应用。插件的能力来自**宿主保留方法名空间 `svc.*`**，由宿主直接应答（不是插件自己的后端）：
+
+| 方法 | 权限（manifest `permissions`） |
+| :--- | :--- |
+| `svc.settings.get` / `set` | —（宿主强制 `${pluginId}.` 前缀隔离） |
+| `svc.clipboard.write` / `read` | `clipboard:write` / `clipboard:read` |
+| `svc.db.migrate` / `execute` / `query` | `db`（migrate 仅 DDL，execute 仅 DML，query 仅 SELECT） |
+| `svc.http.send` | `net:<host>` 域名白名单 |
+| `svc.notify.send` | `notifications` |
+| `svc.events.emit` | —（前端按 pluginId 过滤） |
+| `svc.process.launch` | `process` |
+| `svc.log.write` | — |
+| `svc.screen.list` / `cursor` / `pixel` / `capture` | `screen`（截图与取色） |
+| `svc.shortcut.register` / `unregister` / `list` | `shortcut:<accel>`（逐条声明、**无通配**） |
+| `svc.window.open` | `windows`（只能打开 manifest `views` 里声明过的视图） |
+
+前端 SDK 把这些封装成同名属性，写起来就是普通方法调用：
+
+```ts
+const ctx = getPluginContext('myplug');
+await ctx.clipboard.write('复制这段');        // → svc.clipboard.write
+await ctx.settings.setJson('items', [...]);  // → svc.settings.set（自动 JSON 序列化）
+const data = await ctx.http.json<T>(url);    // → svc.http.send（需 manifest 声明 net:<host>）
+
+const shot = await ctx.screen.capture({ monitor: -1, hideWindows: true, delayMs: 3000 });
+const { sample } = await ctx.screen.pixel({ radius: 7 });  // 取光标处颜色 + 放大镜方格
+await ctx.windows.open('panel', { id: '1' });             // 打开本插件声明的视图窗口
+
+await ctx.shortcuts.register('alt+p');                    // manifest 需声明 shortcut:alt+p
+await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ });
+```
+
+### 已实现插件
+
+**纯前端 · 纯计算工具（`kind: none`，零依赖、零重编译）· 8 个**
+
+| 指令 | 名称 | 说明 |
+| :--- | :--- | :--- |
+| `/text` | 文本处理 | 大小写、反转、snake/kebab/camel/pascal/title、去空白 + 字符/词/字节统计 |
+| `/json` | JSON 工具 | 美化 / 压缩 / 转义 / 结构摘要，解析失败给出错误信息 |
+| `/rand` | 随机生成 | uuid / str / num / coin / dice / pick |
+| `/ts` | 时间戳转换 | 时间戳 ↔ 日期，自动识别秒/毫秒/微秒/纳秒，含相对时间 |
+| `/unit` | 单位换算 | 长度/质量/面积/数据/速度/时间/温度 + `hex/bin/oct/dec` 进制转换 |
+| `/color` | 颜色转换 | HEX / RGB(A) / HSL(A) / HSV / 互补色 / Alpha |
+| `/regex` | 正则测试 | 常用正则速查；表达式校验；样本文本匹配与分组 |
+| `/qr` | 二维码 | 生成二维码并在浏览器打开（联网取图；演示 `svc.process.launch`） |
+
+**纯前端 · 网络类（`kind: none` + `net:<host>` 白名单，免密公共 API）· 5 个**
+
+| 指令 | 名称 | 说明 |
+| :--- | :--- | :--- |
+| `/weather` | 天气查询 | `/weather 北京` 实况 + 今日预报，英文天气词自动映射为中文（数据源 wttr.in） |
+| `/fx` | 汇率换算 | `/fx 100 usd cny` 精确换算、`/fx usd cny` 看汇率、`/fx usd` 列主要货币（数据源 open.er-api.com） |
+| `/ip` | IP 查询 | `/ip` 本机公网 IP 与归属地，`/ip 8.8.8.8` 查指定 IP 的运营商/ASN/时区（数据源 ipwho.is） |
+| `/dict` | 英文词典 | `/dict hello` 音标、词性、释义、例句，回车打开发音（数据源 dictionaryapi.dev） |
+| `/tr` | 翻译 | `/tr hello world` 自动中英互译，`/tr en ja hello` 指定语言对（数据源 MyMemory，有每日额度） |
+
+> **网络插件范式（重要）**：壳层对 `query()` 是**逐键调用且无防抖**的，所以网络类插件**绝不在 `query` 里发请求**——输入时只渲染一个「查询」项，真正的抓取发生在**用户回车**时（`onSelect`），结果按输入缓存（TTL 5–30 分钟），抓取完成后返回 `refresh` 让面板就地刷新。这样既不会边打字边打 API，也不引入防抖竞态。
+
+**纯前端 · 桌面能力（`kind: none` + `screen` / `shortcut:<accel>`）· 2 个**
+
+截图与取色都不需要任何平台代码——抓屏、多屏定位、窗口避让、PNG 落盘全在宿主（D 组能力包，见 `docs/plugin-roadmap.md` §11）。
+
+| 指令 | 名称 | 说明 |
+| :--- | :--- | :--- |
+| `/shot` | 屏幕截图 | 回车截取光标所在屏幕（截前自动隐藏 LiteLauncher）、`/shot 2` 指定显示器、`/shot -d3` 延时 3 秒；完成后路径进剪贴板，面板出现「用系统查看器打开 / 打开所在文件夹 / 复制路径」。**全局热键 `alt+shift+s`** 免开启动器直接截图，结果以系统通知反馈 |
+| `/pick` | 取色器 | **全局热键 `alt+p`** 取光标处像素 → HEX 进剪贴板 + 通知；`/pick` 另有「取光标处颜色」「打开浮动取色台」「最近取色（HEX/RGB/HSL 可切换复制）」「清空历史」。取色台是声明式视图窗口：放大镜实时跟随鼠标，**鼠标移入面板即冻结**（否则会采到面板自己的颜色），点按钮复制 |
+
+> **全局热键协议**：manifest 以 `shortcut:<accel>` 逐条声明（无通配），宿主登记并**仲裁冲突**（同一加速键先到先得），触发时广播 `plugin-shortcut` 事件，插件用 `ctx.shortcuts.on(accel, cb)` 接收——插件拿不到原始按键流。`on()` 默认只在**主窗口**生效（每次窗口加载都会跑一遍全部插件的 `setup`，不区分就会重复触发）；取色台这类需要在视图窗口内响应热键的场景显式传 `{ scope: 'any' }`。
+
+**外部插件（LLP/1，Python sidecar）· 12 个**
+
+*算法密集或依赖 Python 标准库的仍走 LLP*：
+
+| 指令 | 名称 | 说明 |
+| :--- | :--- | :--- |
+| `/hash` | 哈希与编码 | md5/sha1/sha256/sha512/base64/url/html/crc32；`/hash md5 文本` 或 `/hash 文本` |
+| `/cron` | Cron 解析 | 5 段表达式 → 人类可读描述 + 未来 5 次触发时间 |
+| `/cidr` | 网段计算 | 网络/广播/掩码/可用范围/主机数，支持 IPv6 与子网拆分 |
+| `/bookmark` | 书签收藏 | `add "标题" URL` / `del 序号`；回车在浏览器打开 |
+| `/snip` | 文本片段 | 常用短语存取，回车即复制 |
+| `/pwd` | 密码生成器 | `/pwd 24`、`easy`、`nosym`；含 PIN 与记忆短语 |
+| `/cost` | 快速记账 | `add 25 午餐`；今日/本月合计与分类汇总 |
+| `/memo` | 备忘速记 | 速记与检索 |
+| `/cheat` | 命令速查 | 内置 git/docker/k8s 等常用命令，可增删 |
+| `/time` | 世界时钟 | 主要城市时间与时差 |
+| `/pomo` | 番茄钟 | 后台计时，到点发系统通知 |
+| `/sysinfo` | 系统信息 | 平台/CPU/内存/磁盘探测 |
+
+> 所有"回车复制"依赖壳层的通用 `AfterSelect.copy` 能力（工具类插件的标准交互），落点为**宿主原生剪贴板**（`clipboard_write`），而非 webview 的 `navigator.clipboard`——后者在窗口即将隐藏时会被浏览器策略拒绝。
+
+### 安装与卸载
+
+```bash
+# 安装全部外部插件到用户目录（~/.local/share/LiteLauncher/extplugins/）
+npm run plugin:install
+
+# 只装一个 / 装成便携版（随 release/ 一起分发）
+npm run plugin:install -- hash
+npm run plugin:install -- --all --portable
+
+# 卸载：删除对应插件目录即可
+```
+
+> - 纯前端插件（`kind: none`）的代码已编译进应用包，安装时**只部署 `manifest.json`**——宿主据此注册插件，权限门控与设置面板的启用/禁用都依赖它。开发期宿主会自动扫描仓库 `plugins/`，无需安装。
+> - ⚠️ LLP 插件需要目标机器有对应运行时（Python 插件需 Python 3）。宿主按 **设置 → Python 环境** → `LLP_PYTHON` 环境变量 → `PATH` → 注册表 → 常见安装位置 的顺序自动探测，可在设置面板手动指定。
+
+### 开发与测试
+
+```bash
+# LLP 插件冒烟测试：逐个走一遍 initialize/search/execute 协议
+npm run plugin:test        # 可用 LLP_PYTHON 指定解释器
+
+# 纯前端插件测试：Node 里直跑插件逻辑，断言真实计算结果（不启动 Tauri）
+npm run plugin:test:fe
+```
+
+---
+
 ## 🛠️ 本地开发与构建
 
 ### 1. 环境准备
