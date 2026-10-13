@@ -2536,9 +2536,11 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 name = "ll-host"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "dirs 5.0.1",
  "image",
  "ll-plugin-api",
+ "raw-window-handle",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2547,6 +2549,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-notification",
  "ureq",
+ "windows-sys 0.59.0",
  "winreg 0.55.0",
  "xcap",
 ]

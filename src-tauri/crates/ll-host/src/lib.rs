@@ -7,6 +7,7 @@
 //! 4. 统一 IPC 通道（commands 模块）：plugin_call / plugin_list / plugin_set_enabled
 
 pub mod commands;
+pub mod desktop;
 pub mod llp;
 pub mod python;
 pub mod services;
@@ -208,6 +209,9 @@ pub(crate) fn build_context_from_parts(
         .filter_map(|p| p.strip_prefix("net:").map(String::from))
         .collect();
 
+    // db 字段会 take 掉 plugin_conn；剪贴板历史也需要同一份连接，故先克隆一个 Arc
+    let clip_conn = plugin_conn.clone();
+
     PluginContext {
         db: if granted("db") {
             plugin_conn.map(|conn| Arc::new(services::CoreDbApi(conn)) as Arc<dyn ll_plugin_api::DbApi>)
@@ -257,12 +261,25 @@ pub(crate) fn build_context_from_parts(
             }
             _ => None,
         },
-        // 屏幕捕获（D 组）：截图与取色都要宿主窗口上下文（读全局光标位置）
+        // 屏幕捕获（D 组）：截图与取色都要宿主窗口上下文（读全局光标位置）。
+        // clipboard 句柄按需带上——截图的"图片本体入剪贴板"要走它，
+        // 这样 `clipboard:write` 的门控不会被 `screen` 权限绕过。
         screen: match (granted("screen"), app) {
-            (true, Some(app)) => Some(Arc::new(services::HostScreenApi {
-                app: Some(app.clone()),
-                plugin_id: manifest.id.clone(),
-            })),
+            (true, Some(app)) => {
+                let clipboard = match granted("clipboard:write") {
+                    true => Some(Arc::new(services::HostClipboardApi {
+                        app: app.clone(),
+                        can_write: true,
+                        can_read: granted("clipboard:read"),
+                    }) as Arc<dyn ll_plugin_api::ClipboardApi>),
+                    false => None,
+                };
+                Some(Arc::new(services::HostScreenApi {
+                    app: Some(app.clone()),
+                    plugin_id: manifest.id.clone(),
+                    clipboard,
+                }))
+            }
             _ => None,
         },
         // 全局热键（D 组）：manifest 逐条声明 `shortcut:<accel>`，无通配
@@ -282,6 +299,24 @@ pub(crate) fn build_context_from_parts(
                 })),
                 _ => None,
             }
+        },
+        // 剪贴板历史（P1 `/clip`）：独立权限 `clipboard:history`，与 clipboard:read 分开。
+        // 未声明则完全不注入——这类能力会长期留存用户复制过的一切，风险高于"读一次"。
+        clipboard_history: match (granted("clipboard:history"), app, &clip_conn) {
+            (true, Some(app), Some(conn)) => {
+                if let Err(e) = services::ensure_clip_schema(conn) {
+                    log(&manifest.id, &format!("clipboard history schema 初始化失败: {}", e));
+                    None
+                } else {
+                    Some(Arc::new(services::HostClipboardHistoryApi {
+                        app: app.clone(),
+                        conn: Arc::clone(conn),
+                        policy: ll_plugin_api::default_clipboard_policy(),
+                        log: Arc::clone(&log),
+                    }))
+                }
+            }
+            _ => None,
         },
         events: Arc::new(services::HostEventApi {
             app: app.cloned(),

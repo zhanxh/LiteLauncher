@@ -82,6 +82,8 @@ pub fn plugin_list(state: tauri::State<'_, HostState>) -> Vec<Value> {
                     "icon": c.icon,
                     "actionSubcommands": c.action_subcommands,
                     "hint": c.hint,
+                    // 外部插件同样支持防抖：不透传的话 /find 会逐键打 IPC
+                    "queryDebounceMs": c.query_debounce_ms,
                 })),
             })
         })

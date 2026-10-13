@@ -149,6 +149,13 @@ pub struct ExternalCommandSpec {
     /// Action 模式的操作提示（可选）
     #[serde(default)]
     pub hint: Option<String>,
+    /// `search` 的防抖毫秒数（缺省 0 = 逐键立即调用）。
+    ///
+    /// 外部插件走通用 CommandPlugin，壳层同样支持 `queryDebounceMs`；
+    /// `/find` 这类"每次按键都要查外部索引"的插件必须声明它，
+    /// 否则输入 "Cargo.toml" 会打出 11 次 IPC。
+    #[serde(default)]
+    pub query_debounce_ms: Option<u32>,
 }
 
 impl Default for ExternalCommandSpec {
@@ -157,6 +164,7 @@ impl Default for ExternalCommandSpec {
             icon: default_command_icon(),
             action_subcommands: Vec::new(),
             hint: None,
+            query_debounce_ms: None,
         }
     }
 }
@@ -171,6 +179,19 @@ pub enum WindowPosition {
     #[default]
     Center,
     BottomRight,
+    /// 全屏铺满某块显示器（区域框选截图 / 全屏遮罩取色这类"遮罩层"）。
+    /// `WindowPosition::Fullscreen(MonitorSelector)` 的序列化形式为字符串。
+    Fullscreen(MonitorSelector),
+}
+
+/// 全屏窗口铺在哪块屏
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum MonitorSelector {
+    /// 主显示器
+    Primary,
+    /// 光标当前所在的那块屏（多屏用户的本能预期）
+    Cursor,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -179,6 +200,35 @@ pub enum ExistingPolicy {
     #[default]
     Focus,
     Replace,
+}
+
+/// 桌面层挂载结果（`WindowApi::attach_desktop` 的返回值）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DesktopAttachStatus {
+    /// 已挂到壁纸层
+    Attached,
+    /// 该平台/会话无法实现，调用方应降级为置顶浮窗
+    Unsupported {
+        /// 面向用户的原因（宿主给出，已含平台名与补救建议）
+        reason: String,
+    },
+    /// 注入失败（外部命令缺失、窗口句柄拿不到等）
+    Failed {
+        reason: String,
+    },
+}
+
+/// 桌面层挂载的完整结果。
+///
+/// `on_wallpaper` 是给 UI 的**唯一判据**：它为 false 时窗口仍会显示
+/// （降级为置顶浮窗），但插件必须把"未能贴到壁纸层"如实告知用户，
+/// 不能显示成已贴在桌面。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DesktopAttachResult {
+    pub status: DesktopAttachStatus,
+    #[serde(rename = "onWallpaper")]
+    pub on_wallpaper: bool,
 }
 
 /// 窗口视图规格：宿主 WindowApi 依据它创建窗口（声明式，插件不接触 WebviewWindowBuilder）
@@ -205,6 +255,17 @@ pub struct ViewSpec {
     pub focusable: bool,
     #[serde(default)]
     pub position: WindowPosition,
+    /// 窗口背景透明（配合 `position: fullscreen` 做遮罩层）。
+    ///
+    /// 这是"区域框选截图""全屏遮罩取色"能实现的前提——遮罩层必须能显示
+    /// 桌面截图作为底图，否则用户框选时看不到自己框的是哪块内容。
+    ///
+    /// ⚠️ 使用该声明位的视图窗口，**必须**同步登记到宿主
+    /// `src-tauri/capabilities/default.json` 的 `windows` 白名单
+    /// （标签 = `<pluginId>-<viewId>`），否则该窗口零权限、
+    /// `plugin_call` 被拒、表现为"死窗"。
+    #[serde(default)]
+    pub transparent: bool,
     /// 多实例向上堆叠（配合 unique_by 的弹窗场景）
     #[serde(default)]
     pub stacked: bool,
@@ -274,6 +335,23 @@ pub trait DbApi: Send + Sync {
 /// 窗口服务：插件打开 manifest 中声明的视图，参数透传为页面查询串
 pub trait WindowApi: Send + Sync {
     fn open(&self, view_id: &str, params: &[(String, String)]) -> Result<(), PluginError>;
+
+    /// 把已打开的视图窗口挂到桌面壁纸层（桌面小挂件）。
+    ///
+    /// 与 [`WindowApi::open`] 分开的原因：建窗是**声明式**的（能开哪些窗由
+    /// `manifest.views` 限定），而挂壁纸层是对已存在窗口的运行时层级操作，
+    /// 两者的风险面不同，插件应能分别表达意图。
+    ///
+    /// ⚠️ **并非所有平台/会话都支持**，宿主必须如实返回而不能假装成功：
+    ///   - Windows：注入 Explorer 的 WorkerW，真壁纸层
+    ///   - Linux X11：设 `_NET_WM_WINDOW_TYPE_DESKTOP`
+    ///   - **Linux Wayland：做不到**（z-order 由 compositor 独占，应用无权指定）
+    ///
+    /// 返回 `on_wallpaper=false` 时，插件应降级为置顶浮窗并在 UI 上如实告知用户。
+    fn attach_desktop(&self, label: &str) -> Result<DesktopAttachResult, PluginError>;
+
+    /// 当前会话是否支持桌面层（插件可先问，避免白跑一趟并给出预期提示）。
+    fn desktop_supported(&self) -> bool;
 }
 
 /// 系统通知
@@ -321,6 +399,134 @@ pub trait ClipboardApi: Send + Sync {
     fn write(&self, text: &str) -> Result<(), PluginError>;
     /// 读取纯文本；剪贴板为空或非文本内容 → Ok(None)
     fn read(&self) -> Result<Option<String>, PluginError>;
+    /// 写入 RGBA 像素图（截图"图片本体"直进剪贴板的主路径）。
+    ///
+    /// 为什么需要它：文本剪贴板只能塞路径字符串，用户还得自己去文件夹里找图；
+    /// 而桌面截图工具的默认交付物是**可直接粘贴的图片**。
+    /// 传 RGBA 原始字节而非 PNG/base64，是为了让宿主省掉一次编解码与
+    /// 约 33% 的体积膨胀（图像此刻已在内存里，本来就是 RGBA）。
+    ///
+    /// 与 `write` 一样受 `clipboard:write` 门控——图片同样会覆盖用户剪贴板。
+    fn write_image(&self, rgba: &[u8], width: u32, height: u32) -> Result<(), PluginError>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 剪贴板历史（P1 `/clip`）
+//
+// 设计立场（与 Ditto 的公开结论一致）：这类工具的**价值与风险同源**——
+// 救回一小时前命令的工具，同样会保存密码、API token、验证码。
+// 因此隐私保护不是可选加分项，而是**功能的前置约束**：
+//   - 默认排除密码管理器 / 安全输入类应用（进程名黑名单）
+//   - 条数上限 + 过期时间，避免无限累积
+//   - 数据只落本地插件库，不出网
+//   - 提供"暂停监听"，处理凭据时可临时断开
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 剪贴板历史条目
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipEntry {
+    /// 自增 id
+    pub id: i64,
+    /// 文本内容（超长会被宿主截断）
+    pub text: String,
+    /// 毫秒时间戳
+    pub ts: i64,
+}
+
+/// 剪贴板历史的隐私策略（默认值偏保守）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipboardPolicy {
+    /// 保留条数上限（默认 200；Win+V 只有 25）
+    pub max_entries: u32,
+    /// 单条最大字节数，超出截断
+    pub max_bytes: u32,
+    /// 过期天数（默认 7），超期记录不再展示
+    pub retention_days: u32,
+    /// 进程名黑名单（小写子串匹配），命中的来源应用不记录
+    pub excluded_apps: Vec<String>,
+    /// 是否用启发式跳过疑似密码/Token 的内容
+    pub detect_secrets: bool,
+}
+
+/// 保守的默认策略：这些是"复制即等于泄露"的高危来源
+pub fn default_clipboard_policy() -> ClipboardPolicy {
+    ClipboardPolicy {
+        max_entries: 200,
+        max_bytes: 64 * 1024,
+        retention_days: 7,
+        excluded_apps: vec![
+            "1password".into(),
+            "bitwarden".into(),
+            "keepass".into(),
+            "lastpass".into(),
+            "enpass".into(),
+            "dashlane".into(),
+            "logonui".into(),
+            "credential".into(),
+            "procmon".into(),
+        ],
+        detect_secrets: true,
+    }
+}
+
+/// 疑似秘密内容的启发式判定。
+///
+/// 刻意**宁可漏记也不错记**：只拦形态明确的（私钥头、key=value 凭据、
+/// 超长高熵裸串），不做"看起来像乱码就拦"这类过度判定——否则正常的
+/// commit hash、base64 片段、UUID 列表会被大量误伤，用户会觉得功能不可用。
+pub fn looks_like_secret(text: &str) -> Option<String> {
+    let t = text.trim();
+    // 过短不可能是凭据；过长多半是文件内容，一律放行（由 max_bytes 兜底截断）
+    if t.len() < 8 || t.len() > 512 {
+        return None;
+    }
+    if t.starts_with("-----BEGIN") && t.contains("PRIVATE KEY") {
+        return Some("私钥内容".into());
+    }
+    let lower = t.to_ascii_lowercase();
+    for key in ["password", "passwd", "secret", "api_key", "apikey", "token", "pwd"] {
+        if lower.contains(&format!("{}=", key)) || lower.contains(&format!("{}:", key)) {
+            return Some(format!("疑似 {} 凭据", key));
+        }
+    }
+    // 长随机串：连续 24+ 位字母数字，典型 API key / JWT 片段形态
+    if t
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|seg| seg.len() >= 24)
+    {
+        return Some("疑似长随机串（可能是 API Key / Token）".into());
+    }
+    None
+}
+
+/// 剪贴板历史服务（`clipboard:history` 权限）
+pub trait ClipboardHistoryApi: Send + Sync {
+    /// 当前是否正在监听
+    fn is_watching(&self) -> bool;
+    /// 开/关监听（关则不再新增条目，已有历史保留）
+    fn set_watching(&self, on: bool) -> Result<(), PluginError>;
+    /// 读取最近 N 条（按时间倒序）
+    fn recent(&self, limit: u32) -> Result<Vec<ClipEntry>, PluginError>;
+    /// 按关键词搜索历史（大小写不敏感的子串匹配）
+    fn search(&self, keyword: &str, limit: u32) -> Result<Vec<ClipEntry>, PluginError>;
+    /// 把某条重新写回剪贴板
+    fn recall(&self, id: i64) -> Result<(), PluginError>;
+    /// 删除某条
+    fn remove(&self, id: i64) -> Result<(), PluginError>;
+    /// 清空全部历史
+    fn clear(&self) -> Result<(), PluginError>;
+    /// 生效的隐私配置（供插件如实展示给用户）
+    fn policy(&self) -> ClipboardPolicy;
+}
+
+/// 宿主实现需要额外暴露的能力（拉当前剪贴板入库）。
+///
+/// 单独拆一个 trait 而不是塞进上面的 `ClipboardHistoryApi`：上面的 trait 是
+/// **插件可见的契约**（插件自己的 Rust 插件会实现它），而"拉取当前剪贴板并
+/// 过滤入库"是纯宿主行为，不该出现在插件契约里。
+pub trait ClipboardHistoryApiExt: ClipboardHistoryApi {
+    /// 读当前剪贴板文本，按隐私策略过滤后入库，返回是否新增了一条
+    fn ingest_current(&self) -> Result<bool, PluginError>;
 }
 
 /// HTTP 请求描述（M7）
@@ -381,6 +587,31 @@ pub struct CaptureRequest {
     pub hide_windows: bool,
     /// 隐藏后、捕获前的等待毫秒数（让用户收起菜单/移开鼠标），宿主上限 10s
     pub delay_ms: u32,
+    /// 区域框选：(x, y) 为**桌面全局物理**坐标的左上角，(w, h) 为宽高。
+    ///
+    /// `None` = 整块显示器。跨显示器的选区会按每块屏的边界切分后分别抓取
+    /// （见 `ScreenApi::capture`），因为平台 API 一次只能给一块屏的缓冲。
+    pub region: Option<Region>,
+    /// 为真时把**图片本体**写入剪贴板（RGBA），而不只是落盘。
+    ///
+    /// 这是桌面截图工具的默认交付物：用户要的是"立刻粘到聊天窗口/文档"，
+    /// 而不是"拿到一个路径再去文件夹里找"。仍受 `clipboard:write` 门控。
+    pub to_clipboard: bool,
+}
+
+/// 区域框选矩形（桌面全局物理像素）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Region {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Region {
+    pub fn is_empty(&self) -> bool {
+        self.width == 0 || self.height == 0
+    }
 }
 
 /// 截屏结果
@@ -390,10 +621,38 @@ pub struct CaptureResult {
     pub path: String,
     pub width: u32,
     pub height: u32,
-    /// 实际捕获的显示器序号
+    /// 实际捕获的显示器序号（跨屏选区时为选区左上角所在的那块）
     pub monitor: usize,
     /// 文件字节数
     pub bytes: u64,
+    /// 图片本体是否已写入剪贴板
+    #[serde(default)]
+    pub clipboard_image: bool,
+    /// 区域框选实际抓到的范围（全局物理坐标）；整屏捕获为 None
+    #[serde(default)]
+    pub region: Option<CapturedRegion>,
+}
+
+/// 已捕获的区域（回传让插件能确认"框到的到底是哪块"）
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct CapturedRegion {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// `ScreenApi::save_png` 的结果（前端合成图片的落盘回执）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedImage {
+    /// 落盘绝对路径
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+    /// 文件字节数
+    pub bytes: u64,
+    /// 图片本体是否已进剪贴板（失败时为 false，图片仍在磁盘上）
+    pub clipboard_image: bool,
 }
 
 /// 单像素采样（`hex` 为规范大写 `#RRGGBB`）
@@ -443,6 +702,14 @@ pub trait ScreenApi: Send + Sync {
     fn cursor_position(&self) -> Result<(i32, i32), PluginError>;
     /// 本插件截图默认落盘目录（宿主按插件 id 隔离）
     fn default_screenshot_dir(&self) -> std::path::PathBuf;
+    /// 保存一段 PNG 字节到本插件的截图目录，并按需写入图片剪贴板。
+    ///
+    /// 为什么需要它：前端 Canvas 合成（截图标注、拼图、加水印）的产物是
+    /// PNG 字节，而落盘/上剪贴板必须走宿主（插件无文件系统写权限）。
+    /// 这是**通用**能力，不专属于截图标注——任何"前端合成图片"场景都能用。
+    ///
+    /// `to_clipboard` 为真时同时把图片本体写进剪贴板（用户可直接粘贴）。
+    fn save_png(&self, png: &[u8], to_clipboard: bool) -> Result<SavedImage, PluginError>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -483,6 +750,14 @@ pub struct PluginContext {
     pub screen: Option<Arc<dyn ScreenApi>>,
     /// 全局热键（D 组）：声明 `shortcut:<accel>` 时才注入
     pub shortcuts: Option<Arc<dyn ShortcutApi>>,
+    /// 剪贴板历史（P1 `/clip`）：声明 `clipboard:history` 时才注入。
+    /// 与 `clipboard:read` 分开——后者是"读当前一次"，这个是"持续留存全部历史"，
+    /// 隐私风险高一个量级，不该用同一个权限蒙混过关。
+    ///
+    /// 存宿主扩展 trait 而非纯契约 trait：分发器需要调用 `ingest_current`
+    ///（插件契约之外的方法），只持 `Arc<dyn ClipboardHistoryApi>` 就得写
+    /// unsafe 向下转型——这里刻意不为此牺牲类型安全。
+    pub clipboard_history: Option<Arc<dyn ClipboardHistoryApiExt>>,
     pub events: Arc<dyn EventApi>,
     pub settings: Arc<dyn SettingsApi>,
     pub log: Arc<dyn LogApi>,

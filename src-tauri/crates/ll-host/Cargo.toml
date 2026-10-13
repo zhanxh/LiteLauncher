@@ -15,10 +15,21 @@ tauri-plugin-global-shortcut = "2"
 xcap = "0.9"
 image = { version = "0.25", default-features = false, features = ["png"] }
 dirs = "5"
+# 桌面层注入要取窗口原生句柄：Windows 拿 HWND、X11 拿 window id。
+# 版本与 Tauri 内置一致（0.6），避免出现两份不兼容的 handle 类型
+raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled-full"] }
 ureq = { version = "2", features = ["json"] }
+# 前端 Canvas 合成的图片（截图标注）以 base64 回传：走JSON 字节数组会膨胀成百万级数字
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+# 桌面层注入（WorkerW）：复用 Tauri 已引入的同一版本 windows-sys，
+# 不单独声明新版本以免出现两份类型互不兼容的 windows-sys
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }

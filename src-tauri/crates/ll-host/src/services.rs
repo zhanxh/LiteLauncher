@@ -4,12 +4,15 @@
 //! 窗口创建、SQL 白名单、设置前缀隔离等约束全部在此强制。
 
 use ll_plugin_api::{
-    CaptureRequest, CaptureResult, ClipboardApi, DbApi, EventApi, ExistingPolicy, HttpApi,
-    HttpRequest, LogApi, MonitorInfo, NotifyApi, PixelGrid, PixelSample, PluginContext, PluginError,
-    PluginErrorCode, PluginManifest, ProcessApi, ScreenApi, SecretApi, SettingsApi, ShortcutApi,
-    ViewSpec, WindowApi, WindowPosition,
+    CaptureRequest, CaptureResult, CapturedRegion, ClipEntry, ClipboardApi, ClipboardHistoryApi,
+    ClipboardHistoryApiExt, ClipboardPolicy, DbApi, DesktopAttachResult, EventApi, ExistingPolicy,
+    HttpApi, HttpRequest, LogApi, MonitorInfo, MonitorSelector, NotifyApi, PixelGrid, PixelSample,
+    PluginContext, PluginError, PluginErrorCode, PluginManifest, ProcessApi, Region, SavedImage,
+    ScreenApi, SecretApi, SettingsApi, ShortcutApi, ViewSpec, WindowApi, WindowPosition,
 };
+use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
+use base64::Engine as _;
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -245,6 +248,23 @@ impl WindowApi for HostWindowApi {
             })
             .map_err(|e| PluginError::window(format!("派发主线程失败: {}", e)))
     }
+
+    /// 把已打开的视图窗口挂到桌面壁纸层。
+    ///
+    /// 与 `open` 一样必须在主线程做：注入会调用 `SetParent` / 设 EWMH atom，
+    /// 都是窗口对象操作，不能从插件的后台线程直接调用。
+    fn attach_desktop(&self, label: &str) -> Result<DesktopAttachResult, PluginError> {
+        let app = self.app.clone();
+        let label = label.to_string();
+        tauri::async_runtime::block_on(async move {
+            crate::desktop::attach_window(&app, &label)
+        })
+        .map_err(|e| PluginError::window(format!("挂载到桌面失败: {e}")))
+    }
+
+    fn desktop_supported(&self) -> bool {
+        crate::desktop::session_supported()
+    }
 }
 
 /// 主线程上执行的实际建窗逻辑
@@ -313,6 +333,28 @@ fn open_on_main(
         .always_on_top(spec.always_on_top)
         .skip_taskbar(spec.skip_taskbar)
         .focused(spec.focusable);
+
+    // 遮罩层窗口（区域框选截图 / 全屏遮罩取色）：
+    //   - 透明背景，让底下的桌面截图透出来
+    //   - 铺满目标显示器，用户才能在任意位置拖拽选区
+    // 两者都要求 skip_taskbar + always_on_top，否则遮罩会出现在任务栏并被其他窗口盖住。
+    if spec.transparent {
+        builder = builder.transparent(true);
+    }
+    if let WindowPosition::Fullscreen(sel) = spec.position {
+        if let Some(monitor) = pick_fullscreen_monitor(app, sel) {
+            // Tauri 的 position/inner_size 是**逻辑像素**，而 monitor.size() 是物理像素。
+            // HiDPI（scaleFactor 1.25/1.5/2）下不换算会让遮罩只盖住屏幕左上角一块，
+            // 选区坐标也随之整体偏移——这是遮罩层最容易踩的坑。
+            let scale = monitor.scale_factor();
+            let size = monitor.size();
+            let pos = monitor.position();
+            builder = builder
+                .inner_size(size.width as f64 / scale, size.height as f64 / scale)
+                .position(pos.x as f64 / scale, pos.y as f64 / scale);
+        }
+    }
+
     if let (Some(mw), Some(mh)) = (spec.min_width, spec.min_height) {
         builder = builder.min_inner_size(mw, mh);
     }
@@ -694,6 +736,30 @@ impl ClipboardApi for HostClipboardApi {
         // 剪贴板为空 / 内容非文本时底层报错，语义上等价于"没有文本"，返回 None 由插件决定降级
         Ok(self.app.clipboard().read_text().ok())
     }
+
+    fn write_image(&self, rgba: &[u8], width: u32, height: u32) -> Result<(), PluginError> {
+        if !self.can_write {
+            return Err(PluginError::permission_denied("clipboard:write"));
+        }
+        // 长度先校验：传进来的必须是 width*height*4 字节的 RGBA，
+        // 少一格就会让 arboard 按错误尺寸解释整块内存
+        let expect = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4);
+        if rgba.len() < expect {
+            return Err(PluginError::bad_params(format!(
+                "RGBA 数据长度不足: 期望 {} 字节，实际 {}",
+                expect,
+                rgba.len()
+            )));
+        }
+        // arboard 接收 RGBA；截图缓冲本来就是 RGBA，直接零拷贝借用
+        let img = tauri::image::Image::new_owned(rgba.to_vec(), width, height);
+        self.app
+            .clipboard()
+            .write_image(&img)
+            .map_err(|e| PluginError::internal(format!("写入图片到剪贴板失败: {}", e)))
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -707,6 +773,9 @@ pub struct HostScreenApi {
     /// 读光标位置需要宿主句柄；无 GUI 会话时为 None（取色类调用会明确报错）
     pub app: Option<AppHandle>,
     pub plugin_id: String,
+    /// 截图"图片本体入剪贴板"要用的句柄。宿主注入，**受 manifest 的
+    /// `clipboard:write` 门控**——未声明时为 None，截图仍落盘但不碰剪贴板。
+    pub clipboard: Option<Arc<dyn ClipboardApi>>,
 }
 
 /// 显示器矩形表的命中测试（左闭右开），抽成纯函数便于单测
@@ -739,6 +808,19 @@ fn monitor_rects(monitors: &[xcap::Monitor]) -> Vec<(i32, i32, u32, u32)> {
 /// 把 0..1 的 `#RRGGBB` 渲染集中到一处，保证各处大小写一致
 fn hex_of(r: u8, g: u8, b: u8) -> String {
     format!("#{:02X}{:02X}{:02X}", r, g, b)
+}
+
+/// 按选择器挑目标显示器：Primary = 主屏；Cursor = 光标所在屏（读不到光标时退主屏）
+fn pick_fullscreen_monitor(app: &AppHandle, sel: MonitorSelector) -> Option<tauri::Monitor> {
+    match sel {
+        MonitorSelector::Primary => app.primary_monitor().ok().flatten(),
+        MonitorSelector::Cursor => app
+            .cursor_position()
+            .ok()
+            // cursor_position 返回 PhysicalPosition<f64>，monitor_from_point 吃 f64 x/y
+            .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+            .or_else(|| app.primary_monitor().ok().flatten()),
+    }
 }
 
 impl HostScreenApi {
@@ -818,12 +900,83 @@ impl HostScreenApi {
         }
     }
 
-    fn grab(&self, req: &CaptureRequest) -> Result<CaptureResult, PluginError> {
+    /// 抓取一个**矩形选区**（桌面全局物理坐标），返回 (图像, 选区左上角所在显示器序号)。
+    ///
+    /// 平台 API 一次只能给一块屏的缓冲，所以跨屏选区按每块屏的边界切成若干
+    /// 子矩形，分别 `capture_region` 后拼到同一张画布上——多屏用户框选横跨
+    /// 两块屏时不会只拿到一半。
+    fn grab_region(
+        monitors: &[xcap::Monitor],
+        region: Region,
+    ) -> Result<(image::RgbaImage, usize), PluginError> {
+        let r_x2 = region.x.saturating_add(region.width as i32);
+        let r_y2 = region.y.saturating_add(region.height as i32);
+
+        // 选区左上角所在屏：结果里回传，让插件能确认抓到的是哪块
+        let primary_idx = Self::monitor_at(monitors, region.x, region.y)
+            .unwrap_or_else(|_| {
+                // 左上角落在屏缝里（少见）时退到第一块，保证至少不 panic
+                0
+            });
+
+        let mut canvas = image::RgbaImage::new(region.width, region.height);
+
+        for (idx, m) in monitors.iter().enumerate() {
+            let (mx, my) = (m.x().unwrap_or(0), m.y().unwrap_or(0));
+            let (mw, mh) = (m.width().unwrap_or(0), m.height().unwrap_or(0));
+            if mw == 0 || mh == 0 {
+                continue;
+            }
+            // 屏矩形与选区的交集（全局坐标）
+            let ix1 = region.x.max(mx);
+            let iy1 = region.y.max(my);
+            let ix2 = r_x2.min(mx.saturating_add(mw as i32));
+            let iy2 = r_y2.min(my.saturating_add(mh as i32));
+            if ix2 <= ix1 || iy2 <= iy1 {
+                continue; // 该屏与选区无交集
+            }
+
+            // capture_region 要的是"显示器内相对坐标"（u32）
+            let rx = (ix1 - mx) as u32;
+            let ry = (iy1 - my) as u32;
+            let rw = (ix2 - ix1) as u32;
+            let rh = (iy2 - iy1) as u32;
+
+            let part = m
+                .capture_region(rx, ry, rw, rh)
+                .map_err(|e| PluginError::internal(format!("区域截图失败: {}", e)))?;
+
+            // 贴到画布上对应的全局偏移处
+            let ox = (ix1 - region.x) as i64;
+            let oy = (iy1 - region.y) as i64;
+            image::imageops::replace(&mut canvas, &part, ox, oy);
+            let _ = idx;
+        }
+
+        Ok((canvas, primary_idx))
+    }
+
+    /// 抓帧并落盘；`region` 为 Some 时按区域（可跨屏拼接）裁剪
+    fn grab(
+        &self,
+        req: &CaptureRequest,
+        clipboard: Option<&dyn ClipboardApi>,
+    ) -> Result<CaptureResult, PluginError> {
         let monitors = Self::all_monitors()?;
-        let index = self.resolve_monitor(&monitors, req.monitor)?;
-        let image = monitors[index]
-            .capture_image()
-            .map_err(|e| PluginError::internal(format!("截图失败: {}", e)))?;
+
+        let (image, monitor_index) = match req.region {
+            None => {
+                let index = self.resolve_monitor(&monitors, req.monitor)?;
+                let img = monitors[index]
+                    .capture_image()
+                    .map_err(|e| PluginError::internal(format!("截图失败: {}", e)))?;
+                (img, index)
+            }
+            Some(region) if region.is_empty() => {
+                return Err(PluginError::bad_params("选区宽高为 0，无法截图"));
+            }
+            Some(region) => Self::grab_region(&monitors, region)?,
+        };
 
         if let Some(parent) = req.path.parent() {
             std::fs::create_dir_all(parent)
@@ -833,14 +986,116 @@ impl HostScreenApi {
             .save(&req.path)
             .map_err(|e| PluginError::internal(format!("保存截图失败: {}", e)))?;
 
+        // 图片本体直进剪贴板：截图工具的默认交付物（用户要的是"立刻粘"）。
+        // 剪贴板不可用时**不视为失败**——图片已落盘，"打开/文件夹"仍可兜底。
+        let mut clipboard_image = false;
+        if req.to_clipboard {
+            match clipboard {
+                Some(cb) => match cb.write_image(image.as_raw(), image.width(), image.height()) {
+                    Ok(()) => clipboard_image = true,
+                    Err(e) => log_line(&format!("截图写剪贴板失败（已落盘）: {}", e)),
+                },
+                None => log_line("未声明 clipboard:write，跳过图片入剪贴板"),
+            }
+        }
+
         Ok(CaptureResult {
             path: req.path.to_string_lossy().to_string(),
             width: image.width(),
             height: image.height(),
-            monitor: index,
+            monitor: monitor_index,
             bytes: std::fs::metadata(&req.path).map(|m| m.len()).unwrap_or(0),
+            clipboard_image,
+            region: req.region.map(|r| CapturedRegion {
+                x: r.x,
+                y: r.y,
+                width: r.width,
+                height: r.height,
+            }),
         })
     }
+
+    /// 保存前端合成的 PNG（截图标注的落盘路径）
+    ///
+    /// 与 `grab` 分开：这里的像素来自前端 Canvas（已经带标注），
+    /// 宿主只负责"字节 → 文件 / 剪贴板"，不再参与抓屏。
+    fn save_png_inner(
+        &self,
+        png: &[u8],
+        to_clipboard: bool,
+        clipboard: Option<&dyn ClipboardApi>,
+    ) -> Result<SavedImage, PluginError> {
+        // 空字节一律拒掉：前端 Canvas 在某些异常路径下会导出 0 长度，
+        // 静默写出一个 0 字节 PNG 会让用户拿到"打不开的图片"，比报错更难排查
+        if png.is_empty() {
+            return Err(PluginError::bad_params("PNG 数据为空"));
+        }
+        // 先解码校验：宁可当场报错，也别把损坏的字节写进用户的剪贴板
+        let decoded = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+            .map_err(|e| PluginError::bad_params(format!("PNG 数据无法解码: {}", e)))?;
+
+        let dir = ScreenApi::default_screenshot_dir(self);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| PluginError::internal(format!("创建截图目录失败: {}", e)))?;
+        let path = unique_png_path(&dir);
+
+        decoded
+            .save(&path)
+            .map_err(|e| PluginError::internal(format!("保存图片失败: {}", e)))?;
+
+        // 剪贴板要的是 RGBA 像素（宿主侧统一格式），不是 PNG 字节
+        let mut clipboard_image = false;
+        if to_clipboard {
+            match clipboard {
+                Some(cb) => {
+                    let rgba = decoded.to_rgba8();
+                    match cb.write_image(rgba.as_raw(), rgba.width(), rgba.height()) {
+                        Ok(()) => clipboard_image = true,
+                        Err(e) => log_line(&format!("标注图写剪贴板失败（已落盘）: {}", e)),
+                    }
+                }
+                None => log_line("未声明 clipboard:write，跳过图片入剪贴板"),
+            }
+        }
+
+        Ok(SavedImage {
+            path: path.to_string_lossy().to_string(),
+            width: decoded.width(),
+            height: decoded.height(),
+            bytes: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+            clipboard_image,
+        })
+    }
+}
+
+/** 在目录里找一个不重名的 PNG 路径（毫秒时间戳 + 序号，防同毫秒连拍互相覆盖） */
+fn unique_png_path(dir: &std::path::Path) -> std::path::PathBuf {
+    let stamp = now_ms();
+    let mut candidate = dir.join(format!("shot-{}.png", stamp));
+    let mut seq = 1u32;
+    while candidate.exists() && seq < 1000 {
+        candidate = dir.join(format!("shot-{}-{}.png", stamp, seq));
+        seq += 1;
+    }
+    candidate
+}
+
+/// base64 →字节（容忍前端可能带上来的 data URL 前缀）
+fn decode_base64(input: &str) -> Result<Vec<u8>, PluginError> {
+    let raw = input.trim();
+    // 前端 Canvas.toDataURL 给的是 "data:image/png;base64,xxxx"，直接传整串会解不出来
+    let payload = match raw.split_once(',') {
+        Some((header, rest)) if header.starts_with("data:") => rest,
+        _ => raw,
+    };
+    base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|e| PluginError::bad_params(format!("base64 解码失败: {}", e)))
+}
+
+/// 写剪贴板失败不该让整次截图失败，只留痕便于排查
+fn log_line(msg: &str) {
+    eprintln!("[ll-host] {}", msg);
 }
 
 impl ScreenApi for HostScreenApi {
@@ -880,7 +1135,7 @@ impl ScreenApi for HostScreenApi {
             std::thread::sleep(Duration::from_millis(req.delay_ms.min(10_000) as u64));
         }
 
-        let result = self.grab(req);
+        let result = self.grab(req, self.clipboard.as_deref());
         Self::restore_windows(&hidden);
         result
     }
@@ -967,6 +1222,12 @@ impl ScreenApi for HostScreenApi {
         dir.push(&self.plugin_id);
         dir.push("screenshots");
         dir
+    }
+
+    fn save_png(&self, png: &[u8], to_clipboard: bool) -> Result<SavedImage, PluginError> {
+        // 剪贴板句柄随 screen 句柄一起注入（仅在声明 clipboard:write 时存在），
+        // 这样截图写剪贴板不会绕过 clipboard:write 门控
+        HostScreenApi::save_png_inner(self, png, to_clipboard, self.clipboard.as_deref())
     }
 }
 
@@ -1191,6 +1452,296 @@ fn default_shot_name() -> String {
     format!("shot-{}.png", ms)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 剪贴板历史（P1 `/clip`）：本地 SQLite + 隐私优先策略
+//
+// 刻意**不引入后台监听线程**：宿主是 Tauri 进程，轮询剪贴板既费电又可能在
+// 无 GUI 会话下报错。改为"按需读取 + 变化时写入"——插件在用户唤起 `/clip`
+// 时拉一次当前剪贴板并入库。这样历史里只有**用户自己主动查看时**的内容，
+// 隐私暴露面反而比 Ditto 的持续监听更小。
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub struct HostClipboardHistoryApi {
+    pub app: AppHandle,
+    pub conn: Arc<Mutex<Connection>>,
+    pub policy: ClipboardPolicy,
+    pub log: LogFn,
+}
+
+/// 建表（幂等）：用 user_version 判版本，避免每次启动都跑一遍 DDL
+pub(crate) fn ensure_clip_schema(conn: &Arc<Mutex<Connection>>) -> Result<(), PluginError> {
+    let c = conn.lock().map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
+    let ver: i64 = c
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap_or(0);
+    if ver < 1 {
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS clips (
+                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                 text      TEXT NOT NULL,
+                 ts        INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_clips_ts ON clips(ts DESC);",
+        )
+        .map_err(|e| PluginError::db(format!("建表失败: {}", e)))?;
+        c.execute_batch("PRAGMA user_version = 1")
+            .map_err(|e| PluginError::db(format!("设置 user_version 失败: {}", e)))?;
+    }
+    Ok(())
+}
+
+/// 裁剪到 max_bytes（按字符边界，避免切坏 UTF-8）
+fn truncate_by_bytes(text: &str, max_bytes: u32) -> (String, bool) {
+    if text.len() <= max_bytes as usize {
+        return (text.to_string(), false);
+    }
+    let mut end = max_bytes as usize;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (format!("{}\n…（已截断，原 {} 字节）", &text[..end], text.len()), true)
+}
+
+/// 过期阈值（毫秒时间戳）
+fn expiry_cutoff(policy: &ClipboardPolicy, now_ms: i64) -> i64 {
+    now_ms - (policy.retention_days as i64) * 24 * 3600 * 1000
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+impl HostClipboardHistoryApi {
+    /// 拉取当前剪贴板文本并按策略入库，返回是否新增了一条。
+    ///
+    /// 隐私过滤顺序很重要：先判来源应用（黑名单），再判疑似凭据，最后才截断——
+    /// 高危内容压根不该落盘，而不是"存了但打个标记"。
+    pub fn ingest_current(&self) -> Result<bool, PluginError> {
+        if !self.is_watching() {
+            return Ok(false);
+        }
+        // read_text 返回 Result<String>：Err = 剪贴板为空或当前是图片等非文本内容，
+        // 语义上就是"这次没什么可记的"，当作不新增条目
+        let Ok(text) = self.app.clipboard().read_text() else {
+            return Ok(false);
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(false);
+        }
+        // 与最近一条相同则不重复记录（反复复制同一内容不刷屏）
+        {
+            let c = self.conn.lock().map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
+            let last: Option<String> = c
+                .query_row("SELECT text FROM clips ORDER BY id DESC LIMIT 1", [], |r| {
+                    r.get(0)
+                })
+                .ok();
+            if last.as_deref() == Some(text.as_str()) {
+                return Ok(false);
+            }
+        }
+
+        // 疑似凭据直接跳过（宁可漏记也不错记）
+        if self.policy.detect_secrets {
+            if let Some(reason) = ll_plugin_api::looks_like_secret(trimmed) {
+                (self.log)(
+                    "clip",
+                    &format!("跳过一条疑似敏感内容（{}），未写入历史", reason),
+                );
+                return Ok(false);
+            }
+        }
+
+        let (stored, truncated) = truncate_by_bytes(&text, self.policy.max_bytes);
+        let ts = now_ms();
+        {
+            let c = self
+                .conn
+                .lock()
+                .map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
+            c.execute(
+                "INSERT INTO clips (text, ts) VALUES (?1, ?2)",
+                rusqlite::params![stored, ts],
+            )
+            .map_err(|e| PluginError::db(format!("写入失败: {}", e)))?;
+            // 条数上限：超了删最旧的
+            c.execute(
+                "DELETE FROM clips WHERE id NOT IN (
+                     SELECT id FROM clips ORDER BY id DESC LIMIT ?1
+                 )",
+                rusqlite::params![self.policy.max_entries],
+            )
+            .map_err(|e| PluginError::db(format!("清理超限条目失败: {}", e)))?;
+            // 过期清理
+            c.execute(
+                "DELETE FROM clips WHERE ts < ?1",
+                rusqlite::params![expiry_cutoff(&self.policy, ts)],
+            )
+            .map_err(|e| PluginError::db(format!("清理过期条目失败: {}", e)))?;
+        }
+        if truncated {
+            (self.log)("clip", "有条目超过单条上限，已截断后入库");
+        }
+        Ok(true)
+    }
+
+    fn query_rows(&self, keyword: Option<&str>, limit: u32) -> Result<Vec<ClipEntry>, PluginError> {
+        let c = self
+            .conn
+            .lock()
+            .map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
+        let cutoff = expiry_cutoff(&self.policy, now_ms());
+        let lim = limit.clamp(1, 500) as i64;
+        let mut stmt = c
+            .prepare(
+                "SELECT id, text, ts FROM clips
+                 WHERE ts >= ?1 AND text LIKE ?2 ESCAPE '\\'
+                 ORDER BY id DESC LIMIT ?3",
+            )
+            .map_err(|e| PluginError::db(format!("准备查询失败: {}", e)))?;
+        // LIKE 通配符转义：用户搜 "100%" 不该变成通配
+        let pattern = match keyword {
+            Some(k) if !k.trim().is_empty() => {
+                format!("%{}%", escape_like(&k.trim().to_lowercase()))
+            }
+            _ => "%".to_string(),
+        };
+        let rows = stmt
+            .query_map(rusqlite::params![cutoff, pattern, lim], |r| {
+                Ok(ClipEntry {
+                    id: r.get(0)?,
+                    text: r.get(1)?,
+                    ts: r.get(2)?,
+                })
+            })
+            .map_err(|e| PluginError::db(format!("查询失败: {}", e)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| PluginError::db(format!("读取行失败: {}", e)))?);
+        }
+        Ok(out)
+    }
+}
+
+/// 转义 SQLite LIKE 的通配符（% _ \）
+fn escape_like(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '%' | '_' | '\\' => format!("\\{}", c),
+            other => other.to_string(),
+        })
+        .collect()
+}
+
+/// 监听开关落库的键（宿主私有，不经 SettingsApi，避免插件改到）
+const CLIP_WATCH_KEY: &str = "__clip_watching";
+
+// 契约 trait：宿主实现直接提供全部方法
+impl ClipboardHistoryApi for HostClipboardHistoryApi {
+    fn is_watching(&self) -> bool {
+        self.conn
+            .lock()
+            .ok()
+            .and_then(|c| {
+                c.query_row(
+                    "SELECT value FROM meta WHERE key = ?1",
+                    rusqlite::params![CLIP_WATCH_KEY],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+            })
+            .map(|v| v != "off")
+            .unwrap_or(true)
+    }
+
+    fn set_watching(&self, on: bool) -> Result<(), PluginError> {
+        let c = self
+            .conn
+            .lock()
+            .map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        )
+        .map_err(|e| PluginError::db(format!("建 meta 表失败: {}", e)))?;
+        c.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![CLIP_WATCH_KEY, if on { "on" } else { "off" }],
+        )
+        .map_err(|e| PluginError::db(format!("保存监听开关失败: {}", e)))?;
+        (self.log)(
+            "clip",
+            if on {
+                "剪贴板历史监听：已开启"
+            } else {
+                "剪贴板历史监听：已暂停（处理凭据后建议再开启）"
+            },
+        );
+        Ok(())
+    }
+
+    fn recent(&self, limit: u32) -> Result<Vec<ClipEntry>, PluginError> {
+        self.query_rows(None, limit)
+    }
+
+    fn search(&self, keyword: &str, limit: u32) -> Result<Vec<ClipEntry>, PluginError> {
+        self.query_rows(Some(keyword), limit)
+    }
+
+    fn recall(&self, id: i64) -> Result<(), PluginError> {
+        let text: String = {
+            let c = self
+                .conn
+                .lock()
+                .map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
+            c.query_row("SELECT text FROM clips WHERE id = ?1", rusqlite::params![id], |r| {
+                r.get(0)
+            })
+            .map_err(|e| PluginError::db(format!("未找到该条目: {}", e)))?
+        };
+        self.app
+            .clipboard()
+            .write_text(text)
+            .map_err(|e| PluginError::internal(format!("回写剪贴板失败: {}", e)))
+    }
+
+    fn remove(&self, id: i64) -> Result<(), PluginError> {
+        let c = self
+            .conn
+            .lock()
+            .map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
+        c.execute("DELETE FROM clips WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| PluginError::db(format!("删除失败: {}", e)))?;
+        Ok(())
+    }
+
+    fn clear(&self) -> Result<(), PluginError> {
+        let c = self
+            .conn
+            .lock()
+            .map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
+        c.execute("DELETE FROM clips", [])
+            .map_err(|e| PluginError::db(format!("清空失败: {}", e)))?;
+        (self.log)("clip", "剪贴板历史已清空");
+        Ok(())
+    }
+
+    fn policy(&self) -> ClipboardPolicy {
+        self.policy.clone()
+    }
+}
+
+/// 扩展 trait：只额外暴露"拉当前剪贴板入库"这一宿主行为
+impl ClipboardHistoryApiExt for HostClipboardHistoryApi {
+    fn ingest_current(&self) -> Result<bool, PluginError> {
+        HostClipboardHistoryApi::ingest_current(self)
+    }
+}
+
 /// 分发一个 `svc.*` 调用。method 非法或对应权限未声明时返回结构化错误
 pub fn dispatch_svc(
     ctx: &PluginContext,
@@ -1213,6 +1764,7 @@ pub fn dispatch_svc(
     };
     let p_i32 = |key: &str| params.get(key).and_then(|v| v.as_i64()).map(|v| v as i32);
     let p_u32 = |key: &str| params.get(key).and_then(|v| v.as_u64()).map(|v| v as u32);
+    let p_i64 = |key: &str| params.get(key).and_then(|v| v.as_i64());
     let p_bool = |key: &str| params.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
 
     match method {
@@ -1373,6 +1925,35 @@ pub fn dispatch_svc(
             Ok(JsonValue::Null)
         }
 
+        // ── 挂到桌面壁纸层（桌面小挂件；需 windows 权限）────────────────
+        // 与 window.open 分开：建窗是声明式的（manifest.views 已限定能开哪些窗），
+        // 而"挂壁纸层"是对**已存在**窗口的运行时层级操作，两者风险面不同。
+        //
+        // 平台能力差异（详见 ll-host::desktop）：
+        //   Windows   → SetParent 到 Explorer 的 WorkerW，真壁纸层
+        //   Linux X11 → 设 _NET_WM_WINDOW_TYPE_DESKTOP
+        //   Wayland   → **做不到**，明确返回 unsupported 让插件降级为置顶浮窗
+        // 绝不能在这里假装成功——插件要靠 onWallpaper 决定 UI 上写
+        // "已贴桌面"还是"已降级为置顶"，骗用户会以为挂件真的进了壁纸层。
+        "svc.window.attachDesktop" => {
+            let windows = ctx
+                .windows
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("windows"))?;
+            let label = p_str("label")
+                .ok_or_else(|| PluginError::bad_params("缺少 label（窗口标签）"))?;
+            to_json(&windows.attach_desktop(&label)?)
+        }
+
+        // 当前会话是否支持桌面层（插件可在开挂件前先问，省掉一次失败的注入）
+        "svc.window.desktopSupported" => {
+            let windows = ctx
+                .windows
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("windows"))?;
+            Ok(json!({ "supported": windows.desktop_supported() }))
+        }
+
         // ── 屏幕捕获（D 组，manifest 权限 screen）───────────────────────────
         "svc.screen.list" => {
             let screen = ctx
@@ -1419,13 +2000,38 @@ pub fn dispatch_svc(
                 Some(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
                 _ => screen.default_screenshot_dir().join(default_shot_name()),
             };
+            // region: {x,y,width,height}（桌面全局物理坐标）；缺省 = 整块显示器。
+            // 四个字段必须齐全才算区域——只给一半参数宁可当整屏，避免静默截错。
+            let region = match (p_i32("x"), p_i32("y"), p_u32("width"), p_u32("height")) {
+                (Some(x), Some(y), Some(w), Some(h)) => Some(Region {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                }),
+                _ => None,
+            };
             let req = CaptureRequest {
                 monitor: p_i32("monitor"),
                 path,
                 hide_windows: p_bool("hideWindows"),
                 delay_ms: p_u32("delayMs").unwrap_or(0),
+                region,
+                to_clipboard: p_bool("toClipboard"),
             };
             to_json(&screen.capture(&req)?)
+        }
+        "svc.screen.savePng" => {
+            let screen = ctx
+                .screen
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("screen"))?;
+            // 前端 Canvas 合成的图（截图标注等）。传base64 而非字节数组：
+            // JSON 里字节数组会膨胀成上百万个数字，base64 只占 1.33 倍且解析更快。
+            let b64 = p_str("pngBase64")
+                .ok_or_else(|| PluginError::bad_params("缺少 pngBase64"))?;
+            let png = decode_base64(&b64)?;
+            to_json(&screen.save_png(&png, p_bool("toClipboard"))?)
         }
 
         // ── 全局热键（D 组，manifest 逐条声明 shortcut:<accel>）──────────────
@@ -1455,8 +2061,65 @@ pub fn dispatch_svc(
             Ok(json!(shortcuts.list()))
         }
 
+        // ── 剪贴板历史（P1 `/clip`，manifest 声明 clipboard:history）────────────
+        // 隐私优先：ingest（拉当前剪贴板入库）也走同一权限，故未声明该权限的
+        // 插件拿不到任何历史数据，也不会因为宿主在别处监听而被绕过。
+        "svc.clipboard.history.ingest" => {
+            clip_history(ctx)?.ingest_current()?;
+            Ok(JsonValue::Null)
+        }
+        "svc.clipboard.history.recent" => {
+            let hist = clip_history(ctx)?;
+            Ok(to_json(&hist.recent(p_u32("limit").unwrap_or(50))?)?)
+        }
+        "svc.clipboard.history.search" => {
+            let hist = clip_history(ctx)?;
+            let kw = p_str("keyword").unwrap_or_default();
+            Ok(to_json(&hist.search(&kw, p_u32("limit").unwrap_or(50))?)?)
+        }
+        "svc.clipboard.history.recall" => {
+            let hist = clip_history(ctx)?;
+            let id = p_i64("id").ok_or_else(|| PluginError::bad_params("缺少 id"))?;
+            hist.recall(id)?;
+            Ok(JsonValue::Null)
+        }
+        "svc.clipboard.history.remove" => {
+            let hist = clip_history(ctx)?;
+            let id = p_i64("id").ok_or_else(|| PluginError::bad_params("缺少 id"))?;
+            hist.remove(id)?;
+            Ok(JsonValue::Null)
+        }
+        "svc.clipboard.history.clear" => {
+            clip_history(ctx)?.clear()?;
+            Ok(JsonValue::Null)
+        }
+        "svc.clipboard.history.watching" => {
+            let hist = clip_history(ctx)?;
+            // 不带 on 参数视为"查询当前状态"
+            match params.get("on") {
+                Some(v) => {
+                    hist.set_watching(v.as_bool().unwrap_or(true))?;
+                    Ok(JsonValue::Null)
+                }
+                None => Ok(json!(hist.is_watching())),
+            }
+        }
+        "svc.clipboard.history.policy" => {
+            let hist = clip_history(ctx)?;
+            Ok(to_json(&hist.policy())?)
+        }
+
         _ => Err(PluginError::unknown_method(method)),
     }
+}
+
+/// 取剪贴板历史句柄；未声明 `clipboard:history` 权限时明确拒绝
+fn clip_history(
+    ctx: &PluginContext,
+) -> Result<&dyn ClipboardHistoryApiExt, PluginError> {
+    ctx.clipboard_history
+        .as_deref()
+        .ok_or_else(|| PluginError::permission_denied("clipboard:history"))
 }
 
 #[cfg(all(test, not(target_os = "windows")))]
