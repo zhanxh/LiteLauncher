@@ -190,6 +190,15 @@ html, body, #root {
 }
 
 /* 结果列表面板 */
+/* wrapper 承载"还有更多"提示的定位上下文，故flex: 1 从 .panel-container 上移到这里 */
+.panel-wrapper {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .panel-container {
   flex: 1;
   overflow-y: auto;
@@ -204,6 +213,41 @@ html, body, #root {
 .panel-container::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
   border-radius: 3px;
+}
+
+/* 溢出提示（G-2）：面板高度写死，条目被裁掉时给一个显式的"下面还有"信号。
+   渐隐遮罩暗示内容被裁剪，文案给出确切条数——滚动条只有 6px，光看它察觉不到。 */
+.panel-more-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 46px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 4px;
+  pointer-events: none;
+}
+
+.panel-more-fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 100%;
+  background: linear-gradient(to bottom, transparent, var(--bg-solid) 78%);
+}
+
+.panel-more-text {
+  position: relative;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--accent-hint-bg);
+  border: 1px solid var(--accent-hint-border);
+  padding: 2px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .panel-item {

@@ -51,6 +51,10 @@ export const App: Component = () => {
   // 裸文本聚合搜索的防抖计时器与查询序号（陈旧结果取消）
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let searchSeq = 0;
+  // 指令插件 query() 的防抖计时器：插件可声明 queryDebounceMs 覆盖默认 0（立即）
+  // 见 CommandPlugin.queryDebounceMs——网络类插件靠它把"两次回车"变回"输入即出结果"
+  let pluginQueryTimer: ReturnType<typeof setTimeout> | null = null;
+  let pluginQuerySeq = 0;
   const [panelItems, setPanelItems] = createSignal<PanelItem[]>([]);
   const [emptyText, setEmptyText] = createSignal<string>('未检索到内容');
   const [actionCapsule, setActionCapsule] = createSignal<ActionPreviewCapsule | null>(null);
@@ -175,7 +179,9 @@ export const App: Component = () => {
       const items: PanelItem[] = result.candidatePlugins.map((p) => ({
         id: p.id,
         title: `${p.trigger} - ${p.name}`,
-        description: p.description,
+        // 参数提示拼在描述尾部：新用户往往不知道 `/shot -d3` 怎么写，
+        // 直接把语法骨架摆出来能省掉一次试错
+        description: p.argsHint ? `${p.description}　用法：${p.trigger} ${p.argsHint}` : p.description,
         icon: p.icon,
         badge: '指令',
         metadata: { trigger: p.trigger },
@@ -215,12 +221,28 @@ export const App: Component = () => {
       // 3.2 查询模式（Query 模式）
       setActionCapsule(null);
       if (result.plugin.query) {
-        result.plugin.query(result.parsed).then((data) => {
+        const plugin = result.plugin;
+        const parsed = result.parsed;
+        const queryId = ++pluginQuerySeq;
+
+        // 应用结果：序号校验保证陈旧响应被丢弃（防抖后并发窗口更大，必须查）
+        const applyQuery = async () => {
+          const data = await plugin.query!(parsed);
+          if (queryId !== pluginQuerySeq) return; // 输入已变更 → 丢弃过时结果
           setPanelItems(data.items);
           setEmptyText(data.emptyText || '未检索到内容');
           setSelectedIndex(0);
           updateWindowHeight(data.items.length > 0 ? 420 : 160);
-        });
+        };
+
+        // 插件声明了防抖就等它；没声明则保持逐键立即（纯计算插件零延迟）
+        const debounce = plugin.queryDebounceMs ?? 0;
+        if (pluginQueryTimer !== null) clearTimeout(pluginQueryTimer);
+        if (debounce > 0) {
+          pluginQueryTimer = setTimeout(() => void applyQuery(), debounce);
+        } else {
+          void applyQuery();
+        }
       }
       return;
     }
@@ -228,6 +250,13 @@ export const App: Component = () => {
     // 4. 普通搜索文本或空状态（聚合所有 SearchProvider + 候选指令，壳层无任何搜索业务）
     setPrefixIcon('🔍');
     setActionCapsule(null);
+    // 离开指令模式：作废待触发的防抖查询，否则它会在裸文本搜索期间
+    // 把上一个插件的结果刷进面板（序号校验拦得住结果，拦不住这次副作用）
+    if (pluginQueryTimer !== null) {
+      clearTimeout(pluginQueryTimer);
+      pluginQueryTimer = null;
+      pluginQuerySeq++;
+    }
 
     if (!raw) {
       // 空状态：尝试查询历史常用项
@@ -256,7 +285,7 @@ export const App: Component = () => {
     const pluginCandidateItems: PanelItem[] = result.candidatePlugins.map((p) => ({
       id: `plugin-${p.id}`,
       title: `${p.trigger} - ${p.name}`,
-      description: p.description,
+      description: p.argsHint ? `${p.description}　用法：${p.trigger} ${p.argsHint}` : p.description,
       icon: p.icon,
       badge: '指令',
       metadata: { trigger: p.trigger },
@@ -297,18 +326,35 @@ export const App: Component = () => {
     }, 50);
   });
 
+  /**
+   * 壳层唯一的剪贴板写入口（G-1：此前数学结果走 navigator.clipboard，
+   * 插件 copy 走宿主 clipboard_write，两套实现行为不一致——窗口即将隐藏时
+   * webview 的 navigator.clipboard 会被策略拒绝，表现为"有时能复制有时不能"）。
+   *
+   * 优先走宿主原生命令：它是同步落剪贴板的，不受窗口可见性影响；
+   * 浏览器预览环境（无 Tauri）才退回navigator.clipboard。
+   */
+  const applyCopy = async (text?: string) => {
+    if (!text) return;
+    try {
+      if (isTauriEnvironment()) {
+        await invoke('clipboard_write', { text });
+      } else {
+        await navigator.clipboard.writeText(text);
+      }
+    } catch {
+      showToast('复制失败（剪贴板不可用）');
+    }
+  };
+
   // 处理 Enter 回车确认
   const handleEnter = async () => {
     const result = parseCommand(inputValue());
 
-    // 1. 数学计算复制
+    // 1. 数学计算复制（与插件 copy 共用同一入口，避免两套实现的差异）
     if (result.isMathExpression && result.mathResult !== undefined) {
-      try {
-        await navigator.clipboard.writeText(result.mathResult);
-        showToast(`已复制结果: ${result.mathResult}`);
-      } catch {
-        showToast(`计算结果: ${result.mathResult}`);
-      }
+      await applyCopy(result.mathResult);
+      showToast(`已复制结果: ${result.mathResult}`);
       return;
     }
 
@@ -345,22 +391,11 @@ export const App: Component = () => {
   // 选中某一项并执行
   const handleSelectItem = async (item: PanelItem) => {
     // 通用剪贴板能力：插件经 AfterSelect.copy 声明要复制的文本，壳层不理解插件语义。
-    // 优先走宿主原生剪贴板：窗口即将隐藏时 webview 的 navigator.clipboard 会被策略拒绝。
-    const applyCopy = async (text?: string) => {
-      if (!text) return;
-      try {
-        if (isTauriEnvironment()) {
-          await invoke('clipboard_write', { text });
-        } else {
-          await navigator.clipboard.writeText(text);
-        }
-      } catch {
-        showToast('复制失败（剪贴板不可用）');
-      }
-    };
 
     // 1. 候选指令补全（例如选中 /todo，在输入框填入 "/todo "）
     if (item.metadata?.trigger) {
+      // 参数提示只展示在面板项描述里，**不塞进输入框**——塞进去的话
+      // 用户还得手动删掉，等于凭空多一步
       setInputValue(item.metadata.trigger + ' ');
       return;
     }

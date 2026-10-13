@@ -26,6 +26,12 @@ export interface ExternalPluginInfo {
     icon: string;
     actionSubcommands: string[];
     hint?: string | null;
+    /**
+     * search 的防抖毫秒数（缺省 = 壳层逐键立即调用）。
+     * `/find` 这类"每键都要查外部索引"的插件必须声明，否则输入 10 个字符
+     * 就是 10 次 IPC。宿主从 manifest 的 `command.queryDebounceMs` 透传。
+     */
+    queryDebounceMs?: number | null;
   };
 }
 
@@ -40,6 +46,11 @@ function makeExternalPlugin(info: ExternalPluginInfo): CommandPlugin {
     name: info.name,
     description: info.description ?? '',
     icon: command.icon || '🧩',
+
+    // 宿主 manifest 声明了就用；0/undefined 保持壳层默认的逐键调用
+    ...(command.queryDebounceMs && command.queryDebounceMs > 0
+      ? { queryDebounceMs: command.queryDebounceMs }
+      : {}),
 
     isAction(input) {
       return command.actionSubcommands.includes(input.subcommand ?? '');

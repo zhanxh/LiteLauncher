@@ -81,6 +81,7 @@
   --accent-badge-bg: rgba(37, 99, 235, 0.12);
   --accent-badge-text: #1d4ed8;
   --accent-hint-bg: rgba(59, 130, 246, 0.12);
+  --accent-hint-border: rgba(59, 130, 246, 0.28);
   --accent-fg: #ffffff;
 
   --item-bg-hover: rgba(0, 0, 0, 0.05);

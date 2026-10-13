@@ -91,8 +91,16 @@ export interface MonitorInfo {
 }
 
 /** 截屏参数 */
+/** 区域框选矩形（桌面全局物理坐标，与 `svc.screen.*` 同一坐标系） */
+export interface CaptureRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface CaptureOptions {
-  /** 显示器序号（0 起）；`-1` = 光标所在的那块；缺省 = 主显示器 */
+  /** 显示器序号（0 起）；`-1` = 光标所在的那块；缺省 = 主显示器。给了 `region` 时忽略 */
   monitor?: number;
   /** 目标文件绝对路径；缺省由宿主落在本插件数据目录的 `screenshots/` 下 */
   path?: string;
@@ -100,6 +108,16 @@ export interface CaptureOptions {
   hideWindows?: boolean;
   /** 隐藏后、截取前的等待毫秒数（宿主上限 10s），用于让用户收起菜单 */
   delayMs?: number;
+  /**
+   * 只截这块矩形（区域框选）。跨显示器选区由宿主自动切分拼接，
+   * 四个字段必须齐全才生效，否则退化为整屏截图。
+   */
+  region?: CaptureRegion;
+  /**
+   * 把**图片本体**写入剪贴板（而非只落盘）。桌面截图工具的默认交付物——
+   * 用户要的是"立刻粘到聊天窗口/文档"。需 manifest 声明 `clipboard:write`。
+   */
+  toClipboard?: boolean;
 }
 
 /** 截屏结果 */
@@ -109,6 +127,10 @@ export interface CaptureResult {
   height: number;
   monitor: number;
   bytes: number;
+  /** 图片本体是否已成功写入剪贴板 */
+  clipboardImage?: boolean;
+  /** 区域框选实际抓到的范围；整屏截图为 undefined */
+  region?: CaptureRegion;
 }
 
 /** 单像素采样；`hex` 为规范大写 `#RRGGBB` */
@@ -154,6 +176,23 @@ export interface PluginScreen {
   pixel(opts?: { x?: number; y?: number; radius?: number }): Promise<PixelResult>;
   /** 截图并落盘，返回路径与尺寸 */
   capture(opts?: CaptureOptions): Promise<CaptureResult>;
+  /**
+   * 保存前端合成的 PNG（Canvas.toDataURL 的产物）并可选写入图片剪贴板。
+   *
+   * 用途：截图标注、拼图、加水印——凡是"像素在前端合成、落盘必须在宿主"的场景。
+   * 传 data URL 或裸 base64 都行，宿主会剥掉 `data:image/png;base64,` 前缀。
+   */
+  savePng(dataUrl: string, opts?: { toClipboard?: boolean }): Promise<SavedImage>;
+}
+
+/** `screen.savePng` 的回执 */
+export interface SavedImage {
+  path: string;
+  width: number;
+  height: number;
+  bytes: number;
+  /** 图片本体是否已进剪贴板（失败时为 false，图片仍在磁盘上） */
+  clipboardImage?: boolean;
 }
 
 /** 全局热键（`shortcut:<accel>` 权限，逐条声明、无通配） */
@@ -182,6 +221,75 @@ export interface PluginShortcuts {
 export interface PluginWindows {
   /** `params` 会透传为页面查询串（视图内用 `URLSearchParams` 读取） */
   open(view: string, params?: Record<string, string | number | boolean>): Promise<void>;
+  /**
+   * 把已打开的视图窗口挂到桌面壁纸层（桌面小挂件 / Conky 那种）。
+   *
+   * ⚠️ **并非所有平台都支持，务必检查 `onWallpaper`**：
+   * - Windows：注入 Explorer 的 WorkerW，真壁纸层（被桌面图标遮挡）
+   * - Linux X11：设 `_NET_WM_WINDOW_TYPE_DESKTOP`
+   * - **Linux Wayland：做不到** —— z-order 由 compositor 独占管理，
+   *   应用无权指定层级。这是 Wayland 的安全设计，不是缺陷。
+   *
+   * 返回 `onWallpaper === false` 时窗口**仍然可见**，只是降级成了置顶浮窗。
+   * 此时应当如实告诉用户"未能贴到壁纸层"，不要显示成已贴在桌面。
+   */
+  attachDesktop(label: string): Promise<DesktopAttachResult>;
+  /** 当前会话是否支持桌面层（可先问，避免白跑一次注定失败的注入） */
+  desktopSupported(): Promise<boolean>;
+}
+
+/** 挂载结果。`onWallpaper` 是 UI 的唯一判据。 */
+export type DesktopAttachStatus =
+  | { status: 'attached' }
+  | { status: 'unsupported'; reason: string }
+  | { status: 'failed'; reason: string };
+
+export interface DesktopAttachResult {
+  status: DesktopAttachStatus;
+  /** 是否真的落在壁纸层。false = 降级为置顶浮窗 */
+  onWallpaper: boolean;
+}
+
+/** 剪贴板历史条目（P1 `/clip`） */
+export interface ClipEntry {
+  id: number;
+  text: string;
+  ts: number;
+}
+
+/** 剪贴板历史的隐私策略（P1 `/clip`；宿主强制生效，插件只负责如实展示） */
+export interface ClipboardPolicy {
+  /** 保留条数上限 */
+  maxEntries: number;
+  /** 单条最大字节数 */
+  maxBytes: number;
+  /** 过期天数 */
+  retentionDays: number;
+  /** 进程名黑名单，命中的来源应用不记录 */
+  excludedApps: string[];
+  /** 是否跳过疑似密码/Token 的内容 */
+  detectSecrets: boolean;
+}
+
+/**
+ * 剪贴板历史（`clipboard:history` 权限，与 `clipboard:read` 分开——后者只读当前一次）
+ *
+ * ⚠️ 隐私提醒：这条通道会**长期留存**用户复制过的一切。宿主侧强制
+ * 「疑似凭据不落盘 + 条数上限 + 过期 + 进程黑名单」，但插件仍应在界面上
+ * 把这些策略告诉用户，并提供暂停开关。
+ */
+export interface PluginClipboardHistory {
+  /** 拉当前剪贴板过一遍隐私策略入库（按需调用，非后台监听） */
+  ingest(): Promise<void>;
+  recent(limit?: number): Promise<ClipEntry[]>;
+  search(keyword: string, limit?: number): Promise<ClipEntry[]>;
+  /** 把某条回填到剪贴板 */
+  recall(id: number): Promise<void>;
+  remove(id: number): Promise<void>;
+  clear(): Promise<void>;
+  /** 当前是否在记录；不传 on 时为查询，传 on 则开关 */
+  watching(on?: boolean): Promise<boolean | void>;
+  policy(): Promise<ClipboardPolicy>;
 }
 
 export interface PluginContext {
@@ -194,6 +302,8 @@ export interface PluginContext {
   screen: PluginScreen;
   shortcuts: PluginShortcuts;
   windows: PluginWindows;
+  /** 剪贴板历史（`clipboard:history` 权限）；未声明时调用会抛权限错误 */
+  clipboardHistory: PluginClipboardHistory;
   log: PluginLog;
   notify: PluginNotify;
   events: PluginEvents;
@@ -328,8 +438,39 @@ export function getPluginContext(pluginId: string): PluginContext {
         if (opts.path) params.path = opts.path;
         if (opts.hideWindows) params.hideWindows = true;
         if (opts.delayMs) params.delayMs = opts.delayMs;
+        if (opts.toClipboard) params.toClipboard = true;
+        // 区域框选：四个字段齐全才下发，否则宿主侧会静默退化成整屏——
+        // 与其截错，不如让调用方察觉参数没配全
+        if (opts.region) {
+          const { x, y, width, height } = opts.region;
+          if (
+            Number.isFinite(x) &&
+            Number.isFinite(y) &&
+            Number.isFinite(width) &&
+            Number.isFinite(height) &&
+            width > 0 &&
+            height > 0
+          ) {
+            params.x = Math.round(x);
+            params.y = Math.round(y);
+            params.width = Math.round(width);
+            params.height = Math.round(height);
+          } else {
+            throw new Error('region 参数不完整或宽高非正：需要 {x, y, width, height}');
+          }
+        }
         const res = await svc<CaptureResult | null>('screen.capture', params);
         if (!res?.path) throw new Error('截图失败：宿主未返回文件路径');
+        return res;
+      },
+      savePng: async (dataUrl, opts = {}) => {
+        // 空图直接拦下：宿主也会拒，但那时已经付了一次 base64 传输的代价
+        if (!dataUrl || dataUrl.length < 32) throw new Error('savePng: PNG 内容为空');
+        const res = await svc<SavedImage | null>('screen.savePng', {
+          pngBase64: dataUrl,
+          ...(opts.toClipboard ? { toClipboard: true } : {}),
+        });
+        if (!res?.path) throw new Error('保存图片失败：宿主未返回文件路径');
         return res;
       },
     },
@@ -369,6 +510,53 @@ export function getPluginContext(pluginId: string): PluginContext {
     windows: {
       open: async (view, params = {}) => {
         await svc('window.open', { view, params });
+      },
+      attachDesktop: async (label) => {
+        // 不给默认值：宿主若返回异常结构，让调用方立刻炸在读 onWallpaper 上，
+        // 好过静默当成"贴成功"骗用户
+        return await svc<DesktopAttachResult>('window.attachDesktop', { label });
+      },
+      desktopSupported: async () => {
+        const r = await svc<{ supported: boolean } | null>('window.desktopSupported', {});
+        return r?.supported === true;
+      },
+    },
+    clipboardHistory: {
+      ingest: async () => {
+        await svc('clipboard.history.ingest', {});
+      },
+      recent: async (limit = 50) =>
+        (await svc<ClipEntry[] | null>('clipboard.history.recent', { limit })) ?? [],
+      search: async (keyword, limit = 50) =>
+        (await svc<ClipEntry[] | null>('clipboard.history.search', { keyword, limit })) ?? [],
+      recall: async (id) => {
+        await svc('clipboard.history.recall', { id });
+      },
+      remove: async (id) => {
+        await svc('clipboard.history.remove', { id });
+      },
+      clear: async () => {
+        await svc('clipboard.history.clear', {});
+      },
+      // 不传 on = 查询当前状态；传 on = 开关并返回空
+      watching: async (on?: boolean) => {
+        if (on === undefined) {
+          return Boolean(await svc<boolean | null>('clipboard.history.watching', {}));
+        }
+        await svc('clipboard.history.watching', { on });
+        return undefined;
+      },
+      policy: async () => {
+        const raw = await svc<Record<string, unknown> | null>('clipboard.history.policy', {});
+        if (!raw) throw new Error('宿主未返回隐私策略');
+        // 宿主是 snake_case，SDK 对外统一 camelCase
+        return {
+          maxEntries: Number(raw.max_entries ?? 0),
+          maxBytes: Number(raw.max_bytes ?? 0),
+          retentionDays: Number(raw.retention_days ?? 0),
+          excludedApps: Array.isArray(raw.excluded_apps) ? (raw.excluded_apps as string[]) : [],
+          detectSecrets: Boolean(raw.detect_secrets),
+        };
       },
     },
     log: {

@@ -94,6 +94,16 @@ export interface SearchProvider {
 }
 
 /**
+ * 全局热键自报条目（`/hotkey` 速查表的一行）
+ */
+export interface PluginHotkey {
+  /** 加速键规范形式，如 "alt+shift+s" */
+  accel: string;
+  /** 按下这个键会发生什么（速查表里最有价值的部分） */
+  description: string;
+}
+
+/**
  * 指令插件接口契约
  */
 export interface CommandPlugin {
@@ -118,6 +128,47 @@ export interface CommandPlugin {
    * （如 /app add 需要在预览胶囊下方展示系统应用候选供点选）
    */
   showItemsInActionMode?: boolean;
+
+  /**
+   * query() 的防抖毫秒数（缺省 0 = 逐键立即调用）。
+   *
+   * 为什么需要它：壳层对指令插件的 `query()` 是**逐键调用且无防抖**的
+   * （裸文本搜索那条路径才有 50ms），这对纯计算插件无害，但网络类插件
+   * 会因此被迫走"先给一条『查询』项、回车才真发请求"的折中范式，
+   * 代价是用户要按**两次回车**才拿到结果。
+   *
+   * 声明本字段后，壳层会等到用户停止输入该毫秒数才调 query()，
+   * 于是网络插件可以回归"输入即出结果"。
+   *
+   * 建议值 250–350ms：低于 200 手速快时仍会连发，高于 500 会有明显迟滞。
+   * 纯计算/本地查询插件**不要声明**（无谓地增加等待）。
+   */
+  queryDebounceMs?: number;
+
+  /**
+   * 参数提示：补全候选指令时展示的用法骨架（如 `[屏序号] [-d秒]`）。
+   * 新用户往往不知道 `/shot -d3` 怎么写，这行提示能省掉一次试错。
+   */
+  argsHint?: string;
+
+  /**
+   * 真实用法示例（`/help` 面板按此渲染）。
+   * 插件作者已经把语法写在 description 里了，结构化后能让新用户直接照抄。
+   */
+  examples?: string[];
+
+  /**
+   * 本插件占用的全局热键（自报，供 `/hotkey` 汇总成速查表）。
+   *
+   * 为什么是"自报"而不是读manifest：插件注册表里只有CommandPlugin，
+   * 拿不到 manifest.permissions；而宿主侧 `shortcut:<accel>` 是**逐条静态声明**
+   * 的（运行时无法动态追加，否则任何插件都能抢注任意组合键）。
+   * 于是"谁能按哪些键"这件事由插件自己讲，`/hotkey` 只做汇总展示。
+   *
+   * 注意：这里填的是**已实际注册成功**的热键，注册失败（被占用）时不应上报，
+   * 否则速查表会教用户按一个不生效的键。
+   */
+  hotkeys?: PluginHotkey[];
 
   /**
    * 获取即时执行的实时语义预览胶囊（若返回 null 则不显示胶囊）
