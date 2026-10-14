@@ -3,6 +3,8 @@
 # 用法：
 #   ./build.sh         完整构建：前端 + 主程序 + 便携插件部署
 #   ./build.sh check   快速门禁：cargo check + 前端类型检查（不产二进制）
+#   ./build.sh ship    正式发布包：fat LTO + 单 codegen unit，产物落在独立的
+#                      target-ship 目录，编完日常缓存仍可复用
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -25,6 +27,10 @@ if (( node_ok == 0 )); then
     echo "[错误] Node.js v${node_ver} 过旧。Vite 8 要求 Node 20.19+ 或 22.12+，请升级到 Node 22 LTS。"
     exit 1
 fi
+
+# ship = 正式发布档。日常构建直接用 Cargo.toml 里的快速档。
+SHIP=0
+if [[ "${1:-}" == "ship" ]]; then SHIP=1; fi   # 不用 && 形式：set -e 下的返回值容易误判
 
 if [[ "${1:-}" == "check" ]]; then
     echo "[check] Rust 工作区编译检查（含全部插件 crate）..."
@@ -54,12 +60,25 @@ if [[ ! -f dist/index.html ]]; then
     exit 1
 fi
 
-echo "[2/4] 构建主程序（Tauri release，含内置插件）..."
+BIN="src-tauri/target/release/LiteLauncher"
+if (( SHIP )); then
+    echo "[2/4] 构建正式发布包（fat LTO + 单 codegen unit，独立缓存目录）..."
+    echo "        这一步很慢是刻意的。日常构建请直接跑 ./build.sh"
+    # 档位与 Cargo.toml 不同，cargo 会把全部依赖在这个目录重编一遍；
+    # 单独开一个 target-ship 是为了不弄脏日常那份增量缓存
+    export CARGO_PROFILE_RELEASE_LTO=true
+    export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+    export CARGO_TARGET_DIR="$PWD/src-tauri/target-ship"
+    BIN="src-tauri/target-ship/release/LiteLauncher"
+else
+    echo "[2/4] 构建主程序（Tauri release，含内置插件）..."
+fi
 npx tauri build --no-bundle
 
+[[ -f "$BIN" ]] || { echo "[错误] 未产出 $BIN，Tauri 步骤没有生成二进制"; exit 1; }
 echo "[3/4] 拷贝主程序到 release/LiteLauncher..."
 mkdir -p release
-cp -f src-tauri/target/release/LiteLauncher release/LiteLauncher
+cp -f "$BIN" release/LiteLauncher
 
 echo "[4/4] 部署外部插件到 release/plugins/..."
 node tools/deploy-portable-plugins.mjs

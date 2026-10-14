@@ -15,10 +15,23 @@ members = [
 #    禁止依赖 ll-host、tauri 或彼此——保证插件可独立编译、独立演进。
 # 2. ll-host 不得依赖任何具体插件（注册方向：应用 crate → 插件 crate）。
 
+# ── 构建档位（日常 vs 正式发布）────────────────────────────────
+# 日常：`build.cmd` / `cargo build --release`，直接吃本段设置。
+# 正式：`build.cmd ship`，由脚本用 CARGO_PROFILE_RELEASE_* 环境变量把
+#       本段临时覆盖成最优化档（fat LTO + 单 CGU）。
+#
+# 为什么默认档不再是 codegen-units=1 + lto=true：
+# 那组设置只影响最后两个编译单元（ll-host 与 tauri-app），却占了整场构建的
+# 绝大部分时间——fat LTO 要在链接期把上游所有 rlib 的 LLVM IR 合并重优化
+# （无法并行），codegen-units=1 又取消了 crate 内的并行编译。每次微调宿主
+# 都要等十几分钟，等于没有反馈回路。
+# thin LTO + 4 CGU 的包体/性能损失通常在个位数百分比内，而正式包走 ship
+# 档重编一次即可拿回全部优化，两边都不吃亏。
+#
 # 发布优化配置必须声明在 workspace 根（成员包内的 profile 会被忽略）
 [profile.release]
-codegen-units = 1
-lto = true
+codegen-units = 4
+lto = "thin"
 opt-level = 3
 panic = "abort"
 strip = true

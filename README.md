@@ -190,7 +190,7 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 | `/memo` | 备忘速记 | 速记与检索 |
 | `/cheat` | 命令速查 | 内置 git/docker/k8s 等常用命令，可增删 |
 | `/time` | 世界时钟 | 主要城市时间与时差 |
-| `/pomo` | 番茄钟 | 开始计时即在桌面显示倒计时挂件，到点发系统通知；`/pomo pin` 可贴到壁纸层 |
+| `/pomo` | 番茄钟 | `/pomo start 25 写代码`，专注↔短休按 **5:1** 交替；到点发系统通知并自动接下一段，`/pomo auto off` 改为每段结束等人工点挂件的 ▶；`/pomo pin` 可贴到壁纸层 |
 | `/sysinfo` | 系统信息 | 平台/CPU/内存/磁盘探测 |
 
 > 所有"回车复制"依赖壳层的通用 `AfterSelect.copy` 能力（工具类插件的标准交互），落点为**宿主原生剪贴板**（`clipboard_write`），而非 webview 的 `navigator.clipboard`——后者在窗口即将隐藏时会被浏览器策略拒绝。
@@ -238,16 +238,36 @@ npm run plugin:test:fe
 npm run tauri dev
 ```
 
-### 3. 生产打包构建
+### 3. 构建与发布
+
+**日常构建**（改完代码验证效果，用 `Cargo.toml` 里的快速档）：
 ```powershell
-# 方式一：一步完成（前端打包 + Rust release 编译 + 拷贝到 release\LiteLauncher.exe）
+# 前端打包 + Rust release 编译 + 拷贝到 release\LiteLauncher.exe
 build.cmd
 
-# 方式二：等价的显式命令
+# 等价的显式命令
 npm run build
 npx tauri build --no-bundle
-copy /Y src-tauri\target\release\tauri-app.exe release\LiteLauncher.exe
+copy /Y src-tauri\target\release\LiteLauncher.exe release\LiteLauncher.exe
 ```
+
+**正式发布**（对外分发的那个包，唯一需要 `ship` 的场合）：
+```powershell
+build.cmd ship
+```
+`ship` 只改变 Rust 侧的优化档（fat LTO + 单 codegen unit，经 `CARGO_PROFILE_RELEASE_*`
+环境变量覆盖 `Cargo.toml`，不需要手改文件），前端构建与便携插件部署步骤完全一致；
+产物同样拷到 `release\LiteLauncher.exe`，后续校验/分发流程不变。
+它把这类包编到独立的 `src-tauri\target-ship\` 目录，所以发版之后日常那份增量
+缓存不会被换档作废（代价：首次 ship 会在新目录重编一遍全部依赖，多占约 8~9G）。
+
+> **判据一句话**：自己看效果 → `build.cmd`；要发给别人的那个 exe → `build.cmd ship`。
+>
+> **为什么日常档不是最优化档**（`Cargo.toml` 的 `[profile.release]`）：
+> `lto = true` + `codegen-units = 1` 只影响最后两个编译单元（ll-host 与 tauri-app），
+> 却占了整场构建的绝大部分时间——前者要在链接期把上游所有 rlib 的 LLVM IR
+> 合并重优化（无法并行），后者取消了 crate 内的并行编译。日常改成
+> `lto = "thin"` + `codegen-units = 4`，发版用 `build.cmd ship` 拿回全部优化。
 
 > ⚠️ **注意**：请使用 `npx tauri build`（或 `build.cmd`）打包，不要直接用 `cargo build --release`。
 > 后者不会启用 `custom-protocol` 特性，产出的 exe 会去连 `localhost:1420` dev server，导致窗口白屏或"localhost 拒绝连接"。

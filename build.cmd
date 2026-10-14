@@ -14,6 +14,9 @@ REM
 REM  Usage:
 REM    build.cmd          full build: frontend + main exe + portable plugin deploy
 REM    build.cmd check    quick gate: cargo check + frontend type check (no binary)
+REM    build.cmd ship     OFFICIAL RELEASE build: fat LTO + 1 codegen unit, into a
+REM                       separate target-ship dir, so the daily incremental cache
+REM                       in target\ stays usable after the one-off rebuild
 REM ============================================================
 
 REM -- Toolchain check ----------------------------------------
@@ -48,6 +51,9 @@ where cargo >nul 2>nul || (
     )
 )
 
+REM "ship" = official release. Everyday builds keep the fast profile in Cargo.toml.
+set "SHIP="
+if /I "%~1"=="ship" set "SHIP=1"
 if "%~1"=="check" goto :check
 
 REM -- npm install (first run / after dependency changes) ------
@@ -83,7 +89,20 @@ tasklist /FI "IMAGENAME eq LiteLauncher.exe" 2>nul | find /I "LiteLauncher.exe" 
     exit /b 1
 )
 set "STEP=[2/5]"
-echo %STEP% Building main program (Tauri release, built-in plugins included)...
+REM Everyday build: fast profile from Cargo.toml, cargo reuses src-tauri\target.
+set "BIN=src-tauri\target\release"
+if defined SHIP (
+    echo %STEP% Building OFFICIAL RELEASE - fat LTO, 1 codegen unit, separate cache...
+    echo         Slow on purpose. For everyday builds just run: build.cmd
+    set "CARGO_PROFILE_RELEASE_LTO=true"
+    set "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1"
+    REM Separate target dir: this profile differs from Cargo.toml, so cargo would
+    REM recompile every dependency here and leave a cache it cannot reuse later.
+    set "CARGO_TARGET_DIR=%CD%\src-tauri\target-ship"
+    set "BIN=src-tauri\target-ship\release"
+) else (
+    echo %STEP% Building main program - Tauri release, built-in plugins included...
+)
 call npx tauri build --no-bundle
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] main program build failed
@@ -94,7 +113,11 @@ REM -- [3/5] copy binary to release/ ---------------------------
 set "STEP=[3/5]"
 if not exist "release" mkdir "release"
 echo %STEP% Copying main exe to release\LiteLauncher.exe...
-copy /Y "src-tauri\target\release\LiteLauncher.exe" "release\LiteLauncher.exe" >nul || exit /b 1
+if not exist "%BIN%\LiteLauncher.exe" (
+    echo [ERROR] "%BIN%\LiteLauncher.exe" missing - the Tauri step produced no binary
+    exit /b 1
+)
+copy /Y "%BIN%\LiteLauncher.exe" "release\LiteLauncher.exe" >nul || exit /b 1
 
 REM -- [4/5] deploy external plugins (backend.kind=llp) --------
 set "STEP=[4/5]"
