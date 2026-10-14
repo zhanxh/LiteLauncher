@@ -372,6 +372,11 @@ fn open_on_main(
         .build()
         .map_err(|e| format!("创建窗口 {} 失败: {}", label, e))?;
 
+    // GTK 的建窗下限修正必须发生在角落定位之前：定位按 spec 尺寸算，
+    // 窗口实际被撑大时两者就对不上了
+    #[cfg(target_os = "linux")]
+    clamp_gtk_child_min_size(&window, spec);
+
     if corner_position {
         if let Ok(Some(monitor)) = app.primary_monitor() {
             let mon_logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
@@ -423,11 +428,80 @@ fn open_on_main(
     Ok(())
 }
 
+/// 解除 GTK 给窗口加的 200×200 下限
+///
+/// WebKitWebView 会带着 200×200 的尺寸请求进窗口，GtkWindow 不能缩到子控件
+/// 请求以下，于是 186×88 这类小挂件被撑成 200×200，多出来的一圈是窗口底色
+/// （Windows 无此下限，所以两边形状不一样）。把子控件的请求压回视图声明的
+/// 最小尺寸即可；只压到 min_* 而不是 spec，是因为挂件悬停时会加宽窗口，
+/// 下限取最小值才不会挡住后续 resize。
+#[cfg(target_os = "linux")]
+fn clamp_gtk_child_min_size(window: &WebviewWindow, spec: &ViewSpec) {
+    use gtk::prelude::ContainerExt;
+    use tauri::LogicalSize;
+
+    let Some(gtk_window) = window.gtk_window().ok() else {
+        return;
+    };
+    let w = spec.min_width.unwrap_or(spec.width).max(1.0) as i32;
+    let h = spec.min_height.unwrap_or(spec.height).max(1.0) as i32;
+    for child in gtk_window.children() {
+        set_size_request_recursive(&child, w, h);
+    }
+    let _ = window.set_size(LogicalSize::new(spec.width, spec.height));
+}
+
+#[cfg(target_os = "linux")]
+fn set_size_request_recursive(widget: &gtk::Widget, w: i32, h: i32) {
+    use gtk::prelude::{Cast, ContainerExt, WidgetExt};
+
+    widget.set_size_request(w, h);
+    if let Some(container) = widget.downcast_ref::<gtk::Container>() {
+        for child in container.children() {
+            set_size_request_recursive(&child, w, h);
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ProcessApi —— 受控进程服务（宿主持有全部启动策略与安全校验）
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct HostProcessApi;
+
+/// 交给系统默认打开器的 URL 前缀
+const URL_SCHEMES: [&str; 3] = ["http://", "https://", "file://"];
+
+fn is_url_target(clean: &str) -> bool {
+    URL_SCHEMES.iter().any(|prefix| clean.starts_with(prefix))
+}
+
+/// URL 目标校验：URL 不经 shell，`& ? = % #` 属合法字符，不能按可执行路径的
+/// 黑名单一刀切（否则带查询串的链接全部打不开）；但仍拒绝会破坏各平台
+/// argv 解析的引号/变量/重定向字符与换行
+fn validate_url_target(clean: &str) -> Result<(), PluginError> {
+    const FORBIDDEN: [char; 8] = ['|', '<', '>', '$', '`', '\\', '"', '\''];
+    if clean
+        .chars()
+        .any(|c| FORBIDDEN.contains(&c) || c.is_control() || c.is_whitespace())
+    {
+        return Err(PluginError::bad_params("URL 包含不安全的特殊字符"));
+    }
+    // file:// 允许空 authority（file:///tmp/a.txt）
+    if !clean.starts_with("file://") && url_host(clean).is_none() {
+        return Err(PluginError::bad_params(format!("无法解析 URL: {}", clean)));
+    }
+    Ok(())
+}
+
+/// 可执行路径/裸命令校验：禁止 Shell 注入元字符（管道/重定向/拼接/变量展开）
+fn validate_path_target(clean: &str) -> Result<(), PluginError> {
+    const FORBIDDEN: [char; 8] = ['&', '|', ';', '>', '<', '$', '`', '\n'];
+    if clean.chars().any(|c| FORBIDDEN.contains(&c) || c == '\r') {
+        return Err(PluginError::bad_params("启动路径包含不安全的特殊字符"));
+    }
+    Ok(())
+}
 
 impl ProcessApi for HostProcessApi {
     fn launch(&self, target: &str) -> Result<(), PluginError> {
@@ -435,10 +509,10 @@ impl ProcessApi for HostProcessApi {
         if clean.is_empty() {
             return Err(PluginError::bad_params("启动路径不能为空"));
         }
-        // 安全校验：禁止 Shell 注入元字符（管道/重定向/拼接/变量展开）
-        let forbidden = ['&', '|', ';', '>', '<', '$', '`', '\n', '\r'];
-        if clean.chars().any(|c| forbidden.contains(&c)) {
-            return Err(PluginError::bad_params("启动路径包含不安全的特殊字符"));
+        if is_url_target(clean) {
+            validate_url_target(clean)?;
+        } else {
+            validate_path_target(clean)?;
         }
         spawn_app(clean).map_err(|e| PluginError::internal(format!("启动程序失败: {}", e)))?;
         Ok(())
@@ -456,9 +530,7 @@ impl ProcessApi for HostProcessApi {
 fn should_use_opener(clean_path: &str) -> bool {
     use std::os::unix::fs::PermissionsExt;
 
-    let is_url = ["http://", "https://", "file://"]
-        .iter()
-        .any(|prefix| clean_path.starts_with(prefix));
+    let is_url = is_url_target(clean_path);
 
     let path = std::path::Path::new(clean_path);
     let is_exec_file = path.is_file()
@@ -476,6 +548,13 @@ fn spawn_app(clean_path: &str) -> std::io::Result<std::process::Child> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
+        // URL 绝不能交给 cmd：start 会把 & 当命令分隔符，而 Rust 只给含空格的
+        // 参数加引号，带查询串的链接既打不开又可被拼接。走 ShellExecute 等价物
+        if is_url_target(clean_path) {
+            return std::process::Command::new("rundll32")
+                .args(["url.dll,FileProtocolHandler", clean_path])
+                .spawn();
+        }
         // Windows：cmd.exe /c start "" 以完全独立进程运行并支持环境变量关联；
         // CREATE_NO_WINDOW 隐藏 cmd 窗口
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -2144,6 +2223,48 @@ fn clip_history(
     ctx.clipboard_history
         .as_deref()
         .ok_or_else(|| PluginError::permission_denied("clipboard:history"))
+}
+
+#[cfg(test)]
+mod launch_policy_tests {
+    use super::{validate_path_target, validate_url_target};
+
+    #[test]
+    fn url_with_query_ampersand_is_accepted() {
+        // 回归：/qr 的图片链接带 &data=，曾被路径黑名单误杀
+        assert!(validate_url_target(
+            "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=www.baidu.com"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn url_still_rejects_shell_and_argv_breakers() {
+        for bad in [
+            "https://example.com/a\";calc",
+            "https://example.com/x && notepad",
+            "https://example.com/$(whoami)",
+            "https://example.com/a\nb",
+            "https://example.com/path|cat",
+        ] {
+            assert!(validate_url_target(bad).is_err(), "应拒绝 {:?}", bad);
+        }
+    }
+
+    #[test]
+    fn url_requires_authority_except_file() {
+        assert!(validate_url_target("https://").is_err());
+        assert!(validate_url_target("file:///tmp/a.txt").is_ok());
+    }
+
+    #[test]
+    fn path_target_keeps_full_blacklist() {
+        assert!(validate_path_target("/bin/ls").is_ok());
+        assert!(validate_path_target("gnome-terminal").is_ok());
+        for bad in ["/bin/sh & rm", "a;calc", "a|b", "a>b", "a`b`"] {
+            assert!(validate_path_target(bad).is_err(), "应拒绝 {:?}", bad);
+        }
+    }
 }
 
 #[cfg(all(test, not(target_os = "windows")))]
