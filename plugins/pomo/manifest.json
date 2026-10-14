@@ -4,7 +4,7 @@
   "version": "0.3.0",
   "api_version": "^1",
   "trigger": "/pomo",
-  "description": "番茄钟：/pomo start 25 写代码 开始计时并自动在桌面显示倒计时挂件，到点发系统通知；/pomo pause 暂停 / resume 继续 / stop 停止；/pomo pin 把挂件贴到桌面壁纸层（Wayland 下自动降级为置顶浮窗）。",
+  "description": "番茄钟：/pomo start 25 写代码 开始计时并自动在桌面显示倒计时挂件，专注与短休按 5:1 交替，到点发系统通知；/pomo pause 暂停 / resume 继续 / next 开始下一段 / auto on|off 到点是否自动衔接 / stop 停止；/pomo pin 把挂件贴到桌面壁纸层（Wayland 下自动降级为置顶浮窗）。",
   "permissions": [
     "notifications",
     "settings",
@@ -14,9 +14,9 @@
     {
       "id": "widget",
       "title": "番茄钟",
-      "width": 262.0,
+      "width": 186.0,
       "height": 88.0,
-      "min_width": 262.0,
+      "min_width": 176.0,
       "min_height": 88.0,
       "resizable": false,
       "decorated": false,
@@ -42,10 +42,12 @@
       "stop",
       "pause",
       "resume",
+      "next",
+      "auto",
       "pin",
       "widget",
       "where"
     ],
-    "hint": "start [分钟] [标签] 开始并显示桌面挂件；pin 贴壁纸层；悬停挂件可暂停/停止"
+    "hint": "start [分钟] [标签] 开始并显示桌面挂件；专注/短休按 5:1 交替；auto on|off 到点是否自动衔接；悬停挂件可暂停/下一段/停止"
   }
 }

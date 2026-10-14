@@ -95,6 +95,158 @@ export function formatClock(tsMs: number): string {
   return `${h}:${m}`;
 }
 
+/** 专注 : 短休 = 5 : 1（与 sidecar 的 BREAK_RATIO 必须一致） */
+export const BREAK_RATIO = 5;
+
+/**
+ * 短休分钟数。必须与 `pomo.py` 的 `break_minutes_of` 同结果，否则面板写着
+ * "接 5 分钟短休"、挂件环按别的分母画。
+ *
+ * 整数输入下不会出现 .5 的平局（m/5 = k+0.5 要求 m 非整数），所以 JS 的
+ * Math.round（.5 向上）与 Python 的 round（.5 向偶）在这里不会分叉。
+ */
+export function breakMinutesOf(minutes: number): number {
+  const m = Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes) : 25;
+  return Math.max(1, Math.round(m / BREAK_RATIO));
+}
+
+/** 段别：专注 / 短休 */
+export type Phase = 'focus' | 'break';
+
+export function phaseName(phase: Phase | string | undefined): string {
+  return phase === 'break' ? '短休' : '专注';
+}
+
+/**
+ * sidecar 状态的规整形态——挂件唯一认的数据形状。
+ *
+ * 数据来源有两种（见 `parseSidecarState` / `stateFromParts`），但往下只走这一个结构，
+ * 避免"从 snap 取的 auto 是布尔、从散装键取的是 '1'/'0'"这种分叉渗到渲染层。
+ */
+export interface WidgetState {
+  /** 当前段结束时刻（**毫秒**），0 表示没在计时 */
+  targetMs: number;
+  label: string;
+  minutes: number;
+  pausedRemain: number;
+  phase: Phase;
+  nextPhase: Phase;
+  rounds: number;
+  auto: boolean;
+  hold: boolean;
+}
+
+const PHASE_BREAK = 'break';
+
+function coercePhase(v: unknown): Phase {
+  return v === PHASE_BREAK ? 'break' : 'focus';
+}
+
+/** Python 的 json 布尔是 true/false，散装 settings 是 '1'/'0'——两者都算 */
+function coerceBool(v: unknown): boolean {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v !== 0;
+  if (typeof v === 'string') return v !== '0' && v !== '' && v.toLowerCase() !== 'false';
+  return false;
+}
+
+function coerceCount(v: unknown): number {
+  const n = typeof v === 'number' ? v : Number.parseFloat(String(v ?? '0'));
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+function coerceMinutes(v: unknown): number {
+  const n = typeof v === 'number' ? v : Number.parseFloat(String(v ?? '0'));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * 解析 sidecar 写的单键 JSON 快照（`settings.snap`）。
+ *
+ * 为什么用单键而不是继续读 9 个散装键：挂件每秒轮询一次，`settings.get` 每次
+ * 都是一趟 webview→宿主→SQLite 的 IPC；读 9 个键就是每秒 9 趟。单键一次搞定，
+ * 而且天然**一致**——散装键分 9 次读，可能读到"本轮已写、下一轮未写"的撕裂状态。
+ *
+ * 解析失败（JSON 损坏、字段缺失）返回 null，由调用方回退到散装键。
+ */
+export function parseSidecarState(raw: string | null | undefined): WidgetState | null {
+  if (!raw) return null;
+  let obj: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  return {
+    targetMs: normalizeTargetMs(obj.target as number | string),
+    label: typeof obj.label === 'string' ? obj.label : '',
+    minutes: coerceMinutes(obj.minutes),
+    pausedRemain: coerceMinutes(obj.paused_remain),
+    phase: coercePhase(obj.phase),
+    nextPhase: coercePhase(obj.next_phase),
+    rounds: coerceCount(obj.rounds),
+    auto: coerceBool(obj.auto),
+    hold: coerceBool(obj.hold),
+  };
+}
+
+/** 散装键（旧版本没有 snap，或 snap 写坏了）形态的输入 */
+export interface SidecarParts {
+  target: string | null | undefined;
+  label: string | null | undefined;
+  minutes: string | null | undefined;
+  pausedRemain: string | null | undefined;
+  phase: string | null | undefined;
+  nextPhase: string | null | undefined;
+  rounds: string | null | undefined;
+  auto: string | null | undefined;
+  hold: string | null | undefined;
+}
+
+/** 由散装 settings 拼出同一个 `WidgetState`，让回退路径与主路径形状一致 */
+export function stateFromParts(p: SidecarParts): WidgetState {
+  return {
+    targetMs: normalizeTargetMs(p.target),
+    label: p.label ?? '',
+    minutes: coerceMinutes(p.minutes),
+    pausedRemain: coerceMinutes(p.pausedRemain),
+    phase: coercePhase(p.phase),
+    nextPhase: coercePhase(p.nextPhase),
+    rounds: coerceCount(p.rounds),
+    // 缺键即默认开启：与 sidecar 的 `_start_new` 一致（"初始 add 后就是自动勾选"）
+    auto: p.auto === null || p.auto === undefined || p.auto === '' ? true : coerceBool(p.auto),
+    hold: coerceBool(p.hold),
+  };
+}
+
+/**
+ * 「这段跑完了、等用户点下一段」的展示态。
+ *
+ * ## 为什么单独一个函数
+ *
+ * sidecar 停在 hold 时把 target 归零，于是挂件读到的快照与"从未计时"完全一样，
+ * 直接喂给 `deriveView` 得到 IDLE_VIEW——用户看到的是「25:00 准备开始」，
+ * 而不是「刚才那 5 分钟跑完了」。真机反馈正是这个：倒计时结束后窗口显示 25:00 准备开始，
+ * 好像计时从没发生过。hold 必须自己成一个视图，把"结束"这件事显式说出来。
+ */
+export function deriveHold(rounds: number, minutes: number): TimerView {
+  return {
+    running: false,
+    // 环心只有 64px（内径约 56px）放得下三个汉字；轮数放在标签行里说
+    text: '待开始',
+    remainingSec: 0,
+    // 进度环走满：这段确实跑完了，画成空环会让人以为被重置了
+    progress: 1,
+    // 标签只说"完成了什么"，"接下来点哪里"交给挂件的第二行（那里能显示
+    // 完整的「点 ▶ 开始短休」，塞进本行的话会在 84px 收拢宽度上被省略号截断）
+    label: `已完成 ${Math.max(0, Math.round(rounds))} 轮`,
+    minutes,
+    endAt: '',
+  };
+}
+
 /**
  * 由绝对目标时间推导展示态。
  *

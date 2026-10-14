@@ -5,17 +5,36 @@
  *
  * 计时状态存在 LLP sidecar 的**进程内存**里，而挂件是独立的 Webview 窗口，
  * 与 sidecar 是不同的 JS 上下文——拿不到那份内存。
- * 但 sidecar 每次 start/stop 都会把 `target`/`label`/`minutes` 写进
- * `ctx.settings`（宿主强制 `${pluginId}.` 前缀隔离），那是**跨进程共享**的。
+ * 但 sidecar 每次状态变化都会把整份状态写进 `ctx.settings`（宿主强制 `${pluginId}.`
+ * 前缀隔离），那是**跨进程共享**的：单键 `snap` 是 JSON 快照，
+ * 另外还有一组同名散装键作为旧版本/异常时的回退数据源。
  * 所以挂件以 settings 为唯一数据源，每秒轮询一次。
  *
  * 代价是轮询而非推送，但对一个 1Hz 刷新的小挂件完全够用，
  * 且避免了"挂件窗口与 sidecar 建立额外 IPC 通道"这套复杂度。
  */
 import { createSignal, createMemo, onCleanup, onMount, Show } from 'solid-js';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getCurrentWindow, LogicalPosition, LogicalSize } from '@tauri-apps/api/window';
 import { getPluginContext } from '@ll/sdk';
-import { deriveView, derivePaused, arcDasharray, normalizeTargetMs, type TimerSnapshot } from './timer';
+import {
+  arcDasharray,
+  deriveHold,
+  derivePaused,
+  deriveView,
+  parseSidecarState,
+  phaseName,
+  stateFromParts,
+  type TimerSnapshot,
+  type WidgetState,
+} from './timer';
+import {
+  ANIM_MS,
+  COLLAPSED_W,
+  EXPANDED_W,
+  WIDGET_H,
+  frameAt,
+  widthFor,
+} from './hover-size';
 import './widget.css';
 
 const ctx = getPluginContext('pomo');
@@ -25,17 +44,26 @@ const TICK_MS = 1000;
 /** 进度环半径（与 timer.ts 的 arcDasharray 默认值保持一致） */
 const RADIUS = 26;
 
+/** 首帧（还没读到 sidecar 任何状态）用的空态，字段与 WidgetState 一一对应 */
+const EMPTY_STATE: WidgetState = {
+  targetMs: 0,
+  label: '',
+  minutes: 0,
+  pausedRemain: 0,
+  phase: 'focus',
+  nextPhase: 'break',
+  rounds: 0,
+  auto: true,
+  hold: false,
+};
+
 function readSetting(key: string): Promise<string | null> {
   // settings.get 返回 null 表示键不存在；sidecar 可能还没写过
   return ctx.settings.get(key).catch(() => null);
 }
 
 export function PomoWidget() {
-  const [target, setTarget] = createSignal(0);
-  const [label, setLabel] = createSignal('');
-  const [minutes, setMinutes] = createSignal(0);
-  /** 暂停时 sidecar 记下的剩余秒数。>0 且 target=0 即处于暂停态 */
-  const [pausedRemain, setPausedRemain] = createSignal(0);
+  const [st, setSt] = createSignal<WidgetState>(EMPTY_STATE);
   const [now, setNow] = createSignal(Date.now());
   /** 已到点的终态：到点后仍要显示 00:00 + "时间到"，不能退回未计时 */
   const [finished, setFinished] = createSignal(false);
@@ -44,18 +72,77 @@ export function PomoWidget() {
   let timer: ReturnType<typeof setInterval> | null = null;
   let alive = true;
 
+  /**
+   * 伸缩动画令牌：每次悬停状态变化都让上一段动画作废。
+   * 两段动画并发写窗口尺寸会互相拖拽（快速划过时表现为抖动或停在半开状态）。
+   */
+  let animToken = 0;
+
+  /**
+   * 把窗口宽度动画到 `to`，右边缘钉住（详见 hover-size.ts 的方向选择理由）。
+   *
+   * 基准（右边缘、顶边、起始宽度）在动画开始时读一次，之后每帧由基准推导，
+   * 不再查询——避免读到"上一条命令还没生效"的中间值而累积误差。
+   */
+  async function resizeTo(to: number) {
+    const token = ++animToken;
+    const win = getCurrentWindow();
+    let from = window.innerWidth;
+    let anchorRight = 0;
+    let top = 0;
+    try {
+      const scale = await win.scaleFactor();
+      const pos = await win.outerPosition();
+      // outerPosition 是物理像素，而 setSize/setPosition 收逻辑像素
+      top = pos.y / scale;
+      anchorRight = pos.x / scale + from;
+    } catch {
+      // 调试页等非桌面环境没有窗口 API：只让按钮显隐，尺寸不动
+      return;
+    }
+    const t0 = performance.now();
+    const step = () => {
+      if (token !== animToken || !alive) return;
+      const p = (performance.now() - t0) / ANIM_MS;
+      const f = frameAt(from, to, anchorRight, top, p);
+      void win.setSize(new LogicalSize(f.width, f.height)).catch(() => undefined);
+      void win.setPosition(new LogicalPosition(f.x, f.y)).catch(() => undefined);
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  function onEnter() {
+    setHovered(true);
+    void resizeTo(EXPANDED_W);
+  }
+
+  function onLeave() {
+    setHovered(false);
+    void resizeTo(COLLAPSED_W);
+  }
+
   const snap = createMemo<TimerSnapshot>(() => ({
-    target: target(),
-    label: label(),
-    minutes: minutes(),
+    target: st().targetMs,
+    label: st().label,
+    minutes: st().minutes,
   }));
+
+  /** 是否处于「这段跑完了、等点下一段」 */
+  const holding = () => st().targetMs <= 0 && st().pausedRemain <= 0 && st().hold;
 
   const view = createMemo(() => {
     // 暂停态优先判定：target=0 且 paused_remain>0。
     // 不判定的话会落到 IDLE_VIEW（"准备开始 25:00"），冻结时间丢失、
     // 也没有继续入口——正是"暂停后无法恢复"事故的根源。
-    if (target() <= 0 && pausedRemain() > 0) {
-      return derivePaused(pausedRemain(), label(), minutes());
+    if (st().targetMs <= 0 && st().pausedRemain > 0) {
+      return derivePaused(st().pausedRemain, st().label, st().minutes);
+    }
+    // hold 次优先：sidecar 到点也把 target 归零，与"从未计时"读数完全相同。
+    // 不单独判定就会显示「25:00 准备开始」，用户以为倒计时从没跑过——
+    // 这是"5 分钟提醒结束后窗口显示 25:00"反馈的直接原因。
+    if (holding()) {
+      return deriveHold(st().rounds, st().minutes);
     }
     const v = deriveView(snap(), now());
     return finished() && !v.running ? { ...v, label: `${v.label} · 时间到` } : v;
@@ -64,29 +151,44 @@ export function PomoWidget() {
   /** 拉一次 sidecar 写入的状态 */
   async function sync() {
     if (!alive) return;
-    const [t, l, m, pr] = await Promise.all([
-      readSetting('target'),
-      readSetting('label'),
-      readSetting('minutes'),
-      readSetting('paused_remain'),
-    ]);
+    // 首选单键 JSON 快照：一趟 IPC、且字段天然一致（分 9 次读会读到撕裂态）
+    const rawSnap = await readSetting('snap');
     if (!alive) return;
-    const parsed = normalizeTargetMs(t);
-    setTarget(parsed);
-    setLabel(l ?? '');
-    setMinutes(Number.parseInt(m ?? '0', 10) || 0);
-    setPausedRemain(Number.parseFloat(pr ?? '0') || 0);
+    let next = parseSidecarState(rawSnap);
+    if (!next) {
+      // 回退：升级前留下的状态没有 snap 键，或 sidecar 写坏了 JSON
+      const [t, l, m, pr, ph, np, rd, au, hd] = await Promise.all([
+        readSetting('target'),
+        readSetting('label'),
+        readSetting('minutes'),
+        readSetting('paused_remain'),
+        readSetting('phase'),
+        readSetting('next_phase'),
+        readSetting('rounds'),
+        readSetting('auto'),
+        readSetting('hold'),
+      ]);
+      next = stateFromParts({
+        target: t,
+        label: l,
+        minutes: m,
+        pausedRemain: pr,
+        phase: ph,
+        nextPhase: np,
+        rounds: rd,
+        auto: au,
+        hold: hd,
+      });
+    }
+    if (!alive || !next) return;
+    setSt(next);
 
     // 到点判定放在这里而不是 deriveView：
     // 后者对"target 已过"和"从未计时"都返回 running=false，无法区分，
     // 而 UI 必须区分（前者显示"时间到"，后者显示"准备开始"）
     const t0 = Date.now();
     setNow(t0);
-    if (parsed > 0) {
-      setFinished(parsed <= t0);
-    } else {
-      setFinished(false);
-    }
+    setFinished(next.targetMs > 0 && next.targetMs <= t0);
   }
 
   onMount(() => {
@@ -128,12 +230,17 @@ export function PomoWidget() {
     const target = ev.target as HTMLElement | null;
     if (target?.closest?.('.pw-actions')) return;
     ev.preventDefault();
-    void getCurrentWindow()
-      .startDragging()
+    const win = getCurrentWindow();
+    // 拖动前必须停掉伸缩动画：动画记录的是**拖动前**的右边缘，
+    // 若继续跑，窗口会在用户拖到的新位置被拽回旧坐标（表现为"拖不动/弹回"）。
+    // 直接落到当前悬停状态的最终宽度，位置交给系统拖动。
+    animToken += 1;
+    void win
+      .setSize(new LogicalSize(widthFor(hovered()), WIDGET_H))
       .catch(() => undefined);
+    void win.startDragging().catch(() => undefined);
   }
 
-  /** 暂停/继续：把剩余时间写回 settings 由 sidecar 接管，视图只负责发意图 */
   /**
    * 跨进程下发命令。
    *
@@ -145,7 +252,7 @@ export function PomoWidget() {
    * 本来就每秒读一次 settings 做同步。于是"前端写命令键 → sidecar 读到并清空"
    * 就是一条现成的反向通道，无需新增宿主能力或改协议。
    */
-  async function sendCommand(cmd: 'pause' | 'resume' | 'stop') {
+  async function sendCommand(cmd: string) {
     // 带时间戳：确保值一定变化，否则"连点两次"可能被 KV 判为未变更而丢掉第二次
     await ctx.settings.set('cmd', `${cmd}:${Date.now()}`);
     await sync();
@@ -160,6 +267,17 @@ export function PomoWidget() {
   async function resume() {
     if (view().running) return;
     await sendCommand('resume');
+  }
+
+  /** hold 态手动开始下一段（专注↔短休交替） */
+  async function nextSegment() {
+    if (!holding()) return;
+    await sendCommand('next');
+  }
+
+  /** 自动衔接开关：开=到点直接接下一段，关=每段结束停在 hold 等人工点击 */
+  async function toggleAuto() {
+    await sendCommand(st().auto ? 'auto:off' : 'auto:on');
   }
 
   /**
@@ -185,8 +303,8 @@ export function PomoWidget() {
     <div
       class="pw-root"
       classList={{ 'pw-hovered': hovered(), 'pw-idle': !view().running }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseEnter={onEnter}
+      onMouseLeave={onLeave}
     >
       {/* 卡片单独一层：根元素铺满窗口，背景/圆角/边框画在内层才不会被窗口矩形切出四角。
           mousedown 触发拖动，让无边框窗口也能挪位置 */}
@@ -216,22 +334,51 @@ export function PomoWidget() {
           <Show when={view().running && view().endAt}>
             <div class="pw-end">{view().endAt} 结束</div>
           </Show>
+          {/* hold 态把"下一步点哪"写在第二行：这行较宽，收拢态也放得下，
+              而标签行只有 84px，写「已完成 N 轮 · 点 ▶ 开始短休」会被省略号截断 */}
+          <Show when={holding()}>
+            <div class="pw-end">悬停点 ▶ 开始{phaseName(st().nextPhase)}</div>
+          </Show>
         </div>
 
         {/* 悬停才出现的操作区：不占常态视觉空间，也避免小窗被误触。
-            ❚❚/▶ = 暂停或继续（随状态切换），✕ = 停止计时并关闭挂件。
+            最多 3 个按钮（↻ 自动衔接 + 当前动作 + ✕），hover-size.ts 的
+            MAX_BTNS 就是按这个上限算展开宽度的，加按钮要同步改它。
+            ❚❚/▶ = 暂停、继续或开始下一段（随状态切换），↻ = 到点是否自动衔接，
+            ✕ = 停止计时并关闭挂件。
             上一版还有一个「⌃ 收起」按钮，已删：它只是隐藏窗口、计时继续、
             需要 /pomo 找回——与「暂停」（时间冻结、状态可见）语义缠绕，
             真机用户完全分不清两者差别。隐藏需求由 /pomo widget 覆盖即可。 */}
         <Show when={hovered()}>
           <div class="pw-actions">
+            <button
+              class="pw-btn"
+              classList={{ 'pw-btn--on': st().auto }}
+              title={
+                st().auto
+                  ? '自动衔接：开（每段结束自动开始下一段）'
+                  : '自动衔接：关（每段结束等你点 ▶）'
+              }
+              onClick={() => void toggleAuto()}
+            >
+              ↻
+            </button>
             <Show when={view().running}>
               <button class="pw-btn" title="暂停" onClick={() => void pause()}>
                 ❚❚
               </button>
             </Show>
-            <Show when={!view().running && pausedRemain() > 0}>
+            <Show when={!view().running && st().pausedRemain > 0}>
               <button class="pw-btn" title="继续计时" onClick={() => void resume()}>
+                ▶
+              </button>
+            </Show>
+            <Show when={holding()}>
+              <button
+                class="pw-btn"
+                title={`开始${phaseName(st().nextPhase)}`}
+                onClick={() => void nextSegment()}
+              >
                 ▶
               </button>
             </Show>

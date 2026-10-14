@@ -13,6 +13,10 @@
    本进程每 tick 消费一次并清空。这是现成的跨进程通道——
    无需新增宿主能力或改 LLP 协议（前端 ctx.call 只能打到宿主 svc.*，
    events 也是单向 emit，都到不了 sidecar）。
+4. 计时是**分段**的：一段专注（用户设定的分钟数）跟一段短休（专注的 1/5，
+   最少 1 分钟）。每段到点后由 `auto` 决定去向——
+   auto=1 立即开始下一段；auto=0 停在 hold 态，等用户点挂件的「下一段 ▶」。
+   默认在 `/pomo start` 时置为 1（用户要的"初始就是自动"），随时可关。
 """
 import json
 import sys
@@ -21,6 +25,11 @@ import time
 
 PLUGIN = "pomo"
 DEFAULT_MIN = 25
+# 专注 : 短休 = 5 : 1（25→5、50→10、5→1）
+BREAK_RATIO = 5
+
+PHASE_FOCUS = "focus"
+PHASE_BREAK = "break"
 
 # ── 挂件相关常量 ────────────────────────────────────────────────
 VIEW_WIDGET = "widget"
@@ -33,8 +42,26 @@ CMD_POLL_S = 0.5
 _seq = [1]
 _io_lock = threading.Lock()
 _state_lock = threading.Lock()
-_state = {"target": 0.0, "label": "", "minutes": 0, "running": False,
-          "paused": False, "paused_remain": 0.0}
+# label/minutes 恒指**当前段**（挂件用 minutes 当进度环的分母）；
+# focus_label/focus_minutes 是用户设定的原始专注段参数，短休结束后据此开下一轮专注。
+_state = {"target": 0.0, "label": "", "minutes": DEFAULT_MIN, "running": False,
+          "paused": False, "paused_remain": 0.0,
+          "phase": PHASE_FOCUS, "focus_label": "", "focus_minutes": DEFAULT_MIN,
+          "break_minutes": 1, "auto": True, "hold": False,
+          "next_phase": PHASE_BREAK, "rounds": 0}
+
+
+def break_minutes_of(minutes):
+    """按 5:1 推短休分钟数。向上取整到最少 1 分钟——0 分钟的短休等于没有休息，
+    但更要紧的是它会让挂件的进度环分母变成 0。"""
+    try:
+        m = int(float(minutes))
+    except (TypeError, ValueError):
+        m = DEFAULT_MIN
+    if m <= 0:
+        m = DEFAULT_MIN
+    return max(1, int(round(m / float(BREAK_RATIO))))
+
 
 
 def _next_id():
@@ -220,7 +247,19 @@ def main(handlers):
                        "error": {"message": str(exc)}})
 
 
-def _worker(target, label, minutes):
+def _notify(title, body):
+    """系统通知 + 一条日志。后台线程调用，只写不读。"""
+    try:
+        fire("svc.notify.send", {"title": title, "body": body})
+    except Exception:
+        pass
+    try:
+        fire("svc.log.write", {"level": "info", "message": f"{title}：{body}"})
+    except Exception:
+        pass
+
+
+def _worker(target, label, minutes, phase):
     while True:
         remain = target - time.time()
         if remain <= 0:
@@ -232,40 +271,127 @@ def _worker(target, label, minutes):
             return
         _state["running"] = False
         _state["target"] = 0.0
-    _persist("", 0)
-    title = "⏱番茄钟结束"
-    body = f"{label or '专注'} · {minutes} 分钟已结束"
-    try:
-        fire("svc.notify.send", {"title": title, "body": body})
-    except Exception:
-        pass
-    try:
-        fire("svc.log.write", {"level": "info", "message": f"番茄钟结束：{body}"})
-    except Exception:
-        pass
+    _on_phase_end(phase)
 
 
-def _arm(target, label, minutes):
+def _on_phase_end(phase):
+    """一段走完：发通知，然后按 auto 决定「自动接下一段」还是「停在 hold 等按钮」。
+
+    ⚠️ 停在 hold 时也必须把状态写进 settings（hold=1 / next_phase）：
+    上一版只把 target 清零，挂件读到 target=0 就退回 IDLE_VIEW，于是
+    5 分钟的计时跑完，桌面上显示的是「25:00 准备开始」——用户以为倒计时出错了。
+    """
+    with _state_lock:
+        nxt = PHASE_BREAK if phase == PHASE_FOCUS else PHASE_FOCUS
+        if phase == PHASE_FOCUS:
+            _state["rounds"] += 1
+        auto = _state["auto"]
+        rounds = _state["rounds"]
+    done = "专注" if phase == PHASE_FOCUS else "短休"
+    nxt_name = "短休" if nxt == PHASE_BREAK else "专注"
+    if auto:
+        _notify(f"⏱{done}结束", f"第 {rounds} 轮 · 自动开始{nxt_name}")
+        _start_phase(nxt)
+        return
+    _notify(f"⏱{done}结束", f"第 {rounds} 轮 · 点挂件的「{nxt_name} ▶」开始下一段")
+    with _state_lock:
+        _state["hold"] = True
+        _state["next_phase"] = nxt
+        _state["target"] = 0.0
+        _state["running"] = False
+        _state["paused"] = False
+        _state["paused_remain"] = 0.0
+    _persist()
+
+
+def _start_phase(phase):
+    """开始指定段：专注段用用户设定的分钟数，短休段用 5:1 推出来的分钟数。"""
+    with _state_lock:
+        if phase == PHASE_BREAK:
+            minutes, label = _state["break_minutes"], "短休"
+        else:
+            minutes, label = _state["focus_minutes"], _state["focus_label"]
+        _state["hold"] = False
+    _arm(time.time() + minutes * 60, label, minutes, phase)
+
+
+def _arm(target, label, minutes, phase=PHASE_FOCUS):
     with _state_lock:
         _state["target"] = target
         _state["label"] = label
         _state["minutes"] = minutes
+        _state["phase"] = phase
         _state["running"] = True
         _state["paused"] = False
         _state["paused_remain"] = 0.0
-    threading.Thread(target=_worker, args=(target, label, minutes), daemon=True).start()
-    _persist(label, minutes, target)
+        _state["hold"] = False
+        # 下一段预告：专注之后是短休，短休之后是专注
+        _state["next_phase"] = PHASE_BREAK if phase == PHASE_FOCUS else PHASE_FOCUS
+    threading.Thread(target=_worker, args=(target, label, minutes, phase), daemon=True).start()
+    _persist()
 
 
-def _persist(label, minutes, target=0.0, paused_remain=0.0):
-    """把状态写进 settings —— 这是挂件（另一个进程）唯一能读到的地方。
+def _start_new(minutes, label):
+    """开一轮全新的番茄钟：重置轮数、默认自动衔接、按 5:1 算出短休时长。"""
+    bmin = break_minutes_of(minutes)
+    with _state_lock:
+        _state.update({"focus_minutes": minutes, "break_minutes": bmin,
+                       "focus_label": label, "rounds": 0, "auto": True, "hold": False})
+    _arm(time.time() + minutes * 60, label, minutes, PHASE_FOCUS)
+    return bmin
+
+
+def _next_segment():
+    """hold 态下手动开始下一段。非 hold 态返回 False（没什么可"下一段"的）。"""
+    with _state_lock:
+        if not _state["hold"]:
+            return False
+        nxt = _state["next_phase"]
+    _start_phase(nxt)
+    return True
+
+
+def _set_auto(on):
+    """切换自动衔接。勾选时如果正停在 hold，立刻接上——用户的意图就是"别再等我"。"""
+    with _state_lock:
+        _state["auto"] = bool(on)
+        hold, nxt = _state["hold"], _state["next_phase"]
+    if on and hold:
+        _start_phase(nxt)
+        return True
+    _persist()
+    return bool(on)
+
+
+def _persist():
+    """把状态整体写进 settings —— 挂件（另一个进程）唯一能读到的地方。
 
     paused_remain 必须一并持久化：挂件的「继续」按钮要靠它判断当前是否
     处于暂停态（target=0 且 paused_remain>0）。漏掉它挂件就无从展示恢复入口，
     用户暂停后只能干瞪眼——这是真机反馈过的实际事故。
+    hold / next_phase / phase 同理：它们决定挂件显示「时间到等按钮」还是「下一段」。
     """
-    for k, v in (("target", str(target)), ("label", label), ("minutes", str(minutes)),
-                 ("paused_remain", str(paused_remain))):
+    with _state_lock:
+        snap = dict(_state)
+    pairs = {
+        "target": str(snap["target"]),
+        "label": snap["label"],
+        "minutes": str(snap["minutes"]),
+        "paused_remain": str(snap["paused_remain"]),
+        "phase": snap["phase"],
+        "auto": "1" if snap["auto"] else "0",
+        "hold": "1" if snap["hold"] else "0",
+        "next_phase": snap["next_phase"],
+        "rounds": str(snap["rounds"]),
+        "break_minutes": str(snap["break_minutes"]),
+        "focus_minutes": str(snap["focus_minutes"]),
+        "focus_label": snap["focus_label"],
+        # 单键快照：挂件每秒轮询一次，读一个 JSON 比读十几个键少一个数量级的 IPC。
+        # 上面那些散装键仍然保留——面板/命令/人工排障都按名字取，且是 snap 缺失时
+        # 挂件的回退数据源（旧版本留下的状态没有 snap）。
+        "snap": json.dumps(snap, ensure_ascii=False),
+    }
+    for k, v in pairs.items():
         try:
             fire("svc.settings.set", {"key": k, "value": v})
         except Exception:
@@ -282,34 +408,32 @@ def _pause():
             return False
         _state["paused"] = True
         _state["paused_remain"] = remain
-        label, minutes = _state["label"], _state["minutes"]
         _state["target"] = 0.0
         _state["running"] = False
-    _persist(label, minutes, 0.0, paused_remain=remain)
+    _persist()
     return True
 
 
 def _resume():
-    """续计：把暂停时记下的剩余时间重新变成一个绝对目标时刻。"""
+    """续计：把暂停时记下的剩余时间重新变成一个绝对目标时刻（同一段）。"""
     with _state_lock:
         if not _state["paused"] or _state["paused_remain"] <= 0:
             return False
         remain = _state["paused_remain"]
-        label, minutes = _state["label"], _state["minutes"]
-        _state["paused"] = False
-        _state["paused_remain"] = 0.0
-    _arm(time.time() + remain, label, minutes)
+        label, minutes, phase = _state["label"], _state["minutes"], _state["phase"]
+    _arm(time.time() + remain, label, minutes, phase)
     return True
 
 
 def _stop():
     with _state_lock:
-        was = _state["running"] or _state["paused"]
-        _state.update({"running": False, "paused": False,
-                       "target": 0.0, "paused_remain": 0.0})
-    # stopped 后暂停剩余也必须清零：挂件靠它判断是否显示「继续」，
+        was = _state["running"] or _state["paused"] or _state["hold"]
+        _state.update({"running": False, "paused": False, "hold": False,
+                       "target": 0.0, "paused_remain": 0.0, "rounds": 0,
+                       "label": "", "phase": PHASE_FOCUS})
+    # stopped 后暂停剩余也必须清零：挂件靠它判断显示哪个按钮，
     # 残留会让停止后的挂件又冒出继续按钮
-    _persist("", 0, 0.0, paused_remain=0.0)
+    _persist()
     return was
 
 
@@ -317,9 +441,19 @@ def _remaining():
     with _state_lock:
         if _state["paused"]:
             return _state["paused_remain"], _state["label"], _state["minutes"], "paused"
+        if _state["hold"]:
+            # hold 是"这段跑完了、在等人点按钮"，既不是 running 也不是 idle：
+            # 混进 idle 会让挂件/面板退回「准备开始 25:00」，把"时间到"这件事整个抹掉
+            return 0.0, _state["label"], _state["minutes"], "hold"
         if not _state["running"] or _state["target"] <= 0:
             return None, "", 0, ""
         return (_state["target"] - time.time(), _state["label"], _state["minutes"], "running")
+
+
+def _ui_snap():
+    """给面板/命令用的状态副本（锁内取，避免读到跨字段撕裂的中间态）"""
+    with _state_lock:
+        return dict(_state)
 
 
 def _fmt(sec):
@@ -327,32 +461,65 @@ def _fmt(sec):
     return f"{sec // 60:02d}:{sec % 60:02d}"
 
 
+def _cn(phase):
+    return "短休" if phase == PHASE_BREAK else "专注"
+
+
 def _status_items():
-    remain, label, minutes, phase = _remaining()
-    if phase == "paused":
+    s = _ui_snap()
+    auto_cn = "开" if s["auto"] else "关"
+    nxt_cn = _cn(s["next_phase"])
+    item_auto = item("pomo:auto", f"自动衔接：{auto_cn}",
+                     "输入 /pomo auto on|off —— 开：到点自动开始下一段；"
+                     "关：到点停下等你点「下一段」", badge="自动", icon="🔁")
+
+    if s["paused"]:
         return [
-            item("pomo:paused", _fmt(remain), f"已暂停 · {label or '专注'}",
+            item("pomo:paused", _fmt(s["paused_remain"]),
+                 f"已暂停 · {_cn(s['phase'])} · {s['label'] or '专注'}",
                  badge="暂停", icon="⏸️",
-                 value=f"暂停中· {label or '专注'}", label="已暂停"),
+                 value=f"暂停中· {_cn(s['phase'])} · {s['label'] or '专注'}", label="已暂停"),
             item("pomo:resume", "继续计时", "输入 /pomo resume", badge="继续", icon="▶️"),
+            item_auto,
             item("pomo:stop", "停止计时", "输入 /pomo stop", badge="停止", icon="⏹️"),
         ]
-    if phase != "running":
+
+    # hold：一段跑完了，等用户点「下一段」。这一屏必须存在，否则用户只看到
+    # 「准备开始」，以为计时器根本没跑完（真机反馈的实际问题）
+    if s["hold"]:
+        return [
+            item("pomo:hold", f"已完成 {s['rounds']} 轮 · 等下一段",
+                 f"下一段是{nxt_cn} · 自动衔接{auto_cn}",
+                 badge="待开始", icon="⏭️",
+                 value=f"{s['rounds']} 轮 · 待开始{nxt_cn}", label="待开始"),
+            item("pomo:next", f"开始{nxt_cn}", "输入 /pomo next", badge="下一段", icon="▶️"),
+            item_auto,
+            item("pomo:stop", "停止计时", "输入 /pomo stop", badge="停止", icon="⏹️"),
+        ]
+
+    if not s["running"] or s["target"] <= 0:
         return [
             item("pomo:idle", "未在计时", "用法：/pomo start 25 写代码",
                  badge="空闲", icon="🍅"),
-            item("pomo:hint", "常用时长", "25（经典）/ 5（短休）/ 50（长专注）",
+            item("pomo:hint", "专注 : 短休 = 5 : 1",
+                 "25 分钟专注自动接 5 分钟短休；5 分钟专注接 1 分钟短休",
                  badge="提示", icon="⏱️"),
             item("pomo:pin", "显示桌面挂件", "在桌面显示倒计时小挂件",
                  badge="挂件", icon="🪟"),
         ]
+
+    remain = s["target"] - time.time()
+    icon = "🍅" if s["phase"] == PHASE_FOCUS else "☕"
     return [
-        item("pomo:remain", _fmt(remain), f"剩余时间 · {label or '专注'}",
-             badge="进行中", icon="🍅",
-             value=f"{minutes} 分钟 · {label or '专注'}", label="计时"),
+        item("pomo:remain", _fmt(remain),
+             f"剩余时间 · {_cn(s['phase'])} · {s['label'] or '专注'}",
+             badge="进行中", icon=icon,
+             value=f"{s['minutes']} 分钟 · {_cn(s['phase'])} · {s['label'] or '专注'}",
+             label="计时"),
         item("pomo:endat", time.strftime("%H:%M:%S", time.localtime(time.time() + remain)),
-             "预计结束时间", badge="结束于", icon="🕒"),
+             f"本段（{_cn(s['phase'])}）预计结束", badge="结束于", icon="🕒"),
         item("pomo:pause", "暂停计时", "输入 /pomo pause", badge="暂停", icon="⏸️"),
+        item_auto,
         item("pomo:stop", "停止计时", "输入 /pomo stop", badge="停止", icon="⏹️"),
     ]
 
@@ -393,7 +560,10 @@ def _cmd_loop():
         try:
             raw = svc_read_settings("cmd")
             if raw:
-                verb = raw.split(":", 1)[0].strip().lower()
+                # 值形如 `pause:<ts>` / `auto:on:<ts>`——第三段是时间戳，保证值必变
+                parts = [p.strip().lower() for p in raw.split(":") if p.strip()]
+                verb = parts[0] if parts else ""
+                arg = parts[1] if len(parts) > 1 else ""
                 # 先清空再执行：避免执行期间挂件又写一次而被重复消费
                 fire("svc.settings.set", {"key": "cmd", "value": ""})
                 if verb == "pause":
@@ -403,6 +573,11 @@ def _cmd_loop():
                 elif verb == "resume":
                     # 挂件的「继续」按钮发独立动词，语义比复用 pause 清晰
                     _resume()
+                elif verb == "next":
+                    # hold 态下手动开始下一段（专注↔短休交替）
+                    _next_segment()
+                elif verb == "auto":
+                    _set_auto(arg in ("1", "on", "true"))
                 elif verb == "stop":
                     _stop()
         except Exception:
@@ -411,23 +586,65 @@ def _cmd_loop():
         time.sleep(CMD_POLL_S)
 
 
+def _restore_from_settings():
+    """宿主重启后进程是新的：把 settings 里的状态搬回内存，必要时重新挂起计时线程。
+
+    分段参数（phase/rounds/auto/短休时长/专注标签）与 hold/paused 标记必须一起恢复：
+    只认 `target` 的话，重启后「专注 25 + 短休 5」的节奏会退化成「永远重复同一个
+    分钟数的专注段」；而 hold/paused 不恢复，挂件上那两个按钮（下一段 / 继续）
+    点下去就会静默失效——状态看得见、命令却没落地，最难排查的一类问题。
+    """
+    def num(key, default=0.0):
+        try:
+            return float(svc("svc.settings.get", {"key": key}) or default)
+        except (TypeError, ValueError):
+            return default
+
+    def txt(key, default=""):
+        try:
+            return svc("svc.settings.get", {"key": key}) or default
+        except Exception:
+            return default
+
+    stored_target = num("target")
+    stored_phase = txt("phase", PHASE_FOCUS)
+    phase = stored_phase if stored_phase in (PHASE_FOCUS, PHASE_BREAK) else PHASE_FOCUS
+    nxt = txt("next_phase", PHASE_BREAK)
+    next_phase = nxt if nxt in (PHASE_FOCUS, PHASE_BREAK) else PHASE_BREAK
+    label = txt("label")
+    focus_label = txt("focus_label")
+    focus_minutes = int(num("focus_minutes", DEFAULT_MIN)) or DEFAULT_MIN
+    break_minutes = int(num("break_minutes", break_minutes_of(focus_minutes))) or 1
+    minutes = int(num("minutes", focus_minutes)) or focus_minutes
+    paused_remain = num("paused_remain")
+    hold = txt("hold") == "1"
+    auto = txt("auto", "1") != "0"
+    rounds = int(num("rounds"))
+
+    with _state_lock:
+        _state.update({"phase": phase, "next_phase": next_phase, "label": label,
+                       "focus_label": focus_label, "focus_minutes": focus_minutes,
+                       "break_minutes": break_minutes, "minutes": minutes,
+                       "rounds": rounds, "auto": auto, "hold": hold,
+                       "paused_remain": paused_remain})
+
+    if stored_target > time.time():
+        # 仍在计时：按原来的段重新挂线程（target 是 time.time 同源的秒级绝对时刻）
+        _arm(stored_target, label, minutes, phase)
+    elif paused_remain > 0:
+        with _state_lock:
+            _state["paused"] = True
+    else:
+        # 没在计时也要回写一次：升级前的旧状态里没有 `snap` 键，
+        # 不补写的话挂件要等到下一次 start/stop 才看得到单键快照
+        _persist()
+    return True
+
+
 def on_search(p):
-    # 宿主重启后进程是新的：若存储里的计时仍在未来且本地未运行，则重新挂起线程
     remain, _l, _m, phase = _remaining()
     if phase == "":
-        stored = svc("svc.settings.get", {"key": "target"})
-        try:
-            stored_target = float(stored) if stored else 0.0
-        except (TypeError, ValueError):
-            stored_target = 0.0
-        if stored_target > time.time():
-            label = svc("svc.settings.get", {"key": "label"}) or "恢复的计时"
-            mins_raw = svc("svc.settings.get", {"key": "minutes"}) or "0"
-            try:
-                mins = int(float(mins_raw))
-            except ValueError:
-                mins = 0
-            _arm(stored_target, label, mins)
+        _restore_from_settings()
     return {"items": _status_items(), "emptyText": "无结果"}
 
 
@@ -446,12 +663,13 @@ def on_execute(p):
                 pass
         minutes = max(1, min(minutes, 24 * 60))
         label = " ".join(label_args).strip()
-        target = time.time() + minutes * 60
-        _arm(target, label, minutes)
+        break_min = _start_new(minutes, label)
         # 新建番茄钟即在桌面显示挂件（用户明确要的行为）
         ok, msg = _open_widget(pin=False)
         tail = "，到点会通知你" if ok else ""
-        return {"success": True, "message": f"已开始 {minutes} 分钟计时{'：' + label if label else ''}{tail}"}
+        return {"success": True,
+                "message": (f"已开始 {minutes} 分钟专注{'：' + label if label else ''}"
+                            f"（每段后接 {break_min} 分钟短休，自动衔接已开启）{tail}")}
 
     if sub == "stop":
         was = _stop()
@@ -471,6 +689,33 @@ def on_execute(p):
             return {"success": True, "message": "已继续计时"}
         return {"success": False, "message": "当前不是暂停状态"}
 
+    # /pomo next —— 停在「等下一段」时手动推进（专注↔短休交替）
+    if sub == "next":
+        if _next_segment():
+            s = _ui_snap()
+            return {"success": True,
+                    "message": f"已开始{s['minutes']} 分钟{_cn(s['phase'])}"}
+        return {"success": False, "message": "当前没有待开始的下一段（自动衔接开着或没在计时）"}
+
+    # /pomo auto on|off —— 到点后是否自动开始下一段
+    if sub == "auto":
+        raw = args[0].strip().lower() if args else "on"
+        if raw in ("on", "1", "true"):
+            on = True
+        elif raw in ("off", "0", "false"):
+            on = False
+        else:
+            return {"success": False, "message": "用法：/pomo auto on|off"}
+        _set_auto(on)
+        s = _ui_snap()
+        if on:
+            msg = "已开启自动衔接：到点直接开始下一段"
+            if s["phase"] == PHASE_FOCUS and s["running"]:
+                msg += f"（本轮专注剩余 {_fmt(s['target'] - time.time())}）"
+        else:
+            msg = "已关闭自动衔接：每段结束后等你点挂件的「下一段 ▶」"
+        return {"success": True, "message": msg}
+
     # /pomo pin —— 打开挂件并尝试贴到桌面壁纸层
     if sub == "pin":
         _ok, msg = _open_widget(pin=True)
@@ -483,13 +728,22 @@ def on_execute(p):
 
     # /pomo where —— 诊断：报告当前后端与挂件窗口状态
     if sub == "where":
-        remain, label, _m, phase = _remaining()
-        state = "未计时" if phase == "" else ("暂停" if phase == "paused" else "计时中")
+        s = _ui_snap()
+        if s["paused"]:
+            state, extra = "暂停", f" · {s['label'] or '专注'} · 剩余 {_fmt(s['paused_remain'])}"
+        elif s["hold"]:
+            state, extra = "等下一段", f" · 已完成 {s['rounds']} 轮 · 下一段是{_cn(s['next_phase'])}"
+        elif s["running"] and s["target"] > time.time():
+            state, extra = "计时中", f" · {_cn(s['phase'])} {s['label'] or '专注'} · 剩余 {_fmt(s['target'] - time.time())}"
+        else:
+            state, extra = "未计时", ""
+        auto_cn = "开" if s["auto"] else "关"
         return {"success": True,
-                "message": f"番茄钟{state}" + (f" · {label} · 剩余 {_fmt(remain)}" if remain else "")}
+                "message": f"番茄钟{state}{extra} · 自动衔接{auto_cn} · 短休 {s['break_minutes']} 分钟"}
 
     return {"success": False,
-            "message": "未知子命令。可用：start [分钟] [标签] / stop / pause / resume / pin / widget"}
+            "message": "未知子命令。可用：start [分钟] [标签] / stop / pause / resume / "
+                       "next（开始下一段）/ auto on|off（到点是否自动接下一段）/ pin / widget"}
 
 
 def on_select(p):
@@ -501,12 +755,22 @@ def on_select(p):
         return on_execute({"subcommand": "pause", "args": []})
     if iid == "pomo:resume":
         return on_execute({"subcommand": "resume", "args": []})
+    if iid == "pomo:next":
+        return on_execute({"subcommand": "next", "args": []})
+    if iid == "pomo:auto":
+        # 点一下就是翻转开关，省得记 on/off
+        return on_execute({"subcommand": "auto",
+                           "args": ["off" if _ui_snap()["auto"] else "on"]})
     if iid == "pomo:pin":
         return on_execute({"subcommand": "pin", "args": []})
     if iid == "pomo:remain":
         # 点剩余时间 → 显示详细剩余（保持面板项有反馈，不做死条目）
-        remain, label, _m, _p = _remaining()
-        return {"toast": f"{label or '专注'}：剩余 {_fmt(remain)}"}
+        s = _ui_snap()
+        if s["running"]:
+            return {"toast": f"{_cn(s['phase'])} {s['label'] or '专注'}：剩余 {_fmt(s['target'] - time.time())}"}
+        return {"toast": "未在计时"}
+    if iid == "pomo:hold":
+        return {"toast": f"已完成 {_ui_snap()['rounds']} 轮 · 点「下一段」继续"}
     return {}
 
 

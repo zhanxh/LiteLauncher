@@ -102,8 +102,13 @@ body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  /* 悬停时会多出暂停/停止两个按钮，给标签让出宽度；否则省略号会在按钮弹出时跳动 */
+  /* 悬停时会多出操作按钮，给标签让出宽度；否则省略号会在按钮弹出时跳动。
+     两个宽度都要与 hover-size.ts 的 LABEL_W / LABEL_W_HOVER 对上 */
   max-width: 84px;
+}
+
+.pw-root.pw-hovered .pw-label {
+  max-width: 120px;
 }
 
 .pw-end {
@@ -113,11 +118,26 @@ body,
 }
 
 /* ── 悬停操作区 ───────────────────────────────────────────── */
+/* 窗口在悬停时才扩到 300（见 hover-size.ts），所以这里不存在"按钮隐藏但占位"
+   的问题——占位空白正是上一版的反馈点 */
 .pw-actions {
   display: flex;
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
+  /* 按钮跟着窗口展开滑进来，与伸缩动画同期，避免按钮凭空蹦出 */
+  animation: pw-actions-in 0.14s ease-out;
+}
+
+@keyframes pw-actions-in {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .pw-btn {
@@ -144,6 +164,14 @@ body,
 
 .pw-btn:active {
   opacity: 0.7;
+}
+
+/* 自动衔接开关的"勾选"态：↻ 是状态开关而不是动作按钮，
+   必须一眼看出当前是开还是关，否则用户不知道到点后会发生什么 */
+.pw-btn--on {
+  background-color: var(--accent-hint-bg, var(--accent-badge-bg));
+  color: var(--accent-badge-text);
+  border-color: var(--accent-text);
 }
 
 /* 停止是唯一的不可逆操作，给个区别于"收起/暂停"的视觉标识 */
