@@ -72,7 +72,37 @@
 - 剥控制词（`desc`/`asc`/`limit`）不能简单删"词+后一个词"—— 字段名（size/dm/name）可能就是用户想搜的词。判定依据是**参数合法性**：未知字段时 `desc` 本身留在搜索词里。
 - 外部插件（LLP）现已支持 `queryDebounceMs`：manifest `command.queryDebounceMs` → `ExternalCommandSpec.query_debounce_ms` → `plugin_list` → `externalPlugins.ts`。逐键打外部索引的插件必须声明。
 
+## 桌面挂件（视图窗口）与 LLP sidecar 约定
+- **Windows 启动任何子进程都必须走 `ll-host/src/python.rs::hide_console`**（`CREATE_NO_WINDOW`）。
+  GUI 进程拉起控制台程序时系统会**新建控制台并抢焦点** → 输入框失焦、多插件多黑窗。
+  不影响 stdin/stdout 管道，LLP 协议照旧。cfg 双实现吸收平台差异，签名按值
+  `hide_console(mut cmd: Command) -> Command`（不能 `&mut Command`：不能对临时值隐式取可变引用）。
+- **不依赖透明的挂件，窗口矩形就是卡片本身**：CSS 隐藏按钮只会留一块同色空白。
+  要做"悬停才出现按钮区"必须**真改窗口尺寸**（`setSize`+`setPosition`，
+  capabilities 需 `core:window:allow-set-size|allow-set-position`）。
+- 尺寸常量要**由布局部件推导**（内边距/环/间距/标签/按钮上限相加），且**三处必须对齐**：
+  代码常量 ↔ `manifest.views[].width/min_width` ↔ CSS 的对应宽度。
+  `min_width` 若大于收拢宽度，`set_size` 会被 `min_inner_size` 夹住 ——
+  表现为"代码在动、窗口不动"，最难查的一类失效。测试直接读 manifest 与 CSS 文本来比对。
+- 伸缩动画：基准（右边缘/顶边/起始宽度）**在动画开始时读一次**，每帧由基准推导，
+  帧内不再查询（会读到上一条命令未生效的中间值而累积误差）；用令牌作废上一段动画，
+  `startDragging` 前必须作废（否则动画记的是拖动前的右边缘，窗口会被拽回旧坐标）。
+- **sidecar ↔ 挂件（两个进程）的唯一通道是 `ctx.settings`**：正向是状态键，
+  反向是挂件写 `cmd` 键 + sidecar 轮询消费并清空。**每帧一次读**：状态应合并成
+  单键 JSON 快照（`snap`）一次取回，散装键保留作面板/排障与快照缺失时的回退源；
+  分多次读既费 IPC 又会读到**跨字段撕裂态**。
+  ⚠️ **挂件读取的键名清单是跨进程契约**，写成测试常量集中断言
+  （见 `tools/test-pomo-logic.py` 的 `WIDGET_KEYS`）：sidecar 少写一个键，
+  挂件静默用默认值 → 显示错但不报错。
+- sidecar 侧新增状态时，`_persist` / `_restore_from_settings` / 挂件解析三处都要改，
+  漏恢复会让"看得见但点不动"（hold/paused 标记不恢复 → 按钮发了命令、状态却没接住）。
+
 ## 测试约定
+- **LLP(Python) 插件的状态机用 `tools/test-*-logic.py`（unittest）测**，先例：`test-find-logic.py`、`test-pomo-logic.py`。套路是**打补丁模块级名字**：
+  `P.svc` / `P.fire` / `P.svc_read_settings` 换成内存 KV，`P.time` 换成假时钟
+  （`sleep` 只把内部读数推过去，于是"到点"能在毫秒内发生），`threading.Thread` 换成
+  可手动 `fire()` 的记录对象（后台 worker 由测试决定何时触发）。
+  `plugin:test` 那层只验协议不报错（settings 是空桩，走不出任何计时态），别指望它覆盖业务分支。
 - 纯前端插件测试支持**包内相对导入**（`.ts` 递归转译；**`.tsx` 返回空模块**——solid JSX 需编译期）。故**可测的纯逻辑必须抽到 `.ts`**（如 `plugins/pick/fe/src/color.ts`），`.tsx` 只留渲染/轮询。
 - 测试里 settings 桩是内存 KV，可验「写历史 → 刷新面板 → 复制」闭环；`svcCalls` 记录全部 `svc.*` 调用（含 clipboard.write / shortcut.register / window.open），可在 `after` 里断言行为。
 - 用例钩子：`before`（预置桩状态，须早于首个 query）/ `after`（异步断言）/ `isolate`（跑用例前清空桩插件，只留被测插件——用来覆盖"全局一个都没有"的空态分支）。
@@ -86,10 +116,18 @@ npm run gen                 # 扫描 plugins/*/fe → 生成 src/plugins.generat
 npm run plugin:install      # 安装外部插件（支持 -- <id>、--portable；kind=none 只部署 manifest）
 npm run plugin:test         # LLP（Python）插件冒烟测试
 npm run plugin:test:fe      # 纯前端插件测试（Node 内直跑逻辑，断言真实计算结果）
+npm run plugin:test:pomo    # pomo sidecar 状态机（Python unittest，假时钟不起线程）
 npx tsc --noEmit            # 前端全量类型检查
 cargo check --workspace     # Rust 全量编译校验
+./build.sh                  # 日常档（thin LTO + 4 codegen units，增量友好）
+./build.sh ship             # 正式发布档（fat LTO + 1 codegen unit，独立 target-ship 目录）
+                            # Windows 对应 build.cmd / build.cmd ship
 ```
 - 改完插件**必跑**对应的 plugin:test 系列。
+- **构建档位用命令区分，不要改 `Cargo.toml`**：`[profile.release]` 是日常档（thin LTO / 4 CGU），
+  发布档由 `build(.cmd|.sh) ship` 用 `CARGO_PROFILE_RELEASE_{LTO,CODEGEN_UNITS}` 环境变量覆盖，
+  并把 `CARGO_TARGET_DIR` 指到独立目录 —— 否则每次换档都会作废另一边整个增量缓存。
+  fat LTO + 单 CGU 只作用于最后两个编译单元（ll-host 与 tauri-app），却占了十几分钟里的大头。
 - 开发期宿主 debug 构建会自动扫描仓库 `plugins/`，无需 plugin:install。
 
 ## 版本控制
