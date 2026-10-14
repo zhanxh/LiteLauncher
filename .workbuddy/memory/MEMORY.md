@@ -26,6 +26,11 @@
 `src-tauri/crates/ll-host/src/services.rs::dispatch_svc` —— LLP sidecar 的反向请求与前端 `ctx.call('svc.*')` **共用**。`commands.rs::plugin_call` 把 `svc.*` 当宿主保留方法名空间优先拦截。
 方法集：`db.migrate|execute|query`、`clipboard.write|read`、`http.send`、`notify.send`、`process.launch`、`events.emit`、`settings.get|set`、`log.write`、`screen.list|cursor|pixel|capture`、`shortcut.register|unregister|list`、`window.open`。
 权限门控：已注册插件按 `manifest.permissions`；未注册插件退回 `shell_safe_manifest`（仅 settings/clipboard:*/notifications/events）。**用到 db/process/net/screen/windows/shortcut 就必须把 manifest 部署到宿主可见目录**。
+- ⚠️ **`process.launch` 的校验按"目标类型"分两套，不按字符一刀切**：URL 目标（`http(s)://`、`file://`）走
+  `validate_url_target`，放行 `& ? = % #`（这些在 URL 里合法且根本不进 shell），只拒引号/`$`/`|`/`<>`/反引号/
+  空白/控制字符并要求解析得出 authority；可执行路径与裸命令走 `validate_path_target`（完整 Shell 元字符黑名单）。
+  合并成一套会把带查询串的链接全挡掉（`/qr` 就死在这）。**放开 `&` 必须同时让 Windows 的 URL 不走 `cmd /c start`**
+  （改 `rundll32 url.dll,FileProtocolHandler`）——Rust 不给无空格参数加引号，`start` 里的 `&` 是真分隔符。
 
 ## 屏幕 / 热键能力（D 组，重要约定）
 - **坐标一律桌面全局物理像素**（与 `getCurrentWindow().outerPosition()` 同系）。但 `xcap::Monitor::capture_region` 要**显示器内相对坐标（u32）**——宿主内部先命中测试定位显示器再减原点，这层换算不能散到插件。
@@ -42,6 +47,15 @@
 - `desktop.rs` 挂壁纸层时 `SetWindowPos` **必须带 `SWP_NOMOVE`**：`SetParent` 会把坐标系改为相对 WorkerW，不带它则 (0,0) 被应用，窗口被甩到左上角。
 - 多窗口共用插件状态（如"面板开着时主窗口热键让位"）走 `ctx.settings` KV 做标记，不要靠全局变量。
 - ⚠️ **Tauri 逻辑像素 vs 物理像素**：`Monitor::size()/position()` 给**物理**像素，而 `WebviewWindowBuilder::inner_size/position` 收**逻辑**像素。HiDPI 下必须除 `scaleFactor`，否则全屏遮罩只盖住屏幕一角。
+- ⚠️ **GTK 会把小窗口撑到 200×200**：wry `WebViewAttributes::default()` 的 `bounds` 是 `200×200`，而稳定 API 的
+  `WebviewWindowBuilder` 路径不设 bounds（只有 `unstable` 分支才用 `window.inner_size()`）→ `GtkWindow` 不能缩到
+  子控件尺寸请求以下，186×88 这类挂件会被夹成 200×200，多出一圈窗口底色（Windows 无此下限）。
+  集中修在 `services.rs::clamp_gtk_child_min_size`（Linux 专用，建窗后、角落定位前），把子控件
+  `set_size_request` 压回视图声明的 **`min_*`**——压到 spec 会挡住悬停扩宽。依赖：`ll-host` 的 Linux 目标
+  `gtk = "0.18"`（与 Tauri 内置同版本），`WebviewWindow::gtk_window()` 是内建方法、不需要 `WindowExtUnix`。
+- **窗口/字号全用逻辑像素是刻意的**，所以"Linux 上界面比 Windows 小"通常是**会话没开缩放**（高 DPI 屏上
+  `scaling-factor=0` + `Xft.dpi=96`），不是插件 bug：该在系统侧解决（`GDK_SCALE=2` / GNOME 缩放因子 2），
+  app 里补偿会双重放大。排查顺序：先量窗口（`xwininfo`）看是否等于逻辑像素声明值，再判断是不是缩放。
 - **热键"谁拥有"的唯一来源是插件自报 `CommandPlugin.hotkeys`**（不是读 manifest——注册表里没有 manifest，且 `shortcut:` 是静态白名单无法运行时追加）。**只在 `register()` 成功后收录**，否则 `/hotkey` 速查表会教用户按一个不生效的键。`/hotkey` 插件消费此字段。
 
 ## 插件交互字段（CommandPlugin 可选字段）
@@ -139,3 +153,9 @@ cargo check --workspace     # Rust 全量编译校验
 - Node（managed）：`C:/Users/zhanxh/.workbuddy/binaries/node/versions/22.22.2-6/node.exe`
 - Python（managed）：`C:/Users/zhanxh/.workbuddy/binaries/python/versions/3.13.12/python.exe`（跑 LLP 测试时用 `LLP_PYTHON=` 指定）
 - cargo 用 rsproxy 镜像，可联网拉新依赖。
+- **Linux 构建机（Debian 12 / X11）要额外装**：`libclang-dev`（`xcap → pipewire-sys` 的 bindgen 要 libclang，
+  装完不必设 `LIBCLANG_PATH`）、`libgbm-dev`（只有运行库 `libgbm.so.1` 时链接报 `-lgbm` 找不到），
+  常缺的还有 `libwebkit2gtk-4.1-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev`。
+  这类 `Unable to find libclang` / `unable to find library -lX` 一律是缺 `-dev`，不要去改 `build.rs`。
+- Linux 上 `cargo test -p ll-host` **能正常跑**（`STATUS_ENTRYPOINT_NOT_FOUND` 只卡 Windows），
+  改动 `ll-host` 的 Rust 逻辑时优先在 Linux 侧跑测试。
