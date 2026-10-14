@@ -70,9 +70,31 @@ pub struct PythonCandidate {
     pub valid: bool,
 }
 
+/// 让子进程**不获得控制台窗口**（仅 Windows 需要）。
+///
+/// 宿主是 GUI 程序、自身没有控制台，而 python.exe 是控制台程序：默认系统会为它
+/// **新建一个控制台窗口**，表现为用户每用一个 LLP 插件就闪出一个黑色命令窗口，
+/// 并抢走主窗口输入框的焦点（输入即搜的场景下等于打字丢失）。多插件 = 多窗口。
+/// CREATE_NO_WINDOW 让它不再分配控制台，而 stdin/stdout/stderr 管道照常工作。
+#[cfg(target_os = "windows")]
+fn apply_no_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+/// 非 Windows 上子进程本来就不会被分配控制台，空实现即可
+#[cfg(not(target_os = "windows"))]
+fn apply_no_window(_cmd: &mut Command) {}
+
+pub fn hide_console(mut cmd: Command) -> Command {
+    apply_no_window(&mut cmd);
+    cmd
+}
+
 /// 执行一条命令并取回 stdout（带超时保护，避免误填交互式程序卡死宿主调用线程）
 pub fn run_capture(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
-    let mut child = Command::new(program)
+    let mut child = hide_console(Command::new(program))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

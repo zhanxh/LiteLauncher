@@ -127,7 +127,7 @@ impl LlpBackend {
             e
         })?;
 
-        let mut child = Command::new(&program)
+        let mut child = python::hide_console(Command::new(&program))
             .args(&args)
             .current_dir(&dir) // 工作目录 = 插件目录（脚本以相对路径引用自己的资产）
             .stdin(Stdio::piped())
