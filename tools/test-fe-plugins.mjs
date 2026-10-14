@@ -1559,6 +1559,172 @@ function testPomoTimerModule() {
     assert(Math.abs(over[0] - circ) < 0.01, `超过 1 的进度应夹到满圈，实得 ${over[0]}`);
     const under = T.arcDasharray(-0.5, 26).split(' ').map(Number);
     assert(under[0] === 0, `负进度应夹到 0，实得 ${under[0]}`);
+
+    // 11) 专注 : 短休 = 5 : 1。必须与 sidecar 的 break_minutes_of 同结果，
+    // 否则面板写着「接 5 分钟短休」、挂件环按别的分母画。
+    assert(T.BREAK_RATIO === 5, `比例应为 5，实得 ${T.BREAK_RATIO}`);
+    assert(T.breakMinutesOf(5) === 1, `5 分钟专注的短休应为 1 分钟（最少 1 分钟）`);
+    assert(T.breakMinutesOf(25) === 5, `25 → 5，实得 ${T.breakMinutesOf(25)}`);
+    assert(T.breakMinutesOf(30) === 6, `30 → 6，实得 ${T.breakMinutesOf(30)}`);
+    assert(T.breakMinutesOf(7) === 1, `7 → round(1.4)=1，实得 ${T.breakMinutesOf(7)}`);
+    assert(T.breakMinutesOf(1) === 1, '1 分钟专注也得给 1 分钟短休（0 会让进度环分母为 0）');
+    assert(T.breakMinutesOf(0) === T.breakMinutesOf(25), '非法输入应回落到默认 25 的短休');
+    assert(T.breakMinutesOf(NaN) === 5 && T.breakMinutesOf(-3) === 5,
+      'NaN/负数应回落到默认，不得算出 0 或负短休');
+    // 与 Python 侧同源规则的**跨语言一致性**：两边各写一遍就容易各错一遍
+    const pySrc = readFileSync(path.join(pluginsDir, 'pomo', 'pomo.py'), 'utf8');
+    const pyRatio = pySrc.match(/^BREAK_RATIO\s*=\s*(\d+)/m);
+    assert(pyRatio && Number(pyRatio[1]) === T.BREAK_RATIO,
+      `pomo.py 的 BREAK_RATIO 必须与 timer.ts 一致，实得 ${pyRatio && pyRatio[1]}`);
+
+    // 12) 段名
+    assert(T.phaseName('break') === '短休', 'break 应显示「短休」');
+    assert(T.phaseName('focus') === '专注', 'focus 应显示「专注」');
+    assert(T.phaseName(undefined) === '专注', '未知段别应回落到「专注」而不是显示英文');
+
+    // 13) hold 态：一段跑完等人工点下一段。**不能**等同未计时——
+    // 未计时显示「25:00 准备开始」，正是用户反馈"倒计时结束后窗口显示 25:00"的错处。
+    const hold = T.deriveHold(2, 25);
+    assert(hold.running === false, 'hold 态不在计时');
+    assert(hold.text === '待开始', `hold 态环心应显示「待开始」，实得 ${hold.text}`);
+    assert(hold.progress === 1, 'hold 态进度环应走满（这段确实跑完了）');
+    assert(hold.label === '已完成 2 轮', `hold 标签应说明完成轮数，实得 ${hold.label}`);
+    assert(T.deriveHold(-1, 25).label === '已完成 0 轮', '负轮数应夹到 0');
+
+    // 14) sidecar 单键快照解析：挂件每秒读一次，脏数据不能让它整帧崩掉
+    assert(T.parseSidecarState(null) === null, '缺 snap 键应返回 null 以触发散装键回退');
+    assert(T.parseSidecarState('') === null, '空串应返回 null');
+    assert(T.parseSidecarState('{坏 JSON') === null, '损坏的 JSON 应返回 null 而不是抛异常');
+    assert(T.parseSidecarState('[1,2]') === null, '数组不是合法状态快照');
+    const secTarget = 1_700_000_900; // Python time.time() 的秒级时间戳
+    const parsed = T.parseSidecarState(JSON.stringify({
+      target: secTarget, label: '写代码', minutes: 25, paused_remain: 0,
+      phase: 'focus', next_phase: 'break', rounds: 3, auto: true, hold: false,
+    }));
+    assert(parsed !== null, '合法快照应解析成功');
+    assert(parsed.targetMs === secTarget * 1000, 'snap 里的 target 也是秒级，必须同样换算成毫秒');
+    assert(parsed.rounds === 3 && parsed.auto === true && parsed.hold === false,
+      '分段字段应原样取出');
+    assert(parsed.nextPhase === 'break', 'next_phase 决定「点 ▶ 开始短休」的文案');
+    const loose = T.parseSidecarState(JSON.stringify({
+      target: '1700000900', rounds: '3', auto: '0', hold: '1', next_phase: 'nope',
+    }));
+    assert(loose.targetMs === secTarget * 1000, '数字字符串应可用');
+    assert(loose.auto === false && loose.hold === true, "'0'/'1' 字符串应正确判真伪");
+    assert(loose.label === '' && loose.minutes === 0 && loose.rounds === 3,
+      '缺失字段应回落空值而不是 undefined');
+    assert(loose.nextPhase === 'focus', '未知段别应回落到「专注」而不是保留脏值');
+
+    // 15) 散装键回退：升级前的旧状态没有 snap 键，auto 缺省必须为「开」
+    // （用户要求"初始 add 后就是自动勾选"）
+    const fb = T.stateFromParts({ target: String(secTarget), label: 'x', minutes: '25' });
+    assert(fb.auto === true, 'auto 键缺失时应默认开启自动衔接');
+    assert(fb.targetMs === secTarget * 1000, '回退路径同样要归一时钟');
+    assert(T.stateFromParts({ auto: '0' }).auto === false, '显式关闭应被尊重');
+    assert(T.stateFromParts({}).hold === false, '缺 hold 键应视为不在 hold');
+    assert(T.stateFromParts({ nextPhase: 'break' }).nextPhase === 'break',
+      '回退路径也应读出分段字段，否则按钮文案退回「开始专注」');
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
+/**
+ * 纯函数模块测试：`/pomo` 挂件的悬停伸缩几何。
+ *
+ * 这块的坑都在"数字之间的关系"上，单测比真机点得快：
+ *   - 收拢宽度装不下静态内容 → 标签被裁
+ *   - 展开宽度装不下两个按钮 → 按钮被窗口切掉
+ *   - 每帧只改宽度不改位置 → 右边缘漂移，几次悬停后挂件滑出屏幕
+ *   - manifest 的 width/min_width 与代码常量漂移 → set_size 被 min_inner_size 夹住，
+ *     表现为"代码在动、窗口不动"（最难查的一种失效）
+ */
+function testPomoHoverModule() {
+  const failures = [];
+  const file = path.join(pluginsDir, 'pomo', 'fe', 'src', 'hover-size.ts');
+  if (!existsSync(file)) return ['pomo/fe/src/hover-size.ts 不存在'];
+
+  let H;
+  try {
+    moduleCache.clear();
+    H = loadPluginModule(file);
+  } catch (err) {
+    return [`加载失败: ${err.message}`];
+  }
+
+  try {
+    // 1) 悬停态与宽度对应，且展开一定更宽
+    assert(H.widthFor(false) === H.COLLAPSED_W, '未悬停应为收拢宽度');
+    assert(H.widthFor(true) === H.EXPANDED_W, '悬停应为展开宽度');
+    assert(H.EXPANDED_W > H.COLLAPSED_W, '展开宽度必须大于收拢宽度');
+
+    // 2) 收拢宽度要装得下静态内容：内边距28 + 环64 + 间距10 + 标签
+    assert(H.COLLAPSED_W >= 28 + 64 + 10 + H.LABEL_W,
+      `收拢宽度 ${H.COLLAPSED_W} 装不下环+标签，标签会被裁`);
+
+    // 3) 展开多出的余量要够放**按钮上限**那么多按钮。
+    //    MAX_BTNS 必须不小于挂件实际可能同时渲染的按钮数（↻ 自动衔接 +
+    //    当前动作 + ✕ = 3），否则悬停时最后一个按钮会被窗口右边缘切掉。
+    assert(H.MAX_BTNS >= 3,
+      `MAX_BTNS=${H.MAX_BTNS}，但 hold/暂停态悬停会同时出现 ↻ + 动作 + ✕ 三个按钮`);
+    assert(H.EXPANDED_W - H.COLLAPSED_W >= (H.LABEL_W_HOVER - H.LABEL_W)
+        + H.MAX_BTNS * H.BTN + (H.MAX_BTNS - 1) * H.BTN_GAP + H.GAP,
+      `展开增量 ${H.EXPANDED_W - H.COLLAPSED_W} 放不下 ${H.MAX_BTNS} 个按钮，按钮会被裁`);
+
+    // 4) easing 端点与夹取
+    assert(H.easeOutCubic(0) === 0, 'easeOutCubic(0) 应为 0');
+    assert(H.easeOutCubic(1) === 1, 'easeOutCubic(1) 应为 1');
+    assert(H.easeOutCubic(-3) === 0 && H.easeOutCubic(9) === 1, '越界进度应夹到 0~1');
+    assert(H.easeOutCubic(NaN) === 0, 'NaN 应兜成 0，否则窗口尺寸会被设成 NaN');
+    assert(H.easeOutCubic(0.5) > 0.5, 'ease-out 前半段应跑得比线性快');
+    assert(H.easeOutCubic(0.25) < H.easeOutCubic(0.75), 'easing 必须单调递增');
+
+    // 5) 帧插值端点
+    const anchor = 1000;
+    const f0 = H.frameAt(H.COLLAPSED_W, H.EXPANDED_W, anchor, 16, 0);
+    const f1 = H.frameAt(H.COLLAPSED_W, H.EXPANDED_W, anchor, 16, 1);
+    assert(Math.abs(f0.width - H.COLLAPSED_W) < 1e-9, 't=0 应等于起始宽度');
+    assert(Math.abs(f1.width - H.EXPANDED_W) < 1e-9, 't=1 应等于目标宽度');
+    const fOver = H.frameAt(H.COLLAPSED_W, H.EXPANDED_W, anchor, 16, 4);
+    assert(Math.abs(fOver.width - H.EXPANDED_W) < 1e-9, 't>1 应夹到目标宽度');
+    const fNaN = H.frameAt(H.COLLAPSED_W, H.EXPANDED_W, anchor, 16, NaN);
+    assert(fNaN.width === H.COLLAPSED_W && fNaN.x === anchor - H.COLLAPSED_W,
+      'NaN 进度应回落到起始帧而不是产出 NaN 尺寸');
+
+    // 6) 右边缘必须钉住：每帧 x + width == anchorRight（漂移会累积成"挂件滑走"）
+    for (const t of [0, 0.1, 0.35, 0.6, 0.9, 1]) {
+      const f = H.frameAt(H.COLLAPSED_W, H.EXPANDED_W, anchor, 16, t);
+      assert(Math.abs(f.x + f.width - anchor) < 1e-9,
+        `t=${t} 时右边缘应钉在 ${anchor}，实得 ${f.x + f.width}`);
+      assert(f.y === 16, '顶边不应随宽度变化');
+      assert(f.height === H.WIDGET_H, '高度应恒为 WIDGET_H');
+    }
+
+    // 7) 与 manifest 对齐：窗口默认宽/最小宽 = 收拢宽度。
+    //    min_width 若仍是展开宽度，set_size 会被夹住，动画看着在跑窗口却不动
+    const manifest = JSON.parse(
+      readFileSync(path.join(pluginsDir, 'pomo', 'manifest.json'), 'utf8'),
+    );
+    const view = manifest.views.find((v) => v.id === 'widget');
+    assert(view, 'manifest 应有 widget 视图');
+    assert(view.width === H.COLLAPSED_W,
+      `视图默认宽应为收拢宽度 ${H.COLLAPSED_W}，实得 ${view.width}`);
+    assert(view.min_width <= H.COLLAPSED_W,
+      `min_width 若大于收拢宽度 ${H.COLLAPSED_W}，set_size 会被夹住（看着在动、窗口不动），实得 ${view.min_width}`);
+    assert(view.height === H.WIDGET_H && view.min_height === H.WIDGET_H,
+      `视图高度应为 ${H.WIDGET_H}`);
+    assert(view.min_width <= H.EXPANDED_W, 'min_width 不得大于展开宽度');
+
+    // 8) 标签宽度也要与 CSS 对齐：hover-size 是按"标签占多少"算总宽的，
+    //    CSS 改了而常量没改，窗口就会比内容窄一截（按钮被切掉）或反之留大块空白
+    const css = readFileSync(path.join(pluginsDir, 'pomo', 'fe', 'src', 'widget.css'), 'utf8');
+    const labelW = css.match(/\.pw-label\s*\{[^}]*max-width:\s*(\d+)px/);
+    assert(labelW && Number(labelW[1]) === H.LABEL_W,
+      `CSS 的 .pw-label 宽度应为 ${H.LABEL_W}，实得 ${labelW && labelW[1]}`);
+    const labelWHover = css.match(/\.pw-root\.pw-hovered\s+\.pw-label\s*\{[^}]*max-width:\s*(\d+)px/);
+    assert(labelWHover && Number(labelWHover[1]) === H.LABEL_W_HOVER,
+      `悬停态标签宽度应为 ${H.LABEL_W_HOVER}，实得 ${labelWHover && labelWHover[1]}`);
   } catch (err) {
     failures.push(err.message);
   }
@@ -1769,6 +1935,16 @@ async function main() {
     failed += 1;
     console.log('\n  ✗ 纯函数：/pomo timer');
     for (const f of pomoFailures) console.log(`      - ${f}`);
+  }
+
+  // 纯函数模块：/pomo 挂件的悬停伸缩（宽度是否装得下内容 · 右边缘是否钉住 · 与 manifest 对齐）
+  const hoverFailures = testPomoHoverModule();
+  if (hoverFailures.length === 0) {
+    console.log('\n  ✓ 纯函数：/pomo 挂件悬停伸缩（宽度取值 · 右边缘钉住 · manifest 对齐）');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ 纯函数：/pomo hover-size');
+    for (const f of hoverFailures) console.log(`      - ${f}`);
   }
 
   // 纯函数模块：全局热键速查表的分组与格式化（多修饰键归组、修饰键顺序归一）

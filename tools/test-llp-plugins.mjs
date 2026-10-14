@@ -31,7 +31,10 @@ const SAMPLES = {
   memo: [""],
   cheat: ["", "git"],
   time: [""],
-  pomo: [""],
+  // pomo 的分段状态机（专注↔短休 5:1、hold 等按钮、重启恢复）不在这层测——
+  // 冒烟测试的 settings 是空桩，走不出计时态；那里只验协议不报错。
+  // 状态机见 tools/test-pomo-logic.py，挂件推导见 tools/test-fe-plugins.mjs。
+  pomo: ["", "auto", "auto on", "auto off", "next", "start 5 冒烟"],
   sysinfo: [""],
   // /find 的样例要能命中真实条目；用 Everything 索引里几乎必然存在的词
   find: ["", "annotate-view.tsx", "path:plugins", "ext:rs clippy"],
