@@ -213,7 +213,7 @@ pub fn run() {
             let app_handle = app.handle().clone();
 
             // 2. 初始化系统托盘菜单（带安全容错，失败不阻断核心窗口运行）
-            if let Ok(show_item) = MenuItem::with_id(app, "show", "显示 LiteLauncher", true, None::<&str>) {
+            if let Ok(show_item) = MenuItem::with_id(app, "show", "显示", true, None::<&str>) {
                 if let Ok(quit_item) = MenuItem::with_id(app, "quit", "退出", true, None::<&str>) {
                     if let Ok(tray_menu) = Menu::with_items(app, &[&show_item, &quit_item]) {
                         let mut tray_builder = TrayIconBuilder::new()
