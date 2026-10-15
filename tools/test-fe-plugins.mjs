@@ -1901,6 +1901,311 @@ function testAnnotateModule() {
   return failures;
 }
 
+/** 纯函数模块：日程月视图的日期算术（跨天拆分与网格补齐是错位的高发区） */
+function testCalendarDayMathModule() {
+  const failures = [];
+  const file = path.join(pluginsDir, 'todo', 'fe', 'src', 'calendar', 'daymath.ts');
+  if (!existsSync(file)) return ['todo/fe/src/calendar/daymath.ts 不存在'];
+
+  let m;
+  try {
+    moduleCache.clear();
+    m = loadPluginModule(file);
+  } catch (err) {
+    return [`加载失败: ${err.message}`];
+  }
+
+  const inst = (start, end, allDay = false) => ({
+    event_id: 'e',
+    occ_key: start,
+    content: 'c',
+    start,
+    end,
+    all_day: allDay,
+    is_virtual: false,
+    completed: false,
+    location: null,
+    description: null,
+    calendar_id: null,
+    status: 'busy',
+    repeat_rule: null,
+    alarms: [],
+  });
+
+  try {
+    // 1) 本地解析：按 UTC 解析补时串会让 00:30 掉到前一天
+    const d = m.parseLocal('2026-10-14 00:30');
+    assert(d && d.getFullYear() === 2026 && d.getMonth() === 9 && d.getDate() === 14, `本地解析错: ${d}`);
+    assert(d.getHours() === 0 && d.getMinutes() === 30, `时分丢失: ${d && d.getHours()}`);
+    assert(m.parseLocal('明天') === null, '非法输入应返回 null');
+
+    // 2) 全天单天：后端给的 end 是次日 00:00（独占），不能算成两天
+    const oneDay = m.dayKeysOf(inst('2026-10-14 00:00', '2026-10-15 00:00', true));
+    assert(oneDay.join(',') === '2026-10-14', `全天单天应只占 1 格，实得 ${oneDay.join(',')}`);
+
+    // 3) 跨天全天：10-14 ~ 10-16（含 16 号），end = 10-17 00:00
+    const span = m.dayKeysOf(inst('2026-10-14 00:00', '2026-10-17 00:00', true));
+    assert(span.join(',') === '2026-10-14,2026-10-15,2026-10-16', `跨天拆分错: ${span.join(',')}`);
+
+    // 4) 定时事件零点收工（22:00–00:00）属于结束那一刻的**前一天**，与 Google/钉钉一致
+    assert(
+      m.dayKeysOf(inst('2026-10-14 22:00', '2026-10-15 00:00')).join(',') === '2026-10-14',
+      '零点收工的事件不该占到次日格子里',
+    );
+    assert(
+      m.dayKeysOf(inst('2026-10-14 22:00', '2026-10-15 02:00')).join(',') === '2026-10-14,2026-10-15',
+      '真正跨过午夜的事件应占两天',
+    );
+    assert(
+      m.dayKeysOf(inst('2026-10-14 09:00', '2026-10-14 18:00')).join(',') === '2026-10-14',
+      '同日定时事件不该溢出到次日',
+    );
+
+    // 5) 分桶排序：全天置顶，其余按开始时间
+    const buckets = m.bucketByDay([
+      inst('2026-10-14 15:00', '2026-10-14 16:00'),
+      inst('2026-10-14 00:00', '2026-10-15 00:00', true),
+      inst('2026-10-14 09:00', '2026-10-14 10:00'),
+    ]);
+    const order = (buckets.get('2026-10-14') || []).map((i) => i.start).join(' ');
+    assert(
+      order === '2026-10-14 00:00 2026-10-14 09:00 2026-10-14 15:00',
+      `格内排序错（全天应置顶）: ${order}`,
+    );
+
+    // 6) 月网格固定 6 行 = 42 格，且本月天数齐全（撑高跳动的根因就是行数浮动）
+    const gm = path.join(pluginsDir, 'todo', 'fe', 'src', 'calendar', 'grid.ts');
+    const g = loadPluginModule(gm);
+    for (const [y, mo] of [[2026, 1], [2026, 9], [2027, 1]]) {
+      const cells = g.monthCells(y, mo);
+      assert(cells.length % 7 === 0 && cells.length >= 42, `${y}-${mo} 网格行数不固定: ${cells.length}`);
+      const days = cells.filter((c) => !c.out).length;
+      assert(days === g.daysInMonth(y, mo), `${y}-${mo} 本月天数 ${days} ≠ ${g.daysInMonth(y, mo)}`);
+      assert(g.firstWeekday(y, mo) >= 0 && g.firstWeekday(y, mo) <= 6, `${y}-${mo} 起始weekday 越界`);
+    }
+    // 2026-02-01 是周日 → 周一开头要补 6 格，补的是邻月的真实日期（不是空格）
+    assert(g.firstWeekday(2026, 1) === 6, `2026-02 应以 6 个邻月格起头，实得 ${g.firstWeekday(2026, 1)}`);
+    {
+      const cells = g.monthCells(2026, 1);
+      assert(cells[0].key === '2026-01-26' && cells[0].out, `邻月首格应标出真实日期: ${JSON.stringify(cells[0])}`);
+      assert(cells[6].key === '2026-02-01' && !cells[6].out, `本月首格判定错: ${JSON.stringify(cells[6])}`);
+      assert(new Set(cells.map((c) => c.key)).size === cells.length, '格子里有重复日期');
+    }
+
+    // 7) 超长标题按码点截断，emoji 不能被切成半个
+    const cut = m.ellipsis('🎉 发布会评审与复盘', 4);
+    assert(cut.startsWith('🎉') && cut.endsWith('…'), `截断把 emoji 切坏了: ${cut}`);
+  } catch (err) {
+    failures.push(err.message);
+  }
+
+  // 8) 分类颜色：底色是用户选的 hex，透明度由 soften 生成，不能出现 transparent
+  try {
+    const cm = path.join(pluginsDir, 'todo', 'fe', 'src', 'calendar', 'calendars.ts');
+    const c = loadPluginModule(cm);
+    assert(c.soften('#4c8dff', 0.2) === 'rgba(76,141,255,0.2)', `6 位 hex 展开错: ${c.soften('#4c8dff', 0.2)}`);
+    assert(c.soften('#abc', 0.5) === 'rgba(170,187,204,0.5)', `3 位缩写没按 CSS 规则展开: ${c.soften('#abc', 0.5)}`);
+    assert(c.soften('url(evil)', 0.2).startsWith('rgba(138,143,152,'), '非法颜色应退回兜底灰');
+    const cals = [{ id: 'x', name: '工作', color: '#2fb47c', sort: 0 }];
+    assert(c.colorOf(cals, 'x') === '#2fb47c', '已选分类取自身颜色');
+    assert(c.colorOf(cals, 'gone') === c.FALLBACK_COLOR, '分类被删后不该拿到 undefined 颜色');
+    assert(c.colorOf(cals, null) === c.FALLBACK_COLOR, '未分类应有兜底色');
+    assert(c.nameOf(cals, null) === c.UNCLASSIFIED_LABEL, 'NULL 分类要显示"未分类"');
+    // Set 必须新建，原地 add/delete 不会触发 Solid 更新
+    const s = new Set(['a']);
+    const n = c.toggleId(s, 'a');
+    assert(n !== s && n.size === 0 && s.size === 1, 'toggleId 应为不可变操作');
+    assert(c.toggleId(s, 'b').size === 2, 'toggleId 未命中时应加入');
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
+/** 纯函数模块：周/日时间轴的区间切分、重叠分道与拖拽吸附 */
+function testCalendarTimelineModule() {
+  const failures = [];
+  const dir = path.join(pluginsDir, 'todo', 'fe', 'src', 'calendar');
+  let m;
+  let drag;
+  try {
+    m = loadPluginModule(path.join(dir, 'layout.ts'));
+    drag = loadPluginModule(path.join(dir, 'drag.ts'));
+  } catch (err) {
+    return [`加载失败: ${err.message}`];
+  }
+
+  const inst = (start, end, allDay = false) => ({
+    event_id: 'e',
+    occ_key: start,
+    content: 'c',
+    start,
+    end,
+    all_day: allDay,
+    is_virtual: false,
+    completed: false,
+    location: null,
+    description: null,
+    calendar_id: null,
+    status: 'busy',
+    repeat_rule: null,
+    alarms: [],
+  });
+
+  try {
+    // 1) 定时事件在指定那天的区间：跨午夜要截到 0–1440，不能画到列外
+    const cross = m.timelineSpan(inst('2026-10-14 22:00', '2026-10-15 02:00'), '2026-10-14');
+    assert(cross && cross.startMin === 1320 && cross.endMin === 1440, `跨午夜截断错: ${JSON.stringify(cross)}`);
+    const next = m.timelineSpan(inst('2026-10-14 22:00', '2026-10-15 02:00'), '2026-10-15');
+    assert(next && next.startMin === 0 && next.endMin === 120, `次日区间错: ${JSON.stringify(next)}`);
+    assert(m.timelineSpan(inst('2026-10-14 09:00', '2026-10-14 10:00'), '2026-10-15') === null, '不在当天的事件不该出现在列里');
+
+    // 2) 全天事项走顶部全天带，不进时间轴
+    assert(m.timelineSpan(inst('2026-10-14 00:00', '2026-10-15 00:00', true), '2026-10-14') === null, '全天事项不该占时间轴');
+
+    // 3) 零点收工（22:00–00:00）在次日只剩 0 分钟，要撑成最小块才点得到
+    const tiny = m.timelineSpan(inst('2026-10-13 22:00', '2026-10-14 00:00'), '2026-10-14');
+    assert(tiny === null, '零点整结束的事件不该在次日留一格');
+    const zero = m.timelineSpan(inst('2026-10-14 10:00', '2026-10-14 10:00'), '2026-10-14');
+    assert(zero && zero.endMin - zero.startMin === m.MIN_BLOCK_MIN, `零时长事件应撑成最小块: ${JSON.stringify(zero)}`);
+
+    // 4) 分道：两条重叠 → 各占一半；第三条只与第二条重叠 → 仍属同一簇
+    const lanes = m.packLanes([
+      { item: 'a', startMin: 540, endMin: 600 },
+      { item: 'b', startMin: 570, endMin: 630 },
+      { item: 'c', startMin: 600, endMin: 660 },
+    ]);
+    const byId = Object.fromEntries(lanes.map((p) => [p.item, p]));
+    assert(byId.a.lane === 0 && byId.b.lane === 1, `重叠没分道: ${JSON.stringify([byId.a.lane, byId.b.lane])}`);
+    assert(byId.a.lanes === 2 && byId.b.lanes === 2 && byId.c.lanes === 2, `同簇道数应一致: ${JSON.stringify([byId.a.lanes, byId.c.lanes])}`);
+    assert(byId.c.lane === 0, 'c 与 a 首尾相接，应复用第 0 道');
+
+    // 5) 不相交的两簇各自按自己的宽度铺满（否则下午的日程会被上午的挤成半宽）
+    const two = m.packLanes([
+      { item: 'x', startMin: 0, endMin: 90 },
+      { item: 'y', startMin: 60, endMin: 120 },
+      { item: 'z', startMin: 600, endMin: 660 },
+    ]);
+    const t = Object.fromEntries(two.map((p) => [p.item, p]));
+    assert(t.x.lanes === 2 && t.z.lanes === 1, `簇宽算错: x=${t.x.lanes} z=${t.z.lanes}`);
+
+    // 6) 拖拽吸附与钳位：拖出列外不能出现负分钟或 24:30
+    assert(drag.snap(53) === 60 && drag.snap(52) === 45, `15 分钟吸附错: ${drag.snap(53)}/${drag.snap(52)}`);
+    assert(drag.minAtOffset(-100) === 0, '向上拖出列外应贴 0');
+    assert(drag.minAtOffset(999999) === 1440, '向下拖出列外应贴 1440');
+    const norm = drag.normalizeDrag(1500, 100);
+    assert(norm.startMin === 105 && norm.endMin === 1440, `反拖归一化错: ${JSON.stringify(norm)}`);
+    const tail = drag.normalizeDrag(1435, 1440);
+    assert(tail.startMin === 1425 && tail.endMin === 1440, `拖到列尾应留一格: ${JSON.stringify(tail)}`);
+
+    // 7) 平移保持时长、贴边不截断；改时长不得拖到开始点之前
+    const moved = drag.moveSpan({ startMin: 0, endMin: 90 }, -30);
+    assert(moved.startMin === 0 && moved.endMin === 90, `越界平移应贴边: ${JSON.stringify(moved)}`);
+    const moved2 = drag.moveSpan({ startMin: 600, endMin: 660 }, 45);
+    assert(moved2.startMin === 645 && moved2.endMin === 705, `平移丢了时长: ${JSON.stringify(moved2)}`);
+    const rs = drag.resizeSpan({ startMin: 600, endMin: 660 }, 500);
+    assert(rs.endMin === 615 && rs.startMin === 600, `上拖过头应留最小块: ${JSON.stringify(rs)}`);
+
+    // 8) 周边界：周日要归到本周一（周一开头），跨年 12-28 那周不能算错
+    assert(m.weekStart('2026-10-18') === '2026-10-12', `周日应回到本周一: ${m.weekStart('2026-10-18')}`);
+    assert(m.weekStart('2026-10-12') === '2026-10-12', '周一本身不该再往前');
+    assert(m.shiftDays('2026-12-28', 7) === '2027-01-04', `跨年偏移错: ${m.shiftDays('2026-12-28', 7)}`);
+    assert(m.shiftDays('2026-03-01', -1) === '2026-02-28', `闰年前后偏移错: ${m.shiftDays('2026-03-01', -1)}`);
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
+/**
+ * 纯函数模块：/cal 指令语法（tools 侧唯一能覆盖这条链的地方）
+ *
+ * 这里钉的是"看起来对但落库错"的那几类：
+ * `2026-10-15` 被区间语法啃掉、不给 --al 就不提醒（老用法回归）、
+ * `M-D` 的跨年滚法、未知 flag 污染标题。
+ */
+function testCalDslModule() {
+  const failures = [];
+  const file = path.join(pluginsDir, 'todo', 'fe', 'src', 'dsl.ts');
+  if (!existsSync(file)) return ['todo/fe/src/dsl.ts 不存在'];
+
+  let d;
+  try {
+    moduleCache.clear();
+    d = loadPluginModule(file);
+  } catch (err) {
+    return [`加载失败: ${err.message}`];
+  }
+
+  const today = new Date(2026, 9, 14); // 2026-10-14
+  try {
+    // 1) 完整写法：日期 + 区间 + 重复 + 双提醒
+    const a = d.parseCalArgs(['评审', '10-15', '14:00-15:30', 'every:1week', '--al', '10,30'], today);
+    assert(a.title === '评审', `标题应只剩裸词，实得 "${a.title}"`);
+    assert(a.startAt === '2026-10-15 14:00', `开始时间错: ${a.startAt}`);
+    assert(a.endAt === '2026-10-15 15:30', `结束时间错: ${a.endAt}`);
+    assert(a.repeatRule === 'every:1week', `重复规则没归一: ${a.repeatRule}`);
+    assert(a.alarms.join(',') === '30,10', `提醒应倒序去重: ${a.alarms.join(',')}`);
+    assert(a.allDay === false, '带钟点不该判成全天');
+
+    // 2) 绝对日期不能被区间语法啃成"10 月 15 日到 16 日"
+    const b = d.parseCalArgs(['值班', '2026-10-15', '14:00'], today);
+    assert(b.startAt === '2026-10-15 14:00', `绝对日期丢失: ${b.startAt}`);
+    assert(b.title === '值班', `日期被当标题词: ${b.title}`);
+
+    // 3) 老用法回归：只给时间也必须到点提醒（后端 create 的语义）
+    const c = d.parseCalArgs(['喝水', '15:00'], today);
+    assert(c.startAt === '15:00', `裸时间原样交后端解析: ${c.startAt}`);
+    assert(c.alarms.join(',') === '0', `不给 --al 应默认 0 分钟提醒，实得 ${c.alarms.join(',')}`);
+    // 显式关掉
+    assert(d.parseCalArgs(['喝水', '15:00', '--al', 'none'], today).alarms.length === 0, '--al none 应清空提醒');
+
+    // 4) 只给日期 = 全天，且不挂提醒（没有钟点可挂）
+    const e = d.parseCalArgs(['出差', '10-20', '--where', '上海'], today);
+    assert(e.allDay === true && e.startAt === '2026-10-20', `日期无钟点应为全天: ${JSON.stringify([e.allDay, e.startAt])}`);
+    assert(e.endAt === '2026-10-20', `全天结束日应同天: ${e.endAt}`);
+    assert(e.location === '上海', `--where 没吃到值: "${e.location}"`);
+    assert(e.alarms.length === 0, '全天无钟点不该默认提醒');
+
+    // 5) 分类 / 忙闲 / 关键词
+    const f = d.parseCalArgs(['健身', '19:00', '--cal', '生活', '--free'], today);
+    assert(f.calendarName === '生活' && f.status === 'free', `--cal/--free 解析错: ${JSON.stringify([f.calendarName, f.status])}`);
+
+    // 6) 未知 flag 静默吞掉，不污染标题
+    const g = d.parseCalArgs(['写', '文档', '--bogus', 'x'], today);
+    assert(g.title === '写 文档 x', `未知 flag 漏进标题: "${g.title}"`);
+
+    // 7) M-D 滚年：还没到过的留在今年，已经过去的按明年（1 月输入 12-25 是今年圣诞，不是去年）
+    assert(d.resolveDate(12, 25, new Date(2026, 0, 5)) === '2026-12-25', '未来短日期不该滚年');
+    assert(d.resolveDate(1, 5, new Date(2026, 11, 30)) === '2027-01-05', '过期短日期应滚到明年');
+    assert(d.resolveDate(10, 15, today) === '2026-10-15', '未来的短日期留在今年');
+    assert(d.resolveDate(10, 13, today) === '2026-10-13', '昨天允许补记，不该滚到明年');
+
+    // 8) 非法时间留在标题里（`25:00` 不是钟点）
+    assert(d.parseCalArgs(['看 25:00 的版本'], today).title === '看 25:00 的版本', '非法钟点不该被吃掉的场景应原样留词');
+    const h = d.parseCalArgs(['发布', '25:00'], today);
+    assert(h.startAt === '' && h.title === '发布 25:00', `非法钟点应回落标题: ${JSON.stringify([h.startAt, h.title])}`);
+
+    // 9) 分类名匹配：精确 > 前缀 > 没中
+    const rows = [{ id: 'c1', name: '工作' }, { id: 'c2', name: '工作效率' }, { id: 'd', name: '我的日程' }];
+    assert(d.matchCalendarId('工作', rows) === 'c1', '同名应精确命中');
+    assert(d.matchCalendarId('工作效', rows) === 'c2', '应支持前缀匹配');
+    assert(d.matchCalendarId('', rows) === '', '空名不该匹配任何分类');
+    assert(d.matchCalendarId('不存在', rows) === '', '没命中要返回空串交调用方兜默认');
+
+    // 10) 胶囊文案含关键字段（用户据此确认落库前的理解）
+    const cap = d.describeDraft(a);
+    for (const want of ['10-15 14:00', '15:30', '-10min', '-30min', '每周']) {
+      assert(cap.includes(want), `胶囊缺「${want}」：${cap}`);
+    }
+    assert(d.describeDraft({ ...a, allDay: true }).includes('全天'), '全天应显式标出');
+    assert(d.repeatLabel('every:1year') === '每年' && d.repeatLabel('every:2hour') === '每 2 小时', '重复标签覆盖年/时步长');
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
 async function main() {
   const plugins = listFrontendPlugins();
   console.log(`[plugin:test:fe] 发现 ${plugins.length} 个纯前端插件\n`);
@@ -1965,6 +2270,36 @@ async function main() {
     failed += 1;
     console.log('\n  ✗ 纯函数：/shot annotate');
     for (const f of annotateFailures) console.log(`      - ${f}`);
+  }
+
+  // 纯函数模块：日程月视图的日期算术（跨天拆分 · 网格补齐）
+  const calFailures = testCalendarDayMathModule();
+  if (calFailures.length === 0) {
+    console.log('\n  ✓ 纯函数：/cal 日期算术（本地解析 · 跨天拆分 · 全天独占尾 · 网格固定行）');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ 纯函数：/cal daymath');
+    for (const f of calFailures) console.log(`      - ${f}`);
+  }
+
+  // 纯函数模块：周/日时间轴（区间切分 · 重叠分道 · 拖拽吸附）
+  const tlFailures = testCalendarTimelineModule();
+  if (tlFailures.length === 0) {
+    console.log('\n  ✓ 纯函数：/cal 时间轴（跨午夜截断 · 重叠分道 · 15 分钟吸附 · 周边界）');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ 纯函数：/cal 时间轴');
+    for (const f of tlFailures) console.log(`      - ${f}`);
+  }
+
+  // 纯函数模块：/cal 指令语法（日期与区间的先后 · 默认提醒 · flag 取值）
+  const dslFailures = testCalDslModule();
+  if (dslFailures.length === 0) {
+    console.log('\n  ✓ 纯函数：/cal 语法（绝对日期不被区间吞噬 · 不给 --al 仍提醒 · 全天 · 分类匹配）');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ 纯函数：/cal dsl');
+    for (const f of dslFailures) console.log(`      - ${f}`);
   }
 
   // svc 桥接抽查：qr 打开二维码走 process.launch；网络插件应覆盖全部声明的域名
