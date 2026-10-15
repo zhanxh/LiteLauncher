@@ -10,3 +10,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4" }
 uuid = { version = "1", features = ["v4"] }
+# .ics 导出落盘：宿主没有 svc.fs，插件自己写系统下载目录（notes 插件同一先例）
+dirs = "5"
+
+# 仅供测试：用真 SQLite 跑"老库原地升级到 v2"这条路径。
+# 宿主侧 CoreDbApi 在 ll-host（架构上禁止依赖），所以这里复刻一份等价实现，
+# 连 SQL 语句头白名单一起照抄，保证测的就是线上语义。
+[dev-dependencies]
+rusqlite = { version = "0.31", features = ["bundled-full"] }

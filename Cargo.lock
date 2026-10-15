@@ -2599,7 +2599,9 @@ name = "ll-plugin-todo"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dirs 5.0.1",
  "ll-plugin-api",
+ "rusqlite",
  "serde",
  "serde_json",
  "uuid",
