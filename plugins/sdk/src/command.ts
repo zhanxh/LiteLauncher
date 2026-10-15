@@ -119,6 +119,15 @@ export interface CommandPlugin {
   icon: string;
 
   /**
+   * 别名注册：仍能**精确**敲出来，但不出现在补全候选、模糊推荐与 `/help` 清单里。
+   *
+   * 为什么需要：改名（`/todo` → `/cal`）时旧写法不能一刀切断，
+   * 而注册表是按 trigger 建键的（`registry.ts`），一条指令要两个入口就得注册两次。
+   * 不做标记的话，`/help` 和候选列表会出现两行同 id 的重复项。
+   */
+  hidden?: boolean;
+
+  /**
    * 判断当前解析输入是否属于即时执行的 Action
    */
   isAction(input: ParsedInput): boolean;

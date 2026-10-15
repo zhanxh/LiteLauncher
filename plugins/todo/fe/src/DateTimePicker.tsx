@@ -1,10 +1,10 @@
 import { Component, For, Show, createSignal, } from 'solid-js';
+import { firstWeekday, daysInMonth, WEEKDAY_LABELS } from './calendar/grid';
 
 /** 分钟列步长（5 分钟一格：00,05,…,55） */
 const MINUTE_STEP = 5;
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const MINUTES = Array.from({ length: 60 / MINUTE_STEP }, (_, i) => i * MINUTE_STEP);
-const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 
 interface Props {
   /** 规范值 "YYYY-MM-DD HH:MM"，空串 = 无提醒 */
@@ -79,11 +79,9 @@ export const DateTimePicker: Component<Props> = (props) => {
   };
 
   // 月历网格：周一开头，前置空位补齐
-  const firstWeekday = () => (new Date(viewY(), viewM(), 1).getDay() + 6) % 7;
-  const daysInMonth = () => new Date(viewY(), viewM() + 1, 0).getDate();
   const cells = () => [
-    ...Array.from({ length: firstWeekday() }, () => null as number | null),
-    ...Array.from({ length: daysInMonth() }, (_, i) => i + 1),
+    ...Array.from({ length: firstWeekday(viewY(), viewM()) }, () => null as number | null),
+    ...Array.from({ length: daysInMonth(viewY(), viewM()) }, (_, i) => i + 1),
   ];
 
   return (
@@ -109,7 +107,7 @@ export const DateTimePicker: Component<Props> = (props) => {
           </div>
 
           <div class="cal-grid">
-            <For each={WEEKDAYS}>{(w) => <span class="cal-wd">{w}</span>}</For>
+            <For each={WEEKDAY_LABELS}>{(w) => <span class="cal-wd">{w}</span>}</For>
             <For each={cells()}>
               {(day) => (
                 <Show

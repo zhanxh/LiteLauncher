@@ -34,10 +34,14 @@ class PluginRegistry {
   }
 
   /**
-   * 获取所有已注册的插件列表
+   * 获取可对外展示的插件列表（`hidden` 的别名不在内）
+   *
+   * 补全候选、模糊推荐、`/help` 清单和 `/hotkey` 速查表都走这里，
+   * 所以过滤放在源头而不是每个调用点——漏一处就是"列表里出现两行 /cal /todo"。
+   * 精确命中别名仍靠 `get('/todo')`，那条路径不经过本方法。
    */
   getAll(): CommandPlugin[] {
-    return Array.from(this.plugins.values());
+    return Array.from(this.plugins.values()).filter((plugin) => !plugin.hidden);
   }
 
   /**
@@ -51,6 +55,7 @@ class PluginRegistry {
     }
 
     return Array.from(this.plugins.values()).filter((plugin) => {
+      if (plugin.hidden) return false;
       return (
         plugin.trigger.toLowerCase().startsWith(lower) ||
         plugin.name.toLowerCase().includes(lower.replace('/', ''))

@@ -39,7 +39,7 @@ body.todoapp-mode {
 }
 
 /* 通用按钮 */
-.todoapp .btn {
+.btn {
   border: none;
   border-radius: 8px;
   padding: 7px 14px;
@@ -50,45 +50,45 @@ body.todoapp-mode {
   transition: background 0.15s, opacity 0.15s;
 }
 
-.todoapp .btn:hover {
+.btn:hover {
   background: var(--hover-overlay);
 }
 
-.todoapp .btn.primary {
+.btn.primary {
   background: var(--accent-color);
   color: var(--accent-fg);
 }
 
-.todoapp .btn.primary:hover {
+.btn.primary:hover {
   background: var(--accent-hover);
 }
 
-.todoapp .btn.ghost {
+.btn.ghost {
   background: transparent;
   border: 1px solid var(--keyhint-border);
 }
 
-.todoapp .btn.ghost:hover {
+.btn.ghost:hover {
   background: var(--keyhint-bg);
 }
 
-.todoapp .btn.danger {
+.btn.danger {
   color: var(--danger-text);
 }
 
-.todoapp .btn.small {
+.btn.small {
   padding: 5px 10px;
   font-size: 12px;
 }
 
-.todoapp .btn.active {
+.btn.active {
   background: var(--accent-color);
   color: var(--accent-fg);
   border-color: var(--accent-color);
 }
 
 /* 通用输入框 */
-.todoapp .ti {
+.ti {
   flex: 1;
   border: 1px solid var(--keyhint-border);
   border-radius: 8px;
@@ -99,11 +99,11 @@ body.todoapp-mode {
   min-width: 0;
 }
 
-.todoapp .ti:focus {
+.ti:focus {
   border-color: var(--accent-color);
 }
 
-.todoapp .ti.small {
+.ti.small {
   width: 90px;
   flex: none;
 }
