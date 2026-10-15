@@ -6,10 +6,12 @@
  */
 import { Component, For, Show, createEffect, createMemo, createSignal, untrack } from 'solid-js';
 import { getPluginContext, isHostAvailable } from '@ll/sdk';
-import { DateTimePicker } from '../DateTimePicker';
 import { RepeatPicker } from '../RepeatPicker';
 import { CalendarMeta, nameOf, soften, UNCLASSIFIED } from './calendars';
 import { CalInstance } from './daymath';
+import { DateTimeField } from './DateTimeField';
+import { dateOf } from './dtfield';
+import { todayKey } from './grid';
 
 const ctx = getPluginContext('todo');
 
@@ -184,7 +186,13 @@ export const EventModal: Component<Props> = (props) => {
 
   const save = async () => {
     const d = draft();
-    if (!d || !isHostAvailable()) return;
+    if (!d) return;
+    // 定宽串可直接比较；两半分开选之后，结束早于开始成了手可达的错，别静默存下去
+    if (d.end_at && d.start_at && d.end_at < d.start_at) {
+      setError('结束时间早于开始时间');
+      return;
+    }
+    if (!isHostAvailable()) return;
     setBusy(true);
     try {
       await ctx.call('save', {
@@ -280,8 +288,10 @@ export const EventModal: Component<Props> = (props) => {
 
               <div class="cal-field">
                 <span class="cal-field-label">开始</span>
-                <DateTimePicker
+                <DateTimeField
                   value={ev().start_at}
+                  datePlaceholder="日期"
+                  timePlaceholder="时间"
                   onChange={(v) => patch({ start_at: v })}
                 />
               </div>
@@ -289,11 +299,17 @@ export const EventModal: Component<Props> = (props) => {
               <Show when={!ev().all_day}>
                 <div class="cal-field">
                   <span class="cal-field-label">结束</span>
-                  <DateTimePicker
+                  {/* 只点时间不点日期时落到开始那天，否则结束会掉到今天，跟开始差出一个未来 */}
+                  <DateTimeField
                     value={ev().end_at}
-                    placeholder="留空 = 按默认时长"
+                    datePlaceholder="日期"
+                    timePlaceholder="时间"
+                    fallbackDate={dateOf(ev().start_at) || todayKey()}
                     onChange={(v) => patch({ end_at: v })}
                   />
+                  <Show when={!ev().end_at}>
+                    <span class="cal-field-hint">留空 = 默认时长</span>
+                  </Show>
                 </div>
               </Show>
 

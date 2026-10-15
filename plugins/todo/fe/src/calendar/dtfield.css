@@ -1,0 +1,224 @@
+/* 日期 + 时间字段（DateTimeField）。浮层 portal 到 body，位置归 Kobalte，这里只管外观。 */
+
+.dtf {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* 外观对齐 .ti（同 border/背景/字号），但不复用那个类：
+   .ti 带 flex:1，会把时间按钮的固定宽度顶掉，而两份样式的先后取决于打包顺序。 */
+.dtf-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--keyhint-border);
+  border-radius: 8px;
+  background: var(--editor-bg);
+  font-size: 13px;
+  outline: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dtf-btn--time {
+  flex: 0 0 76px;
+}
+
+.dtf-btn.empty {
+  color: var(--text-muted);
+}
+
+.dtf-btn[data-expanded] {
+  border-color: var(--accent-color);
+  background: var(--accent-light);
+}
+
+.dtf-pop {
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pop);
+  background: var(--surface-raised);
+  box-shadow: var(--pop-shadow);
+  color: var(--text-main);
+  font-size: 12px;
+}
+
+.dtf-pop--date {
+  width: 246px;
+}
+
+.dtf-pop--time {
+  width: 84px;
+  padding: 4px;
+}
+
+/* ── 日期浮层 ── */
+.dtf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.dtf-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dtf-head-nav {
+  display: flex;
+  gap: 4px;
+}
+
+.dtf-nav {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dtf-nav:hover {
+  border-color: var(--accent-color);
+  background: var(--hover-overlay);
+}
+
+.dtf-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+}
+
+.dtf-wd {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 0 4px;
+}
+
+.dtf-cell {
+  width: 100%;
+  height: 30px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.dtf-cell:hover {
+  background: var(--item-bg-hover);
+}
+
+/* 邻月的格子照常可点：跨月排日程是常态，灰显不等于禁用 */
+.dtf-cell.out {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.dtf-cell.today {
+  box-shadow: inset 0 0 0 1px var(--accent-color);
+}
+
+.dtf-cell.sel,
+.dtf-cell.sel:hover {
+  background: var(--accent-color);
+  color: var(--accent-fg);
+  font-weight: 600;
+  opacity: 1;
+}
+
+.dtf-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dtf-foot-space {
+  flex: 1;
+}
+
+.dtf-link {
+  border: none;
+  background: transparent;
+  color: var(--accent-text);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.dtf-link:hover {
+  background: var(--accent-light);
+}
+
+/* ── 时间浮层：96 个 15 分钟档位 ── */
+.dtf-list {
+  height: calc(var(--dtf-row) * 7); /* 整数行，别露半行吊胃口 */
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  scrollbar-width: thin !important;
+}
+
+/* 全局把滚动条藏了（index.html），这里按 .editor-pane 的做法单独放出来 */
+.dtf-list::-webkit-scrollbar {
+  display: block !important;
+  width: 6px !important;
+}
+
+.dtf-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb) !important;
+  border-radius: 3px !important;
+}
+
+.dtf-slot {
+  flex: none;
+  height: var(--dtf-row); /* 由组件按 dtfield.ts 的 ROW_HEIGHT 注入：滚动目标 = 下标 × 行高 */
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-main);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.dtf-slot:hover {
+  background: var(--item-bg-hover);
+}
+
+.dtf-slot.off {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.dtf-slot.off:hover {
+  background: transparent;
+}
+
+/* 选中态排在过期之后：值已过期时它还得看得出来（disabled，指针也别装成可点） */
+.dtf-slot.sel,
+.dtf-slot.sel.off {
+  background: var(--accent-light);
+  color: var(--accent-text);
+  font-weight: 600;
+}
