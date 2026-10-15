@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use ll_plugin_api::{
-    DbApi, DesktopAttachResult, DesktopAttachStatus, EventApi, LogApi, PluginBackend,
+    AppliedSize, DbApi, DesktopAttachResult, DesktopAttachStatus, EventApi, LogApi, PluginBackend,
     PluginContext, PluginError, SettingsApi, WindowApi,
 };
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
@@ -162,6 +162,16 @@ impl WindowApi for TestWindows {
             .push((view_id.to_string(), params.to_vec()));
         Ok(())
     }
+    fn set_content_size(
+        &self,
+        _caller_label: &str,
+        _width: Option<f64>,
+        _height: Option<f64>,
+    ) -> Result<AppliedSize, PluginError> {
+        // 测试环境没有真窗口，尺寸夹取由 ll-plugin-api 的纯函数单测覆盖
+        Err(PluginError::window("测试环境不改窗口尺寸"))
+    }
+
     fn attach_desktop(&self, _label: &str) -> Result<DesktopAttachResult, PluginError> {
         Ok(DesktopAttachResult {
             status: DesktopAttachStatus::Unsupported {

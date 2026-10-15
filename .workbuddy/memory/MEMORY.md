@@ -13,18 +13,19 @@
 
 - LLP 的 `backend.entry` 可指向任意可执行文件（含 `node`、绝对路径）→ 外部插件也能用 Rust 独立二进制；"用 Rust" ≠ "编译进主程序"。
 - 外部插件前端零代码：`src/core/externalPlugins.ts` 按 manifest `command` 声明自动生成通用 `CommandPlugin`；参数自动映射 execute→`{raw,subcommand,args,namedArgs}`、search→`{keyword,subcommand,args}`、select→`{id,metadata}`。
-- 纯前端插件不适用自定义窗口；`/hash`（WebCrypto 无 MD5）、`/cron`、`/cidr` 这类算法密集/依赖运行时标准库的**留在 LLP 更划算**。
+- 纯前端插件（`kind:"none"`）**可以有视图窗口**（`pick` 就是：manifest `views[]` + fe 注册组件），但没有自己的后端进程，
+  窗口间共享状态只能靠 `ctx.settings`。`/hash`（WebCrypto 无 MD5）、`/cron`、`/cidr` 这类算法密集/依赖运行时标准库的**留在 LLP 更划算**。
 
 ## 插件交互契约
 - 面板项复制：插件的 `onSelect` 返回 `AfterSelect.copy`（壳层通用能力，壳层不理解插件语义）。落点是**宿主原生剪贴板命令 `clipboard_write`**，不用 `navigator.clipboard`（窗口隐藏时会被拒）。
 - 面板项结构：`{id,title,description,badge,icon,metadata:{value}}`；`metadata.value` = 要复制的文本（约定俗成）。
-- 纯前端插件逻辑只允许 import `@ll/sdk`（+ solid-js）。
+- 纯前端插件逻辑只允许 import `@ll/sdk`（+ `@ll/ui` + solid-js）。`@ll/ui` 只有 token 样式与 `PopupFrame` 这类无状态壳组件；依赖方向**恒为 ui→sdk**（sdk 里不能出现 solid/tsx/CSS）。
 - **网络类插件范式（必须遵守）**：壳层 `query()` 是**逐键调用且无防抖**的，**绝不能在 query 里发请求**。统一做法：query 命中缓存才渲染，否则只渲染一条「查询」项（`metadata.fetch`=缓存键）→ `onSelect(查询项)` 抓取 + 写缓存 + 返回 `{refresh:true}` → 壳层重跑 query 命中缓存刷新面板 → `onSelect(结果项)` 回 `{copy}`。缓存 TTL 5–30 分钟。参考 `plugins/{weather,fx,ip,dict,tr}`。
 - HTTP 一律走 SDK 的 `ctx.http`（`svc.http.send` 的语法糖）：`send()→{status,body}` / `get()` / `json<T>()`；需按状态码分支时用 `send`。manifest 必须声明 `net:<host>`（逐域名精确匹配）。
 
 ## 宿主 svc.* 分发器（唯一入口）
 `src-tauri/crates/ll-host/src/services.rs::dispatch_svc` —— LLP sidecar 的反向请求与前端 `ctx.call('svc.*')` **共用**。`commands.rs::plugin_call` 把 `svc.*` 当宿主保留方法名空间优先拦截。
-方法集：`db.migrate|execute|query`、`clipboard.write|read`、`http.send`、`notify.send`、`process.launch`、`events.emit`、`settings.get|set`、`log.write`、`screen.list|cursor|pixel|capture`、`shortcut.register|unregister|list`、`window.open`。
+方法集：`db.migrate|execute|query`、`clipboard.write|read`、`http.send`、`notify.send`、`process.launch`、`events.emit`、`settings.get|set`、`log.write`、`screen.list|cursor|pixel|capture`、`shortcut.register|unregister|list`、`window.open|setContentSize`。
 权限门控：已注册插件按 `manifest.permissions`；未注册插件退回 `shell_safe_manifest`（仅 settings/clipboard:*/notifications/events）。**用到 db/process/net/screen/windows/shortcut 就必须把 manifest 部署到宿主可见目录**。
 - ⚠️ **`process.launch` 的校验按"目标类型"分两套，不按字符一刀切**：URL 目标（`http(s)://`、`file://`）走
   `validate_url_target`，放行 `& ? = % #`（这些在 URL 里合法且根本不进 shell），只拒引号/`$`/`|`/`<>`/反引号/
@@ -41,7 +42,7 @@
 - `pixel({x?,y?,radius?})`：坐标缺省=当前光标；带 `radius` 时回 `#RRGGBB` 方格数组（**不是图片**，前端 CSS 网格铺成硬边放大镜）。总返回 `{sample, grid?}`。
 - **全局热键**：manifest 以 `shortcut:<accel>` **逐条声明、无通配**；宿主进程级 `accel→pluginId` 表先到先得仲裁（冲突回 `conflict`）；触发广播 `plugin-shortcut` 事件 `{pluginId, accel}`，插件只听事件、拿不到按键流。
 - **`ctx.shortcuts.on(accel, cb, {scope})` 默认 `scope:'main'`**：每个窗口加载都会跑一遍全部插件 `setup()`，不区分上下文热键会被执行两次。视图窗口内也要响应时显式传 `{scope:'any'}`。
-- **新增视图窗口必须登记 Tauri 能力**：`src-tauri/capabilities/default.json` 的 `windows` 是显式标签白名单（标签 = `<pluginId>-<viewId>`）。漏登记 → 该窗口零权限 → `plugin_call` 被拒、窗口变死窗。
+- **新增视图窗口必须登记 Tauri 能力**：`src-tauri/capabilities/default.json` 的 `windows` 是显式标签白名单（标签 = `<pluginId>-<viewId>`，`unique_by` 视图还会带 `-<值>` 后缀）。漏登记 → 该窗口零权限 → `plugin_call` 被拒、窗口变死窗。`npm run plugin:test:fe` 的「弹出式基窗」组按声明标签（含后缀形式）逐条比对白名单。
 - `permissions` 也要逐条列全（不只 `windows`）：如窗口拖动需`core:window:allow-start-dragging`，漏了会**静默失败**，用户以为窗口卡死。
 - **窗口贴边定位**：`WindowPosition` 有 `Center | BottomRight | TopRight | Fullscreen`。corner 类走 `is_corner_position()` + `corner_origin()`（都在 `ll-plugin-api`，**放这里才测得了** —— `ll-host` 的 test 二进制本机加载失败）。`stack_offset` 方向随角落变：右下向上、右上向下。
 - `desktop.rs` 挂壁纸层时 `SetWindowPos` **必须带 `SWP_NOMOVE`**：`SetParent` 会把坐标系改为相对 WorkerW，不带它则 (0,0) 被应用，窗口被甩到左上角。
@@ -86,21 +87,47 @@
 - 剥控制词（`desc`/`asc`/`limit`）不能简单删"词+后一个词"—— 字段名（size/dm/name）可能就是用户想搜的词。判定依据是**参数合法性**：未知字段时 `desc` 本身留在搜索词里。
 - 外部插件（LLP）现已支持 `queryDebounceMs`：manifest `command.queryDebounceMs` → `ExternalCommandSpec.query_debounce_ms` → `plugin_list` → `externalPlugins.ts`。逐键打外部索引的插件必须声明。
 
+## 弹出式基窗（`auto_height` + `PopupFrame`，宿主通用能力）
+- 一个能力盖住三件事：**无边框怎么拖**（Tauri 注入的 `drag.js`，`data-tauri-drag-region="deep"`，
+  自动跳过 button/input/`[tabindex]`/role=button → **不要再手写 mousedown+startDragging**）、
+  **高度跟内容**（前端测自然高度上报 `svc.window.setContentSize`）、**超长内部滚动**。
+- **物理↔逻辑像素换算与四角锚定只在宿主做**（`ll-plugin-api` 的 `popup_policy` / `popup_rect_after_size`，
+  有单测）。插件侧再算一份就是第二套真相，pomo 当初手工换算+`animToken` 取消动画就是踩过的坑。
+- **`setContentSize` 只能改自己所在的视图**：caller 由 Tauri 注入的 `WebviewWindow` 得到（插件无法伪造），
+  标签必须 `label_matches_view`，且改高度要求该视图声明 `auto_height`。
+  `window_label()` 同时用于**建窗和校验**——分成两处就会漂移，而这是那条权限检查唯一能被绕过的路。
+- `auto_height` 的宿主硬保证：建窗时 `resizable` 一律 false、`visible(false)` + 兜底 `show()`（消白闪）、
+  `stacked` 偏移累加**实际高度**而非声明高度、GTK 下限取 `POPUP_MIN_H_FLOOR` 而非 spec。
+- ⚠️ **测量的目标是内容的自然高度，永远不是窗口高度**。被测量元素不能带 `height:100vh`/`min-height:100vh`，
+  否则形成自激棘轮（窗口长高→内容更高→再长高）。body 是滚动容器，`#root`/卡片按内容取高。
+- ⚠️ `index.html` 用 `!important` 钉死了 `html,body,#root` 的底色并**全局隐藏滚动条**，
+  弹窗样式必须**同样带 `!important`** 才压得住；`popup.css` 每条选择器都要收在 `body.ll-popup-mode` 下
+  （一个 bundle 全窗共享，加类的是 body 不是 html —— `html` 保留 `overflow:hidden` 才不出双滚动条）。
+- **自适应高度 = 放弃用户拖边框改大小**（已与用户确认走"内部滚动 + 可见滚动条"）。
+  拖拽期间必须挂起上报（mousedown 到元素 → window 上的 mouseup），否则松手弹回。
+- ⚠️ **逐帧改尺寸时，锚定基准不能用"实时读回来的矩形"**：`set_size`/`set_position` 要等 WM 处理才反映到
+  `outer_position()/outer_size()`，每帧读一次会读到"尺寸已更新、位置还没更新"的半成品，钉住的边逐帧漂
+  （真机量到 pomo 伸缩途中右边缘 ±12px）。宿主的处理：记住自己上一次**请求**的矩形，尺寸未追上请求 = 在途
+  → 用请求值续算；尺寸一致 = 已落地 → 回到实时读数（用户拖走的窗口才不会被拽回）。
+  教训：**"基准从哪儿读"是语义的一部分**，把几何搬进宿主时必须把旧代码"动画开始时读一次基准"这个隐含约定一起搬。
+- 视觉形态定为**实心窗口 + 系统圆角**（不透明），沿用 pomo 在 Windows 上验证过的结论：
+  WebView2 真机会露白底，透明窗口这条路不可靠。
+
 ## 桌面挂件（视图窗口）与 LLP sidecar 约定
 - **Windows 启动任何子进程都必须走 `ll-host/src/python.rs::hide_console`**（`CREATE_NO_WINDOW`）。
   GUI 进程拉起控制台程序时系统会**新建控制台并抢焦点** → 输入框失焦、多插件多黑窗。
   不影响 stdin/stdout 管道，LLP 协议照旧。cfg 双实现吸收平台差异，签名按值
   `hide_console(mut cmd: Command) -> Command`（不能 `&mut Command`：不能对临时值隐式取可变引用）。
 - **不依赖透明的挂件，窗口矩形就是卡片本身**：CSS 隐藏按钮只会留一块同色空白。
-  要做"悬停才出现按钮区"必须**真改窗口尺寸**（`setSize`+`setPosition`，
-  capabilities 需 `core:window:allow-set-size|allow-set-position`）。
+  要做"悬停才出现按钮区"必须**真改窗口尺寸** —— 现在改由基窗做：
+  `ctx.windows.setContentSize({ width })`（视图声明 `auto_height`），锚边与像素换算交给宿主。
 - 尺寸常量要**由布局部件推导**（内边距/环/间距/标签/按钮上限相加），且**三处必须对齐**：
   代码常量 ↔ `manifest.views[].width/min_width` ↔ CSS 的对应宽度。
   `min_width` 若大于收拢宽度，`set_size` 会被 `min_inner_size` 夹住 ——
   表现为"代码在动、窗口不动"，最难查的一类失效。测试直接读 manifest 与 CSS 文本来比对。
-- 伸缩动画：基准（右边缘/顶边/起始宽度）**在动画开始时读一次**，每帧由基准推导，
-  帧内不再查询（会读到上一条命令未生效的中间值而累积误差）；用令牌作废上一段动画，
-  `startDragging` 前必须作废（否则动画记的是拖动前的右边缘，窗口会被拽回旧坐标）。
+- 伸缩动画：每帧只发"目标宽度"给宿主，**用令牌作废上一段动画**；拖动前也要先作废并
+  立即落到当前悬停态的最终宽度（pomo 的 `settleBeforeDrag`），否则动画记的是拖动前的矩形，
+  窗口会被拽回旧坐标。挂起/恢复上报的规则已由 `mountPopup` 统一兜住，插件只需管动画互斥。
 - **sidecar ↔ 挂件（两个进程）的唯一通道是 `ctx.settings`**：正向是状态键，
   反向是挂件写 `cmd` 键 + sidecar 轮询消费并清空。**每帧一次读**：状态应合并成
   单键 JSON 快照（`snap`）一次取回，散装键保留作面板/排障与快照缺失时的回退源；
@@ -122,6 +149,12 @@
 - 用例钩子：`before`（预置桩状态，须早于首个 query）/ `after`（异步断言）/ `isolate`（跑用例前清空桩插件，只留被测插件——用来覆盖"全局一个都没有"的空态分支）。
 - `registered` 是模块级数组且只 push 不去重，跨用例**会累积** —— 用例间要用不同桩插件 id 避免 flaky。
 - **回归护栏**：用例声明 `queryDebounceMs` 时，harness 会断言插件真的设了 200–600ms —— 去掉它会退化成逐键打 API，肉眼看不见。
+- **跨文件护栏（弹出式基窗）**：manifest 声明、capabilities 白名单、CSS 作用域分属三个文件，任何一处漏改真机才炸。
+  `npm run plugin:test:fe` 的「弹出式基窗」组就是干这个：`auto_height` 必须配 `decorated:false`+`resizable:false`、
+  min 宽高成对、`height ≤ max_height`、声明的窗口标签能被 glob 匹配、`popup.css` 每条规则都在
+  `body.ll-popup-mode` 下且对 `html,body,#root` 的覆盖带 `!important`，另外用假 DOM 跑 `mountPopup`
+  的取样/死区/拖拽挂起。**新增这类"只有真机看得出错"的断言时，务必改动源文件做一次变异验证**，
+  防止断言写成永真。
 - ⚠️ 本机 `cargo test -p ll-host` 的测试二进制加载期报 `STATUS_ENTRYPOINT_NOT_FOUND`（0xc0000139，Windows 链接/加载环境问题）。项目门禁是 `npm run check`（`cargo check --workspace` + `tsc --noEmit`），不含 `cargo test`。
 
 ## 命令速查

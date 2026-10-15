@@ -194,7 +194,10 @@ export function PickPanel() {
       }}
       onClick={onPanelClick}
     >
-      <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }}>
+      {/* 标题行是拖拽区：无边框窗没有系统标题栏，此前根本挪不动。
+          只给这一行而不给整块面板，是因为面板 mousedown 另有"单击取色"用途，
+          交给系统拖拽会让每次点选都顺带拖动窗口 */}
+      <div style={{ display: 'flex', 'align-items': 'center', gap: '6px' }} data-tauri-drag-region="deep">
         <span style={{ 'font-weight': '600' }}>取色台</span>
         <span style={{ opacity: 0.55, 'font-size': '11px' }}>
           {frozen() ? '已冻结（鼠标在面板上）' : '跟随鼠标'}

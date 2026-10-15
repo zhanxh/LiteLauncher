@@ -87,6 +87,12 @@ interface Props {
   onSaved: (msg: string) => void;
   /** 保存/删除成功后让宿主重取区间 */
   onChanged: () => void;
+  /**
+   * overlay（默认）= 日历窗内的遮罩浮层；inline = 嵌进宿主基窗（详情窗口）。
+   * inline 时遮罩和自己那层头部都不渲染——标题与关闭由基窗的 PopupFrame 提供，
+   * 高度上限由窗口承接，所以那对 `calc(100vh - 48px)` 也必须让位。
+   */
+  variant?: 'overlay' | 'inline';
 }
 
 /**
@@ -251,18 +257,28 @@ export const EventModal: Component<Props> = (props) => {
     patch({ alarms: next.sort((a, b) => b - a) });
   };
 
+  /** inline = 嵌进宿主基窗：遮罩与自己那层头部都让位给 PopupFrame */
+  const inline = () => props.variant === 'inline';
+
   return (
     <Show when={draft()}>
       {(ev) => (
-        <div class="cal-modal-mask" onClick={close}>
+        <div
+          class={inline() ? 'cal-modal-inline-wrap' : 'cal-modal-mask'}
+          onClick={() => {
+            if (!inline()) close();
+          }}
+        >
           {/* 点遮罩关闭，面板本体要挡住冒泡，否则拖到边界就没了 */}
-          <div class="cal-modal" onClick={(e) => e.stopPropagation()}>
-            <div class="cal-modal-head">
-              <span class="cal-modal-title">{ev().id ? '编辑日程' : '新建日程'}</span>
-              <button type="button" class="cal-btn cal-btn--icon" onClick={close} title="关闭">
-                ✕
-              </button>
-            </div>
+          <div class={inline() ? 'cal-modal cal-modal--inline' : 'cal-modal'} onClick={(e) => e.stopPropagation()}>
+            <Show when={!inline()}>
+              <div class="cal-modal-head">
+                <span class="cal-modal-title">{ev().id ? '编辑日程' : '新建日程'}</span>
+                <button type="button" class="cal-btn cal-btn--icon" onClick={close} title="关闭">
+                  ✕
+                </button>
+              </div>
+            </Show>
 
             <div class="cal-modal-body">
               <Show when={ev().fromVirtual}>

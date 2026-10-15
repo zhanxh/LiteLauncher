@@ -243,6 +243,126 @@ pub enum ExistingPolicy {
     Replace,
 }
 
+/// 内容驱动高度窗口的尺寸区间（宿主夹取插件上报高度的唯一依据）
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PopupPolicy {
+    pub min_h: f64,
+    pub max_h: f64,
+}
+
+/// 未声明 `min_height` 时，`auto_height` 窗口还能继续往上缩的下限。
+///
+/// 不能取视图的声明高度：那正是 GTK 200×200 下限修正踩的坑
+/// （`ll-host::clamp_gtk_child_min_size` 一旦回退到 `spec.height`，
+/// 短内容的窗口在 Linux 上就再也缩不回去了）。
+pub const POPUP_MIN_H_FLOOR: f64 = 96.0;
+
+/// 未声明 `max_height` 时的内容增长上限（逻辑像素）
+pub const POPUP_MAX_H_DEFAULT: f64 = 720.0;
+
+/// 归一化 `auto_height` 视图的尺寸区间；非 `auto_height` 返回 `Ok(None)`。
+///
+/// `Err` 只留给"这两个声明凑不出一个能用的窗口"的组合。区间反向时不报错而是
+/// 收敛到上限：`min > max` 的症状是 `set_size` 被 min 夹住、插件看着在缩而窗口不动，
+/// 属于静默失效，宁可让窗口"装得下内容"也别留一个夹不动的尺寸。
+pub fn popup_policy(spec: &ViewSpec, mon_h: f64) -> Result<Option<PopupPolicy>, String> {
+    if !spec.auto_height {
+        return Ok(None);
+    }
+    if matches!(spec.position, WindowPosition::Fullscreen(_)) {
+        return Err("auto_height 不能与 position: fullscreen 同时声明".to_string());
+    }
+    let finite = |v: Option<f64>| v.filter(|n| n.is_finite() && *n > 0.0);
+    let screen_cap = (mon_h - 2.0 * CORNER_MARGIN).max(1.0);
+    let max_h = finite(spec.max_height)
+        .unwrap_or(POPUP_MAX_H_DEFAULT)
+        .min(screen_cap);
+    let min_h = finite(spec.min_height).unwrap_or(POPUP_MIN_H_FLOOR);
+    Ok(Some(PopupPolicy {
+        min_h: min_h.min(max_h),
+        max_h,
+    }))
+}
+
+/// 内容尺寸变化后窗口该落在哪儿（四个数与返回值全是**逻辑像素**）。
+///
+/// 锚的是**当前矩形的边**，不是重算显示器边缘：用户把窗口拖到屏幕中间之后，
+/// 按角落公式重算会把它一把拽回角落——这个回归比原来的系统标题栏更糟。
+///
+/// - 高度：`center` / `top-right` 钉顶边（标题行就是拖拽区，它不能自己跑掉），
+///   `bottom-right` 钉底边（提醒卡向上生长才不会顶出屏幕）。
+/// - 宽度：角落窗钉右边缘（pomo 挂件向左生长，理由见 `plugins/pomo/fe/src/hover-size.ts`），
+///   `center` 钉水平中心。
+///
+/// 和 [`corner_origin`] 一样留在 `ll-plugin-api` 是为了能单测：这段算术写错的
+/// 症状是"窗口跑到屏幕外"或"拖拽区跳走"，只有真机才看得出来。
+pub fn popup_rect_after_size(
+    pos: WindowPosition,
+    mon_w: f64,
+    mon_h: f64,
+    cur: (f64, f64, f64, f64),
+    want: (f64, f64),
+    policy: PopupPolicy,
+) -> (f64, f64, f64, f64) {
+    let (cx, cy, cw, ch) = cur;
+    // 任一输入不可信就原样返回：把 NaN 送进 set_size 会留下一个畸形矩形
+    if !cx.is_finite()
+        || !cy.is_finite()
+        || !cw.is_finite()
+        || !ch.is_finite()
+        || !want.0.is_finite()
+        || !want.1.is_finite()
+        || !mon_w.is_finite()
+        || !mon_h.is_finite()
+    {
+        return cur;
+    }
+    let w = want.0.clamp(1.0, (mon_w - 2.0 * CORNER_MARGIN).max(1.0));
+    let h = want.1.clamp(policy.min_h, policy.max_h.max(policy.min_h));
+    let x = match pos {
+        WindowPosition::TopRight | WindowPosition::BottomRight => cx + cw - w,
+        WindowPosition::Center => cx + (cw - w) / 2.0,
+        WindowPosition::Fullscreen(_) => cx,
+    };
+    let y = match pos {
+        WindowPosition::BottomRight => cy + ch - h,
+        _ => cy,
+    };
+    (keep_in_screen(x, w, mon_w), keep_in_screen(y, h, mon_h), w, h)
+}
+
+/// 把窗口的一条轴夹回 `[CORNER_MARGIN, 屏 - 尺寸 - CORNER_MARGIN]`。
+/// 窗口比屏幕还大时退化为贴边距，而不是产出一个反向区间把坐标推到负值。
+fn keep_in_screen(v: f64, size: f64, mon: f64) -> f64 {
+    let hi = (mon - size - CORNER_MARGIN).max(CORNER_MARGIN);
+    v.clamp(CORNER_MARGIN, hi)
+}
+
+/// 视图窗口的标签：`<pluginId>-<viewId>[-<unique 值哈希>]`。
+///
+/// 建窗和"这个标签归不归这个视图"的校验**必须共用这一个函数**：两边各写一遍，
+/// 任何一次格式调整都会让校验放行不该放行的窗口，或者把自己的窗口判成别人的
+/// （症状是 `setContentSize` 静默失败，高度再也不跟随内容）。
+pub fn window_label(plugin_id: &str, view_id: &str, unique: Option<&str>) -> String {
+    match unique {
+        Some(v) => format!("{}-{}-{}", plugin_id, view_id, v),
+        None => format!("{}-{}", plugin_id, view_id),
+    }
+}
+
+/// `label` 是否确实由 `plugin_id` 的 `spec` 视图创建（宿主据此拒绝跨窗越权）。
+pub fn label_matches_view(plugin_id: &str, spec: &ViewSpec, label: &str) -> bool {
+    let exact = window_label(plugin_id, &spec.id, None);
+    if label == exact {
+        return true;
+    }
+    // 只有声明了 unique_by 的视图才可能带实例后缀，且后缀必须非空：
+    // "todo-detailx" 不能匹配视图 "detail"。
+    spec.unique_by.is_some()
+        && label.len() > exact.len() + 1
+        && label.starts_with(&format!("{exact}-"))
+}
+
 /// 桌面层挂载结果（`WindowApi::attach_desktop` 的返回值）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -272,6 +392,16 @@ pub struct DesktopAttachResult {
     pub on_wallpaper: bool,
 }
 
+/// [`WindowApi::set_content_size`] 的结果：宿主夹取后**真正落到窗口上**的尺寸。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppliedSize {
+    pub width: f64,
+    pub height: f64,
+    /// 请求尺寸被 `max_height` 截断 → 内容装不下，视图应启用内部滚动
+    pub clamped: bool,
+}
+
 /// 窗口视图规格：宿主 WindowApi 依据它创建窗口（声明式，插件不接触 WebviewWindowBuilder）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewSpec {
@@ -283,10 +413,22 @@ pub struct ViewSpec {
     pub min_width: Option<f64>,
     #[serde(default)]
     pub min_height: Option<f64>,
+    /// `auto_height` 视图的硬上限：内容再长也只长到这里，之后由视图内部滚动。
+    /// 未声明时取 `POPUP_MAX_H_DEFAULT`，且始终不超过可用屏高。
+    #[serde(default)]
+    pub max_height: Option<f64>,
     #[serde(default = "default_true")]
     pub resizable: bool,
     #[serde(default = "default_true")]
     pub decorated: bool,
+    /// 窗口高度由内容决定（弹出式基窗）。
+    ///
+    /// 声明它等于把三件事交给宿主：建窗时强制 `resizable(false)`（用户拖框会和
+    /// `set_size` 打架）、首帧隐藏到内容量完为止（否则是"空白大窗闪一下才收缩"）、
+    /// 以及按 [`popup_rect_after_size`] 的边锚定来改尺寸。
+    /// 代价要讲明白：**用户不能再拖边框改大小**，长内容只能靠内部滚动。
+    #[serde(default)]
+    pub auto_height: bool,
     #[serde(default)]
     pub always_on_top: bool,
     #[serde(default)]
@@ -376,6 +518,22 @@ pub trait DbApi: Send + Sync {
 /// 窗口服务：插件打开 manifest 中声明的视图，参数透传为页面查询串
 pub trait WindowApi: Send + Sync {
     fn open(&self, view_id: &str, params: &[(String, String)]) -> Result<(), PluginError>;
+
+    /// 把**发起这次调用的那个窗口自己**改成内容尺寸。
+    ///
+    /// `None` 表示该轴保持不变（pomo 挂件只改宽度、弹出式基窗只改高度）。
+    /// 夹取（[`popup_policy`]）、按边锚定（[`popup_rect_after_size`]）、
+    /// 物理↔逻辑像素换算全在宿主侧，插件既看不到也改不了别的窗口——
+    /// `caller_label` 由 IPC 层从请求里取，不是插件自报的参数。
+    ///
+    /// 返回的是**实际生效**的尺寸：`clamped == true` 说明内容被上限截断了，
+    /// 视图该转而给自己开内部滚动，而不是继续上报更大的高度。
+    fn set_content_size(
+        &self,
+        caller_label: &str,
+        width: Option<f64>,
+        height: Option<f64>,
+    ) -> Result<AppliedSize, PluginError>;
 
     /// 把已打开的视图窗口挂到桌面壁纸层（桌面小挂件）。
     ///
@@ -924,5 +1082,169 @@ mod tests {
         assert_eq!(json, "\"bottom-right\"");
         let back: WindowPosition = serde_json::from_str("\"top-right\"").unwrap();
         assert_eq!(back, WindowPosition::TopRight);
+    }
+
+    /// 按 manifest 的真实形状造 ViewSpec：字段名一改，这里就红
+    fn view(json: &str) -> ViewSpec {
+        serde_json::from_str(json).expect("视图声明应能解析")
+    }
+
+    const POPUP: &str = r#"{"id":"detail","title":"详情","width":488,"height":420,
+        "min_width":420,"min_height":160,"max_height":720,
+        "resizable":false,"decorated":false,"auto_height":true}"#;
+
+    #[test]
+    fn minimal_view_keeps_old_defaults() {
+        // 老 manifest 一个字没改也必须保持原行为，否则是全局回归
+        let spec = view(r#"{"id":"a","title":"t","width":100,"height":100}"#);
+        assert!(!spec.auto_height, "auto_height 默认关");
+        assert!(spec.max_height.is_none(), "max_height 默认无");
+        assert!(spec.decorated && spec.resizable);
+        assert_eq!(popup_policy(&spec, MON_H).unwrap(), None);
+    }
+
+    #[test]
+    fn auto_height_policy_uses_declared_band_and_caps_to_screen() {
+        let p = popup_policy(&view(POPUP), MON_H).unwrap().expect("已声明");
+        assert_eq!((p.min_h, p.max_h), (160.0, 720.0));
+
+        // 未声明 max_height：取默认上限；小屏时以屏高为准，别长出屏幕
+        let small = view(
+            r#"{"id":"a","title":"t","width":100,"height":100,"auto_height":true}"#,
+        );
+        let p = popup_policy(&small, MON_H).unwrap().unwrap();
+        assert_eq!((p.min_h, p.max_h), (POPUP_MIN_H_FLOOR, POPUP_MAX_H_DEFAULT));
+        let p = popup_policy(&small, 500.0).unwrap().unwrap();
+        assert_eq!(p.max_h, 500.0 - 2.0 * CORNER_MARGIN);
+        assert_eq!(p.min_h, POPUP_MIN_H_FLOOR);
+    }
+
+    #[test]
+    fn inverted_min_max_band_collapses_to_max() {
+        // min > max 的静默失效是"set_size 被 min 夹住、插件看着在缩而窗口不动"，
+        // 所以宁可收敛到上限，也绝不产出反向区间
+        let spec = view(
+            r#"{"id":"a","title":"t","width":100,"height":100,"auto_height":true,
+                "min_height":900,"max_height":300}"#,
+        );
+        let p = popup_policy(&spec, MON_H).unwrap().unwrap();
+        assert!(p.min_h <= p.max_h, "反向区间：{p:?}");
+        assert_eq!(p.max_h, 300.0);
+        assert_eq!(p.min_h, 300.0);
+    }
+
+    #[test]
+    fn auto_height_rejects_fullscreen() {
+        let spec = view(
+            r#"{"id":"a","title":"t","width":100,"height":100,"auto_height":true,
+                "position":{"fullscreen":"primary"}}"#,
+        );
+        assert!(popup_policy(&spec, MON_H).is_err(), "遮罩层不该走内容高度");
+    }
+
+    #[test]
+    fn center_and_top_right_pin_top_edge() {
+        let p = PopupPolicy { min_h: 96.0, max_h: 720.0 };
+        for pos in [WindowPosition::Center, WindowPosition::TopRight] {
+            let (_, y, _, h) =
+                popup_rect_after_size(pos, MON_W, MON_H, (400.0, 200.0, 488.0, 300.0), (488.0, 460.0), p);
+            assert_eq!(y, 200.0, "{pos:?} 长高时顶边（= 拖拽区）不能跑");
+            assert_eq!(h, 460.0);
+        }
+    }
+
+    #[test]
+    fn bottom_right_pins_bottom_edge() {
+        let p = PopupPolicy { min_h: 96.0, max_h: 720.0 };
+        let (x, y, w, h) = popup_rect_after_size(
+            WindowPosition::BottomRight,
+            MON_W,
+            MON_H,
+            (1544.0, 842.0, 360.0, 182.0),
+            (360.0, 300.0),
+            p,
+        );
+        assert_eq!(y + h, 842.0 + 182.0, "右下角卡片应向上生长，底边不动");
+        assert_eq!(x + w, 1544.0 + 360.0, "右边缘也不动");
+    }
+
+    #[test]
+    fn top_right_width_growth_pins_right_edge() {
+        // pomo 挂件悬停加宽：右边缘距屏边只有 CORNER_MARGIN，向左生长才不出屏
+        let p = PopupPolicy { min_h: 88.0, max_h: 88.0 };
+        let (x, _, w, h) = popup_rect_after_size(
+            WindowPosition::TopRight,
+            MON_W,
+            MON_H,
+            (1658.0, 16.0, 246.0, 88.0),
+            (340.0, 88.0),
+            p,
+        );
+        assert_eq!(x + w, 1658.0 + 246.0);
+        assert_eq!(h, 88.0, "只改宽度时高度原样保留");
+    }
+
+    #[test]
+    fn rect_stays_on_screen_when_growing_downward() {
+        let p = PopupPolicy { min_h: 96.0, max_h: 720.0 };
+        // 顶边钉住一路长到贴底：越界时整块回收到边距内，而不是留半个窗口在外
+        let (_, y, _, h) = popup_rect_after_size(
+            WindowPosition::Center,
+            MON_W,
+            MON_H,
+            (700.0, 900.0, 488.0, 100.0),
+            (488.0, 300.0),
+            p,
+        );
+        assert!(y >= 0.0 && y + h <= MON_H, "窗口长出屏幕：y={y} h={h}");
+    }
+
+    #[test]
+    fn non_finite_input_is_a_noop() {
+        let p = PopupPolicy { min_h: 96.0, max_h: 720.0 };
+        let cur = (400.0, 200.0, 488.0, 300.0);
+        // NaN 进 set_size 会留下畸形矩形，必须在算之前就挡掉
+        assert_eq!(
+            popup_rect_after_size(WindowPosition::Center, MON_W, MON_H, cur, (f64::NAN, 400.0), p),
+            cur
+        );
+        assert_eq!(
+            popup_rect_after_size(WindowPosition::Center, MON_W, MON_H, cur, (488.0, f64::INFINITY), p),
+            cur
+        );
+    }
+
+    #[test]
+    fn height_is_clamped_to_policy() {
+        let p = PopupPolicy { min_h: 160.0, max_h: 720.0 };
+        let (_, _, _, h) = popup_rect_after_size(
+            WindowPosition::Center,
+            MON_W,
+            MON_H,
+            (400.0, 200.0, 488.0, 300.0),
+            (488.0, 5000.0),
+            p,
+        );
+        assert_eq!(h, 720.0, "内容再长也停在 max_height，之后交给内部滚动");
+    }
+
+    #[test]
+    fn window_label_roundtrips_with_label_matches_view() {
+        let spec = view(
+            r#"{"id":"detail","title":"t","width":100,"height":100,"unique_by":"event"}"#,
+        );
+        let plain = window_label("todo", "detail", None);
+        assert_eq!(plain, "todo-detail");
+        assert_eq!(window_label("todo", "detail", Some("abc123")), "todo-detail-abc123");
+        assert!(label_matches_view("todo", &spec, &plain));
+        assert!(label_matches_view("todo", &spec, &window_label("todo", "detail", Some("abc123"))));
+        // 前缀相邻但不同视图的标签必须被拒——这是"改到别人窗口"的唯一入口
+        assert!(!label_matches_view("todo", &spec, "todo-detailx"));
+        assert!(!label_matches_view("todo", &spec, "todo-detail-"), "空实例后缀不算");
+        assert!(!label_matches_view("notes", &spec, "todo-detail"));
+        // 没声明 unique_by 的视图不接受任何带后缀的标签
+        let single = view(r#"{"id":"panel","title":"t","width":100,"height":100}"#);
+        assert!(label_matches_view("pick", &single, "pick-panel"));
+        assert!(!label_matches_view("pick", &single, "pick-panel-1"));
     }
 }

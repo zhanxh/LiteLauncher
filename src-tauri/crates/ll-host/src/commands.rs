@@ -14,9 +14,13 @@ use std::sync::Arc;
 /// `svc.*` 是**宿主保留方法名空间**（设计文档 §4.6）：由宿主统一分发器直接应答，
 /// 不进入插件后端分发表。由此"纯前端插件（无 crate / 无 sidecar）"与"带后端插件"
 /// 看到的能力完全一致，插件形态与能力集合彻底解耦。
+///
+/// `window` 是 Tauri 填的**发起这次 IPC 的窗口**，插件侧传不进来也改不了：
+/// 只有靠它才能把"改窗口尺寸"限定成"只能改自己那个窗口"。
 #[tauri::command]
 pub async fn plugin_call(
     state: tauri::State<'_, HostState>,
+    window: tauri::WebviewWindow,
     plugin_id: String,
     method: String,
     params: Value,
@@ -35,7 +39,8 @@ pub async fn plugin_call(
             }
         }
         let ctx = state.svc_context(&plugin_id)?;
-        return crate::services::dispatch_svc(&ctx, &method, &params).map_err(|e| e.to_string());
+        return crate::services::dispatch_svc(&ctx, &method, &params, Some(window.label()))
+            .map_err(|e| e.to_string());
     }
 
     let backend = {

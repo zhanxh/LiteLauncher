@@ -261,7 +261,9 @@ fn reader_loop(proc: Arc<LlpProc>, stdout: ChildStdout, ctx: PluginContext, plug
         if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
             let req_id = msg.get("id").cloned().unwrap_or(JsonValue::Null);
             let params = msg.get("params").cloned().unwrap_or(json!({}));
-            let response = match crate::services::dispatch_svc(&ctx, method, &params) {
+            // sidecar 走 stdin 进来，没有"发起调用的窗口"这一说 → caller=None，
+            // 依赖窗口身份的 svc 方法（setContentSize）会在宿主侧被明确拒绝
+            let response = match crate::services::dispatch_svc(&ctx, method, &params, None) {
                 Ok(v) => json!({"jsonrpc": "2.0", "id": req_id, "result": v}),
                 Err(e) => json!({"jsonrpc": "2.0", "id": req_id, "error": {"message": e.to_string()}}),
             };
@@ -336,7 +338,9 @@ impl PluginBackend for SvcBackend {
         if !method.starts_with("svc.") {
             return Err(PluginError::unknown_method(method));
         }
-        crate::services::dispatch_svc(&self.ctx, method, &params)
+        // 纯前端插件的后端只是转发器：调用者是插件自己的 Rust/测试代码而非某个窗口，
+        // 所以没有窗口身份可传（caller=None）
+        crate::services::dispatch_svc(&self.ctx, method, &params, None)
     }
 }
 

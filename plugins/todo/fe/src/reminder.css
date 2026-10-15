@@ -39,6 +39,17 @@ body.reminder-mode {
   }
 }
 
+/* 基窗模式（manifest 的 auto_height）下窗口就是这张卡片本身：
+   - 高度必须交回内容，`height: 100vh` 会让上报值恒等于当前窗高，窗口永远缩不回去
+   - 自带的圆角/边框/阴影会跟系统圆角与基窗底色叠出两层边，底色也已由基窗给出 */
+body.ll-popup-mode .reminder-card {
+  height: auto;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 .rm-head {
   display: flex;
   align-items: center;

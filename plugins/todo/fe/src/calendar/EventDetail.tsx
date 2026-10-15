@@ -1,6 +1,9 @@
 /**
  * 日程详情（提醒卡片「查看详情」打开的独立窗口）
  *
+ * 外壳是宿主的弹出式基窗（manifest 里 `auto_height: true` + PopupFrame）：
+ * 无边框、标题行拖拽、高度跟着内容走。
+ *
  * 做成只读而不是"禁用的表单"：一整套灰掉的输入框看起来像坏了，
  * 而详情要回答的只是"这是哪条日程、几点、哪个日历"。
  * 「编辑」就地换成 EventModal，不另开窗口——重复日程没有单次例外
@@ -8,6 +11,7 @@
  */
 import { Component, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { getPluginContext, isHostAvailable } from '@ll/sdk';
+import { PopupFrame } from '@ll/ui';
 import { alarmLabel, asSpan, formatSpan, repeatLabel } from '../remindfmt';
 import { CalendarMeta, UNCLASSIFIED, colorOf, nameOf } from './calendars';
 import { EventModal } from './EventModal';
@@ -78,7 +82,6 @@ export const EventDetail: Component<Props> = (props) => {
   };
 
   onMount(() => {
-    document.body.classList.add('detail-mode');
     void load();
     void (async () => {
       try {
@@ -97,7 +100,6 @@ export const EventDetail: Component<Props> = (props) => {
     window.addEventListener('keydown', onKey);
     onCleanup(() => {
       window.removeEventListener('keydown', onKey);
-      document.body.classList.remove('detail-mode');
     });
   });
 
@@ -120,95 +122,95 @@ export const EventDetail: Component<Props> = (props) => {
   const row = () => event();
 
   return (
-    <div class="cal-modal-mask cal-detail-root">
+    <PopupFrame
+      pluginId="todo"
+      title={editing() ? '编辑日程' : '日程详情'}
+      actions={
+        <Show when={row() && !editing()}>
+          <button
+            type="button"
+            class="btn ghost"
+            onClick={() => {
+              setNotice('');
+              setEditing(true);
+            }}
+          >
+            编辑
+          </button>
+        </Show>
+      }
+      // 无边框窗没有系统关闭按钮，× 就是唯一的出口；编辑态先回到只读，别把改动扔掉
+      onClose={() => {
+        if (editing()) {
+          setEditing(false);
+          void load();
+          return;
+        }
+        void closeWindow();
+      }}
+    >
       <Show when={!editing()}>
-        <div class="cal-modal">
-          <div class="cal-modal-head">
-            <span class="cal-modal-title">日程详情</span>
-            <span class="cal-foot-space" />
-            <Show when={row()}>
-              <button
-                type="button"
-                class="btn ghost"
-                onClick={() => {
-                  setNotice('');
-                  setEditing(true);
-                }}
-              >
-                编辑
-              </button>
-            </Show>
-            <button
-              type="button"
-              class="cal-btn cal-btn--icon"
-              title="关闭"
-              onClick={() => void closeWindow()}
-            >
-              ✕
-            </button>
-          </div>
+        <div class="cal-modal-body">
+          <Show when={row()}>
+            {(ev) => (
+              <>
+                <div class="cal-detail-title">{str(ev().content)}</div>
+                <div class="cal-field">
+                  <span class="cal-field-label">时间</span>
+                  <span class="cal-detail-value">{span(ev())}</span>
+                </div>
+                <div class="cal-field">
+                  <span class="cal-field-label">日历</span>
+                  <span class="cal-dot" style={{ background: colorOf(calendars(), str(ev().calendar_id) || UNCLASSIFIED) }} />
+                  <span class="cal-detail-value">
+                    {nameOf(calendars(), str(ev().calendar_id) || UNCLASSIFIED)}
+                  </span>
+                </div>
+                <Show when={str(ev().location)}>
+                  <div class="cal-field">
+                    <span class="cal-field-label">地点</span>
+                    <span class="cal-detail-value">{str(ev().location)}</span>
+                  </div>
+                </Show>
+                <Show when={str(ev().description)}>
+                  <div class="cal-field cal-field--top">
+                    <span class="cal-field-label">备注</span>
+                    <span class="cal-detail-value cal-detail-desc">{str(ev().description)}</span>
+                  </div>
+                </Show>
+                <div class="cal-field">
+                  <span class="cal-field-label">重复</span>
+                  <span class="cal-detail-value">{repeatLabel(str(ev().repeat_rule))}</span>
+                </div>
+                <div class="cal-field">
+                  <span class="cal-field-label">提醒</span>
+                  <span class="cal-detail-value">
+                    {alarmLabel(
+                      Array.isArray(ev().alarms) ? (ev().alarms as number[]) : [],
+                    )}
+                  </span>
+                </div>
+                <div class="cal-field">
+                  <span class="cal-field-label">忙闲</span>
+                  <span class="cal-detail-value">{ev().status === 'free' ? '空闲' : '忙碌'}</span>
+                </div>
+              </>
+            )}
+          </Show>
 
-          <div class="cal-modal-body">
-            <Show when={row()}>
-              {(ev) => (
-                <>
-                  <div class="cal-detail-title">{str(ev().content)}</div>
-                  <div class="cal-field">
-                    <span class="cal-field-label">时间</span>
-                    <span class="cal-detail-value">{span(ev())}</span>
-                  </div>
-                  <div class="cal-field">
-                    <span class="cal-field-label">日历</span>
-                    <span class="cal-dot" style={{ background: colorOf(calendars(), str(ev().calendar_id) || UNCLASSIFIED) }} />
-                    <span class="cal-detail-value">
-                      {nameOf(calendars(), str(ev().calendar_id) || UNCLASSIFIED)}
-                    </span>
-                  </div>
-                  <Show when={str(ev().location)}>
-                    <div class="cal-field">
-                      <span class="cal-field-label">地点</span>
-                      <span class="cal-detail-value">{str(ev().location)}</span>
-                    </div>
-                  </Show>
-                  <Show when={str(ev().description)}>
-                    <div class="cal-field cal-field--top">
-                      <span class="cal-field-label">备注</span>
-                      <span class="cal-detail-value cal-detail-desc">{str(ev().description)}</span>
-                    </div>
-                  </Show>
-                  <div class="cal-field">
-                    <span class="cal-field-label">重复</span>
-                    <span class="cal-detail-value">{repeatLabel(str(ev().repeat_rule))}</span>
-                  </div>
-                  <div class="cal-field">
-                    <span class="cal-field-label">提醒</span>
-                    <span class="cal-detail-value">
-                      {alarmLabel(
-                        Array.isArray(ev().alarms) ? (ev().alarms as number[]) : [],
-                      )}
-                    </span>
-                  </div>
-                  <div class="cal-field">
-                    <span class="cal-field-label">忙闲</span>
-                    <span class="cal-detail-value">{ev().status === 'free' ? '空闲' : '忙碌'}</span>
-                  </div>
-                </>
-              )}
-            </Show>
-
-            <Show when={notice() && !row()}>
-              <div class="cal-hint">{notice()}</div>
-            </Show>
-            {/* 从编辑态回来一律重取：日程被删了必然取不到，那句"未找到"不该盖掉"已删除日程" */}
-            <Show when={error() && !notice()}>
-              <div class="cal-error">{error()}</div>
-            </Show>
-          </div>
+          <Show when={notice() && !row()}>
+            <div class="cal-hint">{notice()}</div>
+          </Show>
+          {/* 从编辑态回来一律重取：日程被删了必然取不到，那句"未找到"不该盖掉"已删除日程" */}
+          <Show when={error() && !notice()}>
+            <div class="cal-error">{error()}</div>
+          </Show>
         </div>
       </Show>
 
       <Show when={editing()}>
         <EventModal
+          variant="inline"
           seed={{
             eventId: props.seed.eventId,
             // 实例区间覆盖过锚点 + 有重复规则 = 改的确实是整条规则，编辑面板要讲明白
@@ -223,6 +225,6 @@ export const EventDetail: Component<Props> = (props) => {
           onChanged={emitChanged}
         />
       </Show>
-    </div>
+    </PopupFrame>
   );
 };

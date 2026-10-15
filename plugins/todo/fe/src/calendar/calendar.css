@@ -551,22 +551,16 @@ body.calendar-mode {
   cursor: default;
 }
 
-/* ── 只读详情（提醒卡片「查看详情」的独立窗口）─────────── */
-body.detail-mode {
-  margin: 0;
-  height: 100vh;
-  overflow: hidden;
-  background: var(--bg-solid);
-  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-}
-
-/* 详情是整窗而不是页面里的浮层，那层 45% 黑只会让窗口边缘发灰。
-   进到编辑态时 EventModal 自带的遮罩仍然生效——那时它确实是浮层。
-   这里也得自己声明 color：日历窗口里那层 .cal-app 声明了它，本窗口没有这层祖先，
-   没显式配色的标题会继承到 html 上那个不随主题变的浅色。 */
-.cal-detail-root {
+/* ── 只读详情（提醒卡片「查看详情」打开的基窗）───────────
+   外壳、底色、字体、滚动条都在 @ll/ui 的 popup.css 里（auto_height 视图），
+   这里只把浮层那套「卡片自带边框与高度上限」的写法摘掉。 */
+.cal-modal--inline {
+  width: 100%;
+  max-height: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
   background: transparent;
-  color: var(--text-main);
 }
 
 .cal-detail-title {

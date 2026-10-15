@@ -1,0 +1,146 @@
+/* ==========================================================================
+   弹出式基窗样式（@ll/ui）
+   --------------------------------------------------------------------------
+   只服务 manifest 里声明了 `auto_height: true` 的视图；由 mountPopup 在
+   document.body 上打 `.ll-popup-mode` 才生效。一个 bundle 全窗口共享，
+   所以**每条选择器都必须挂在 body.ll-popup-mode 之下**，否则会撞进
+   启动器主窗（calendar.css:33-35 记过一次真实撞名）。
+
+   ## 形态：实心 + 系统圆角
+   不做 CSS 透明圆角。Windows 上 WebView2 的透明窗口会露白底（pomo 的
+   widget.css:7-13 记了踩坑史），Linux 上合成器又未必给圆角。于是窗口底色
+   直接就是卡片色，圆角与投影交给系统（宿主已用 DWM 去掉 1px 白边）。
+
+   ## 底色必须带 !important
+   index.html:10-21 给 `html,body,#root` 写死了 `background-color:#1a1d24
+   !important` 和 `overflow:hidden !important`。不带 !important 的声明在这里
+   等于没写；`body.ll-popup-mode`(0,1,1) 的 specificity 高于裸 `body`(0,0,1)，
+   两边都 !important 时由前者胜出。
+
+   ## 谁来滚动
+   内容超过 `max_height` 时宿主把窗口夹在上限，此时由 body 承接滚动，
+   `.ll-popup-root` 仍按内容自然高度铺开 —— mountPopup 量的正是自然高度，
+   若量窗口高度就会形成"窗口矮→报矮→窗口更矮"的自激振荡。
+   ========================================================================== */
+
+body.ll-popup-mode {
+  height: 100vh !important;
+  overflow: auto !important;
+  background-color: var(--surface-raised) !important;
+  color: var(--text-main) !important;
+  font-family: var(--font-family);
+  scrollbar-width: thin !important;
+}
+
+/* 让 #root 回到内容高度：index.html 钉死的 100vh 会把测量目标撑满整窗，
+   于是窗口永远缩不回去。
+   底色/字色也必须在这里重写：index.html 的 `html, body, #root { color:#f3f4f6
+   !important }` 是 ID 权重 (1,0,0)，比 `body.ll-popup-mode`(0,1,1) 高，只写在
+   body 上会被 #root 挡回去 —— 症状是"没自己声明 color 的元素（标题）浅到看不见"，
+   而窗口多出来的部分是一片 index.html 的白。 */
+body.ll-popup-mode > #root {
+  height: auto !important;
+  background-color: var(--surface-raised) !important;
+  color: var(--text-main) !important;
+}
+
+/* 可见滚动条：全局把滚动条藏了（启动器列表不需要），但弹窗里藏起来等于
+   告诉用户"下面没有内容了" */
+body.ll-popup-mode * {
+  scrollbar-width: thin !important;
+}
+
+body.ll-popup-mode *::-webkit-scrollbar {
+  display: block !important;
+  width: 8px !important;
+  height: 8px !important;
+}
+
+body.ll-popup-mode *::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+body.ll-popup-mode *::-webkit-scrollbar-thumb {
+  display: block !important;
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+/* ── 骨架 ────────────────────────────────────────────── */
+body.ll-popup-mode .ll-popup-root {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+body.ll-popup-mode .ll-popup-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  /* 滚动的是 body（内容超过 max_height 时窗口被宿主夹住，`.ll-popup-root` 仍按
+     自然高度铺开，否则 mountPopup 量的就是窗口高，会自激振荡）。于是标题行也会跟着
+     滚走 —— 钉住它：滚到任何一行都知道自己在看哪条日程，拖拽区也始终在手边。 */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-raised);
+  /* 整行都是拖拽区（data-tauri-drag-region="deep"），文字不该被选走 */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+/* 与 .cal-modal-title 同规格：弹窗标题在壳层和插件浮层里应当看不出换了个实现 */
+body.ll-popup-mode .ll-popup-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.ll-popup-mode .ll-popup-space {
+  flex: 1 1 auto;
+}
+
+body.ll-popup-mode .ll-popup-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+body.ll-popup-mode .ll-popup-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-item);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+body.ll-popup-mode .ll-popup-x:hover {
+  background: var(--hover-overlay);
+  color: var(--text-main);
+}
+
+/* 内容区的留白**不在壳里**：详情/编辑这类内容有 body + foot 两个分区，
+   壳再垫一层 padding 会让 foot 的分隔线两头内缩。插件自己的 CSS 负责。 */
+body.ll-popup-mode .ll-popup-body {
+  display: flex;
+  flex-direction: column;
+}

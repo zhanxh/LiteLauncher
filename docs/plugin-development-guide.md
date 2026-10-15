@@ -80,8 +80,10 @@ npm run build && ./build.sh            # 全量构建
       "id": "manager",                 // 窗口标签 = "<id>-manager"；URL = index.html?view=manager&<params>
       "title": "书签管理",
       "width": 580.0, "height": 680.0,
-      "min_width": 480.0, "min_height": 520.0,   // 可省
+      "min_width": 480.0, "min_height": 520.0,   // 可省，但**必须成对**：宿主只在两者同时声明时才下发下限
       "resizable": true, "decorated": true,
+      "max_height": 720.0,              // 可省，仅 auto_height 用：内容增长的硬上限
+      "auto_height": false,             // true: 高度由内容决定（弹出式基窗，见 §5.6），强制 resizable:false
       "always_on_top": false, "skip_taskbar": false,
       "focusable": true,
       "position": "center",            // center | bottom-right | top-right（贴边角落自动定位，适合挂件/弹窗类）
@@ -441,6 +443,94 @@ export function setup(): void {
 }
 ```
 
+### 5.6 弹出式基窗（`auto_height` + `PopupFrame`）
+
+「放一张卡片在桌面上」是插件最常要的形状：详情窗、提醒卡、小工具面板。
+自己拼这套形状，每个插件都要重复写三件最容易错的事：无边框后怎么拖、
+高度怎么跟着内容、内容超长怎么滚。宿主把它收成了基窗能力，插件只剩两步。
+
+**第一步：manifest 声明**
+
+```jsonc
+{
+  "id": "detail",
+  "width": 440.0, "height": 420.0,     // height 只是首帧尺寸，量到内容后立刻被替换
+  "min_width": 440.0, "min_height": 160.0,   // 成对声明，宿主才下发下限
+  "max_height": 720.0,                 // 内容再长也到此为止，多出来的走内部滚动
+  "auto_height": true,
+  "resizable": false,                  // 声明"不让用户拖框"；Linux 上宿主会替 auto_height 窗口翻成 true（见下面第 4 条）
+  "decorated": false,                  // 基窗的前提：没有系统标题栏就没有"外壳"
+  "position": "center",                // center / bottom-right / top-right 都支持
+  "unique_by": "event", "on_existing": "focus"
+}
+```
+
+**第二步：前端把 widget 放进 `PopupFrame`**
+
+```tsx
+import { PopupFrame } from '@ll/ui';
+
+<PopupFrame
+  pluginId="myplug"
+  title="日程详情"
+  actions={<button onClick={() => setEditing(true)}>编辑</button>}
+  onClose={() => void getCurrentWindow().destroy()}
+>
+  <MyWidget />
+</PopupFrame>
+```
+
+`PopupFrame` 做三件事：给 `<body>` 打 `ll-popup-mode`（`@ll/ui` 的 popup.css 全靠它作用域）、
+把头部标成 `data-tauri-drag-region="deep"`、用 `ResizeObserver` 把内容自然高度报给宿主
+（`ctx.windows.setContentSize`）。不需要壳给的头（比如悬停才展开的挂件）直接调
+`mountPopup({ pluginId, content, drag })` 自己排骨架即可。
+
+**宿主的硬保证（插件不必也无法绕过）**
+
+- 高度只在 `[min_height, max_height]` 里动，越界一律夹取，返回值 `clamped` 告诉你被夹了；
+- 改高度时**钉住当前矩形的那条边**：center / top-* 钉顶边（往下长，标题行不跳），
+  bottom-* 钉底边（往上长），角落窗改宽时钉右边缘。算法在 `ll-plugin-api` 的
+  `popup_rect_after_size`，物理↔逻辑像素换算全在宿主，插件不碰 `scaleFactor()`；
+- 逐帧改尺寸（悬停伸缩）**不会让钉住的边漂移**：`set_size`/`set_position` 到 WM 生效有延迟，
+  下一帧若拿"读回来的矩形"当基准就会逐帧累积误差（真机量到过 ±12px）。宿主因此记住
+  自己上一次请求过的矩形，在途期间以它为准，尺寸一落地就立刻回到实时读数（用户拖走的窗口不会被拽回）；
+- `svc.window.setContentSize` **只能由视图窗口自身调用**（调用方标签由 Tauri 注入，
+  插件伪造不了），且只有本插件视图声明过的标签才被接受；
+- 建窗时先隐藏，量到第一帧高度才露脸（消掉"空白大窗闪一下"），并有 1.2s 兜底 show
+  —— 前端崩了也不能留下一个"点了没反应"的隐形窗；
+- `stacked` 的堆叠偏移累加**已存在窗口的实际内容高度**（由宿主自己记账），不是声明高度：
+  auto_height 窗口建出来是隐藏的，GTK 对未映射窗口问 `outer_size()` 返回 0，
+  照它算每张卡只偏移那条 8px 间隙，第二张直接压在第一张上面。
+
+**两条平台/样式例外，踩过才知道**
+
+- **Linux/GTK 会直接忽略 `resizable(false)` 窗口的应用侧 `set_size`**，而 Tauri 照样返回
+  `Ok(())`。于是 auto_height 在 Linux 必须保持"可 resize"这个属性，症状才是"前端在报高度、
+  窗口永远停在声明值，卡片下面一条没画过的空白"。用户真拖了边框，由 `mountPopup` 的
+  `resize` 监听把窗口拉回内容高度 —— 代价从"缩不动"换成"拖完弹回"，后者可接受。
+- **`index.html` 的 `html, body, #root { color / background-color !important }` 是 ID 权重
+  (1,0,0)**，比 `body.ll-popup-mode`(0,1,1) 高：底色与字色必须重写在 `body.ll-popup-mode > #root`
+  上，只写 body 会被 `#root` 挡回去。真机症状是"没自己声明 color 的标题浅到看不见"，
+  而窗口多出来的部分是一片 `index.html` 的白。
+
+**代价，必须讲明白**
+
+1. 自适应高度 = 放弃用户拖边框改大小。长内容走内部滚动 + 可见滚动条
+   （popup.css 已把 `index.html` 全局藏滚动条的 `!important` 覆盖回来）。
+   「用户拖过就暂停跟随内容」是更完整的解，但要做 resize 回环与恢复入口，目前不提供。
+2. 形态是**实心窗口 + 系统圆角**，不是 CSS 透明圆角。pomo 在 Windows 上验过：
+   赌 WebView2 透明会露一圈白底。所以底色取 `--surface-raised`，圆角交给 DWM / 合成器。
+3. 新视图漏登记 `capabilities/default.json` 的 `<id>-*` ⇒ **死窗**：窗口建得出来、
+   所有 invoke 被权限层拒掉，症状是"点了没反应"。`npm run plugin:test:fe` 里
+   「弹出式基窗」那一组会按声明的标签（含 `unique_by` 后缀形式）逐条比对白名单。
+4. Wayland：`set_position` 归 compositor，角落锚定可能静默失效（缩放仍应工作）。
+   与 `attachDesktop` 一样按"如实降级"看待，不要当成 bug。
+5. 测量目标是内容的**自然高度**，不是窗口高度——否则"窗口矮 → 量出来矮 → 窗口更矮"
+   会自激。因此内容根节点不能带 `height: 100vh`（`min-height: 100vh` 同样禁止）。
+   滚动因此发生在 `<body>` 这一层，`PopupFrame` 的标题行是 `position: sticky`：
+   滚到任何一行都还看得见"这是哪条日程"，拖拽区也始终在手边。
+
+
 ---
 
 ## 6. 约束与规则（为什么这样设计）
@@ -448,12 +538,12 @@ export function setup(): void {
 | 规则 | 理由 |
 |---|---|
 | be 只依赖 `ll-plugin-api`，禁 ll-host/tauri/彼此 | 独立编译、可整体替换为二期外部进程插件；依赖方向唯一 |
-| fe 只依赖 `@ll/sdk` + solid-js | 壳层演进不破坏插件；SDK 是唯一契约面 |
+| fe 只依赖 `@ll/sdk` / `@ll/ui` + solid-js | 壳层演进不破坏插件；SDK 是唯一行为契约面，`@ll/ui` 只出令牌与基窗骨架（依赖方向恒为 ui→sdk，不让 sdk 反向依赖组件） |
 | 插件 id = 目录名 = db 文件名 = 设置前缀 = 窗口标签前缀 | 命名空间严格一致，杜绝配置漂移（apps 插件曾因 `app`/`apps` 不一致踩坑） |
 | 拿不到 `AppHandle`/裸连接/文件路径 | 权限门控在句柄构造时完成；ATTACH、任意路径、他插件数据在宿主侧被拒 |
 | SQL 只能 DML，DDL 走 `migrate` | 语句白名单 + 可审计的 schema 变更 |
 | 前端注册用生成文件 `plugins.generated.ts` | 壳层对插件零感知，插件可独立增删 |
-| 窗口标签 `<id>-<view>[-<hash>]`，capabilities 需加 `<id>-*` | webview 权限按窗口标签匹配，漏加 = 插件窗口里 invoke 全被拒 |
+| 窗口标签 `<id>-<view>[-<unique值>]`，capabilities 需加 `<id>-*` | webview 权限按窗口标签匹配，漏加 = 插件窗口里 invoke 全被拒。**新增视图（尤其是基窗类弹窗）时最容易犯**：症状是"点了没反应"，`npm run plugin:test:fe` 的「弹出式基窗」一组按声明标签逐条比对白名单 |
 | 密钥/敏感值不进 env、不落插件库 | 走 SecretStore（三期），设置中心提供核心托管的录入页 |
 
 ---
@@ -461,18 +551,26 @@ export function setup(): void {
 ## 7. 测试、调试与门禁
 
 - **单测**：纯函数放 be crate 里（`cargo test -p ll-plugin-todo`）；前端契约测试可用 fake ctx（浏览器模式自带回退数据，`npx tsc --noEmit` 全量类型检查）。
+- **宿主几何单测**：`cargo test -p ll-plugin-api`——弹窗的夹取区间、四角锚定、标签匹配（`window_label` ↔ `label_matches_view`）都在这层，**只有真机才看得出错的那类计算就在这里被断言掉**（物理/逻辑像素换算由宿主独享，插件侧无从复现）。
 - **插件级测试（改完插件必跑）**：
   ```bash
   npm run plugin:test      # LLP（Python）插件：走一遍 initialize/search/execute 协议
   npm run plugin:test:fe   # 纯前端插件：Node 内直跑逻辑，断言真实计算结果
   ```
+  其中「弹出式基窗」一组守的是跨文件的三类事故：manifest 的 `auto_height` 声明是否自洽
+  （必须 `decorated:false` + `resizable:false`，min 宽高必须成对，`height ≤ max_height`）、
+  声明出的窗口标签能否被 `capabilities/default.json` 的 glob 匹配（漏登记 = 死窗）、
+  `popup.css` 的选择器是否全部收在 `body.ll-popup-mode` 作用域内，以及 `mountPopup` 的
+  取样/死区/拖拽挂起行为（用假 DOM 跑，不依赖浏览器）。
 - **独立编译验证**：`cargo build -p ll-plugin-<id>` 必须通过——这保证插件没偷依赖宿主。
 - **运行时排查**：`release/lifecycle.log`（`[plugin:<id>]` 前缀 = 插件日志；`init FAILED` = init 抛错）；窗口内 F12 打开 DevTools（devtools feature 已启用）。
 - **依赖门禁**（手工 grep，后续进 CI）：
   ```bash
   grep -E 'll-host|tauri|ll-plugin-(todo|apps|notes)' plugins/*/be/Cargo.toml   # 期望无输出
-  grep -rn "from '[^@]'" plugins/*/fe/src --include='*.ts*' | grep -v relative   # fe 只许 @ll/sdk + solid
+  grep -rn "from '[^@]'" plugins/*/fe/src --include='*.ts*' | grep -v relative   # fe 只许 @ll/sdk + @ll/ui + solid
   ```
+  相对路径（`./foo`）合法，`@ll/*` 与 `solid-js` 之外的一律视为越界。`@ll/ui` 只提供 token 化的样式与 `PopupFrame`
+  这类无状态组件，不掺插件逻辑——依赖方向恒为 ui→sdk，反过来会让 sdk 拖进 solid。
 
 ---
 
@@ -684,6 +782,7 @@ export function setup(): void {
 | `ctx.screen.list/cursor/pixel/capture` | `svc.screen.list` / `cursor` / `pixel` / `capture` | `screen` |
 | `ctx.shortcuts.register/unregister/list/on` | `svc.shortcut.register` / `unregister` / `list` | `shortcut:<accel>`（逐条、无通配） |
 | `ctx.windows.open(view, params?)` | `svc.window.open` | `windows` |
+| `ctx.windows.setContentSize({width?, height?})` | `svc.window.setContentSize` | `windows`（且只能改自己所在视图，改高需该视图 `auto_height`） |
 | `ctx.call('svc.db.migrate' / 'svc.db.execute' / 'svc.db.query')` | 同左 | `db` |
 | `ctx.call('svc.process.launch', { target })` | 同左 | `process` |
 

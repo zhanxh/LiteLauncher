@@ -4,12 +4,13 @@
 //! 窗口创建、SQL 白名单、设置前缀隔离等约束全部在此强制。
 
 use ll_plugin_api::{
-    CaptureRequest, CaptureResult, CapturedRegion, ClipEntry, ClipboardApi, ClipboardHistoryApi,
-    ClipboardHistoryApiExt, ClipboardPolicy, DbApi, DesktopAttachResult, EventApi, ExistingPolicy,
-    HttpApi, HttpRequest, LogApi, MonitorInfo, MonitorSelector, NotifyApi, PixelGrid, PixelSample,
-    PluginContext, PluginError, PluginErrorCode, PluginManifest, ProcessApi, Region, SavedImage,
-    ScreenApi, SecretApi, SettingsApi, ShortcutApi, ViewSpec, WindowApi, WindowPosition,
-    corner_origin, is_corner_position,
+    AppliedSize, CaptureRequest, CaptureResult, CapturedRegion, ClipEntry, ClipboardApi,
+    ClipboardHistoryApi, ClipboardHistoryApiExt, ClipboardPolicy, DbApi, DesktopAttachResult,
+    EventApi, ExistingPolicy, HttpApi, HttpRequest, LogApi, MonitorInfo, MonitorSelector, NotifyApi,
+    PixelGrid, PixelSample, PluginContext, PluginError, PluginErrorCode, PluginManifest,
+    PopupPolicy, ProcessApi, Region, SavedImage, ScreenApi, SecretApi, SettingsApi, ShortcutApi,
+    ViewSpec, WindowApi, WindowPosition, corner_origin, is_corner_position, label_matches_view,
+    popup_policy, popup_rect_after_size, window_label,
 };
 use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
@@ -17,8 +18,8 @@ use base64::Engine as _;
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
-use tauri::{AppHandle, LogicalPosition, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
@@ -223,6 +224,20 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
+/// `auto_height` 窗口最多藏多久：超过就强制露脸，宁可给一个未量过的尺寸
+/// 也不要一个查不到原因的隐形窗口。要盖过"视图首帧 + 拉一次数据"的时间。
+const POPUP_REVEAL_GRACE_MS: u64 = 1200;
+
+/// 已存在窗口的实际逻辑高度（堆叠偏移用）。
+/// 拿不到时退回视图声明高度——auto_height 下声明值只是初值，但总比算出 0
+/// 让两个窗口完全重叠要好。
+fn logical_height(window: &WebviewWindow, fallback: f64) -> f64 {
+    match (window.outer_size(), window.scale_factor()) {
+        (Ok(size), Ok(scale)) if scale > 0.01 => size.height as f64 / scale,
+        _ => fallback,
+    }
+}
+
 impl WindowApi for HostWindowApi {
     /// 任意线程可调用：建窗动作派发到主线程执行（后台线程直接建窗会死锁/panic）
     fn open(&self, view_id: &str, params: &[(String, String)]) -> Result<(), PluginError> {
@@ -250,6 +265,59 @@ impl WindowApi for HostWindowApi {
             .map_err(|e| PluginError::window(format!("派发主线程失败: {}", e)))
     }
 
+    /// 内容驱动的改尺寸（弹出式基窗改高、挂件改宽）。
+    ///
+    /// 三条权威都留在宿主：
+    /// 1. **只能改自己** —— `caller_label` 由 IPC 层从请求里取出（不是插件自报的参数），
+    ///    必须匹配本插件某个视图的标签；
+    /// 2. **夹取** —— 高度只认 `auto_height` 视图的 `[min_h, max_h]`，未声明该视图
+    ///    直接拒绝改高；宽度只认 `[min_width, 屏宽 - 边距]`；
+    /// 3. **锚定与像素换算** —— 物理↔逻辑换算和"钉哪条边"全在
+    ///    `popup_rect_after_size`（纯函数、有单测），插件侧一行都不用写。
+    ///
+    /// 结果经通道回传：`plugin_call` 是 async 命令，跑在工作线程上，
+    /// 而窗口对象操作必须在主线程做。
+    fn set_content_size(
+        &self,
+        caller_label: &str,
+        width: Option<f64>,
+        height: Option<f64>,
+    ) -> Result<AppliedSize, PluginError> {
+        if width.is_none() && height.is_none() {
+            return Err(PluginError::bad_params("width / height 至少要给一个"));
+        }
+        let spec = self
+            .manifest
+            .views
+            .iter()
+            .find(|v| label_matches_view(&self.manifest.id, v, caller_label))
+            .ok_or_else(|| {
+                PluginError::window(format!(
+                    "调用方窗口 {caller_label} 不属于本插件声明的任何视图"
+                ))
+            })?
+            .clone();
+        if height.is_some() && !spec.auto_height {
+            return Err(PluginError::window(format!(
+                "视图 {} 未声明 auto_height，不能改窗口高度",
+                spec.id
+            )));
+        }
+
+        let app = self.app.clone();
+        let label = caller_label.to_string();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<AppliedSize, PluginError>>(1);
+        // run_on_main_thread 借走 &self，闭包又要 owned AppHandle → 各拿一份克隆
+        self.app
+            .run_on_main_thread(move || {
+                // 接收端只会是同一个函数，阻塞期间不会先被 drop；发送失败无需处理
+                let _ = tx.send(apply_content_size(&app, &label, &spec, width, height));
+            })
+            .map_err(|e| PluginError::window(format!("派发主线程失败: {}", e)))?;
+        rx.recv()
+            .map_err(|_| PluginError::window("主线程未返回尺寸结果"))?
+    }
+
     /// 把已打开的视图窗口挂到桌面壁纸层。
     ///
     /// 与 `open` 一样必须在主线程做：注入会调用 `SetParent` / 设 EWMH atom，
@@ -268,6 +336,214 @@ impl WindowApi for HostWindowApi {
     }
 }
 
+/// 上一次由 `apply_content_size` **请求**过的矩形（逻辑像素 x, y, w, h）。
+///
+/// `set_size`/`set_position` 要等 WM 处理才反映到 `outer_position()`/`outer_size()` 上，
+/// 而下一帧的基准是从窗口上**读**回来的。pomo 的悬停动画每 16ms 发一帧，于是每帧都读到一个
+/// "尺寸已更新、位置还没更新"（或反之）的半成品矩形 —— 真机日志量过：右边缘在 186↔306 的
+/// 动画途中漂了 ±12px，只有停下来才落回 2544。锚定的承诺是"边不动"，抖动就是违约。
+///
+/// 所以**上一条请求还没落地时，用我们自己请求过的矩形续算**（等价于旧实现里
+/// "动画开始时读一次基准"）；一旦读回来的尺寸与上次请求一致，说明命令已生效，
+/// 此时位置是最新的（用户可能刚把窗口拖走），必须回到实时读数。
+/// 带时间戳是为了同标签窗口重建后不吃到陈旧基准。
+const POPUP_RECT_MEMORY_TTL_MS: u64 = 500;
+
+fn popup_rect_memory() -> &'static Mutex<HashMap<String, ((f64, f64, f64, f64), Instant)>> {
+    static MEM: OnceLock<Mutex<HashMap<String, ((f64, f64, f64, f64), Instant)>>> =
+        OnceLock::new();
+    MEM.get_or_init(Default::default)
+}
+
+/// 取"仍算数"的上一次请求矩形：超过 TTL 视为无关（窗口可能已重建或被人拖过）。
+fn last_requested_rect(label: &str) -> Option<(f64, f64, f64, f64)> {
+    let mem = popup_rect_memory().lock().ok()?;
+    let (rect, at) = mem.get(label)?;
+    if at.elapsed().as_millis() as u64 > POPUP_RECT_MEMORY_TTL_MS {
+        return None;
+    }
+    Some(*rect)
+}
+
+fn remember_rect(label: &str, rect: (f64, f64, f64, f64)) {
+    if let Ok(mut mem) = popup_rect_memory().lock() {
+        mem.insert(label.to_string(), (rect, Instant::now()));
+    }
+}
+
+/// 每张弹窗**最后一次生效的内容高度**（逻辑像素），不带 TTL。
+///
+/// `stacked` 的偏移要累加已存在窗口的实际高度，而 auto_height 的窗口建出来是
+/// `visible(false)`：GTK 对未映射窗口问 `outer_size()` 拿到的是 0，于是每张卡只
+/// 偏移了那条 8px 的间隙，第二张直接压在第一张上面（真机量到过：两张 160 高的卡
+/// y 只差 8）。所以高度由 `apply_content_size` 自己记账，问窗口不如问自己。
+fn content_height_memory() -> &'static Mutex<HashMap<String, f64>> {
+    static MEM: OnceLock<Mutex<HashMap<String, f64>>> = OnceLock::new();
+    MEM.get_or_init(Default::default)
+}
+
+fn remember_content_height(label: &str, h: f64) {
+    if let Ok(mut mem) = content_height_memory().lock() {
+        mem.insert(label.to_string(), h);
+    }
+}
+
+/// 摘掉已不存在窗口的记账，避免这张表随弹窗无限增长。
+fn prune_content_heights(live_labels: impl Fn(&str) -> bool) {
+    if let Ok(mut mem) = content_height_memory().lock() {
+        mem.retain(|label, _| live_labels(label));
+    }
+}
+
+/// GTK 在 `set_size` 真正落地时会回放它自己记住的位置，把紧接着发的那次
+/// `set_position` 覆盖掉（Tauri 两次都返回 Ok(())）。症状：底边锚定的弹窗缩了高度，
+/// y 却停在旧值，于是叠放的卡片互相压住。等尺寸落地后再补一次位置。
+///
+/// 补偿发生在 120ms 之后，期间窗口可能已被关掉并以**同一个标签**重建（`unique_by`
+/// 的视图重建必然同名），那时这笔请求属于上一个窗口。所以补之前要确认：窗口还在、
+/// 且这条请求仍是该标签的最新一笔（`open_on_main` 建窗时会把记账清掉）。
+fn reassert_position(app: AppHandle, label: String, x: f64, y: f64, w: f64, h: f64) {
+    let spawned = std::thread::Builder::new()
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            let Some(window) = app.get_webview_window(&label) else {
+                return;
+            };
+            if last_requested_rect(&label) != Some((x, y, w, h)) {
+                return;
+            }
+            let scale = match window.scale_factor() {
+                Ok(s) if s > 0.01 => s,
+                _ => return,
+            };
+            let Ok(size) = window.outer_size() else { return };
+            let live_w = size.width as f64 / scale;
+            let live_h = size.height as f64 / scale;
+            // 尺寸还没落地 = 回放还没发生，现在补位置等于白发；已经落地且与请求一致，
+            // 才轮到判断位置对不对。窗口被人拖走时（用户意图）不抢回来。
+            if !same_size((0.0, 0.0, live_w, live_h), (0.0, 0.0, w, h)) {
+                return;
+            }
+            let Ok(pos) = window.outer_position() else { return };
+            if (pos.y as f64 / scale - y).abs() < 2.0 && (pos.x as f64 / scale - x).abs() < 2.0 {
+                return;
+            }
+            let _ = window.set_position(LogicalPosition::new(x, y));
+        })
+        .is_ok();
+    if !spawned {
+        // 线程创建失败只是少一次位置补偿，不值得让上报整条链路失败
+        log_line("reassert_position: 无法创建补偿线程");
+    }
+}
+
+/// 两条矩形的**尺寸**是否一致（1px 容差：物理像素换算回来本就带小数）。
+/// 只看尺寸不看位置：位置会变（用户拖窗口），而"尺寸还不一致"唯一的意思就是
+/// 上一条 `set_size` 还没被 WM 应用。
+fn same_size(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
+    (a.2 - b.2).abs() < 1.0 && (a.3 - b.3).abs() < 1.0
+}
+
+/// 这一帧的锚定基准该用哪个矩形。
+///
+/// 抽成纯函数只为一件事能被测到：**在途（live 尺寸还没追上请求）时必须用请求过的矩形**，
+/// 否则锚边逐帧漂；**已落地时必须用实时矩形**，否则用户拖走的窗口会被拽回旧坐标。
+fn baseline_rect(
+    prev: Option<(f64, f64, f64, f64)>,
+    live: (f64, f64, f64, f64),
+) -> (f64, f64, f64, f64) {
+    match prev {
+        Some(prev) if !same_size(prev, live) => prev,
+        _ => live,
+    }
+}
+
+/// 在主线程上把内容尺寸真正落到窗口上，回传**实际生效**的尺寸。
+///
+/// 读当前矩形用物理像素、写回用逻辑像素，这套换算是插件侧最容易错的地方
+/// （pomo 挂件过去自己做了 `scaleFactor()` + `outerPosition()` 的除法）。
+/// 收进宿主后插件只需要说"内容多高"。
+fn apply_content_size(
+    app: &AppHandle,
+    label: &str,
+    spec: &ViewSpec,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<AppliedSize, PluginError> {
+    let window = app
+        .get_webview_window(label)
+        .ok_or_else(|| PluginError::window(format!("窗口 {label} 已关闭")))?;
+    let scale = window
+        .scale_factor()
+        .map_err(|e| PluginError::window(format!("读取缩放因子失败: {e}")))?;
+    if !scale.is_finite() || scale <= 0.01 {
+        return Err(PluginError::window("窗口缩放因子不可信"));
+    }
+    let pos = window
+        .outer_position()
+        .map_err(|e| PluginError::window(format!("读取窗口位置失败: {e}")))?;
+    let size = window
+        .outer_size()
+        .map_err(|e| PluginError::window(format!("读取窗口尺寸失败: {e}")))?;
+    let live = (
+        pos.x as f64 / scale,
+        pos.y as f64 / scale,
+        size.width as f64 / scale,
+        size.height as f64 / scale,
+    );
+    // 上一条请求还没落地时以"我们请求过的矩形"为基准，否则锚边会逐帧漂移
+    // （见 `last_requested_rect`）。落在同一主线程上，读到的一定是本线程自己写出去的序列。
+    let cur = baseline_rect(last_requested_rect(label), live);
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or(app.primary_monitor().ok().flatten())
+        .ok_or_else(|| PluginError::window("拿不到显示器信息，无法夹取窗口尺寸"))?;
+    let mon = monitor
+        .size()
+        .to_logical::<f64>(monitor.scale_factor());
+
+    // 未启用 auto_height 的视图在上面已经被拒绝改高，这里把区间收成当前高度，
+    // 于是"只改宽度"的那条路径不会意外动到高度。
+    let policy = popup_policy(spec, mon.height)
+        .map_err(PluginError::window)?
+        .unwrap_or(PopupPolicy {
+            min_h: cur.3,
+            max_h: cur.3,
+        });
+    let want_w = width.unwrap_or(cur.2).max(spec.min_width.unwrap_or(1.0).max(1.0));
+    let want_h = height.unwrap_or(cur.3);
+    let (x, y, w, h) = popup_rect_after_size(spec.position, mon.width, mon.height, cur, (want_w, want_h), policy);
+    // 被上限截断 = 内容装不下，视图该转而给自己开内部滚动
+    let clamped = height.map(|req| req > h + 0.5).unwrap_or(false);
+
+    window
+        .set_size(LogicalSize::new(w, h))
+        .map_err(|e| PluginError::window(format!("设置窗口尺寸失败: {e}")))?;
+    window
+        .set_position(LogicalPosition::new(x, y))
+        .map_err(|e| PluginError::window(format!("设置窗口位置失败: {e}")))?;
+    remember_rect(label, (x, y, w, h));
+    remember_content_height(label, h);
+    reassert_position(app.clone(), label.to_string(), x, y, w, h);
+
+    // 首次量高才露脸：建窗时按 auto_height 藏起来了（否则首帧是空白大窗闪一下）。
+    // 居中窗要等高度定了再居中，否则会明显偏上。
+    if !window.is_visible().unwrap_or(false) {
+        if spec.position == WindowPosition::Center {
+            let _ = window.center();
+        }
+        let _ = window.show();
+    }
+
+    Ok(AppliedSize {
+        width: w,
+        height: h,
+        clamped,
+    })
+}
+
 /// 主线程上执行的实际建窗逻辑
 fn open_on_main(
     app: &AppHandle,
@@ -276,14 +552,12 @@ fn open_on_main(
     params: &[(String, String)],
 ) -> Result<(), String> {
     // 窗口标签：plugin-view[-uniquevalue]
-    let unique_value = spec
+    let unique_label = spec
         .unique_by
         .as_ref()
-        .and_then(|k| params.iter().find(|(pk, _)| pk == k).map(|(_, v)| v.clone()));
-    let label = match &unique_value {
-        Some(v) => format!("{}-{}-{}", plugin_id, spec.id, sanitize_label(v)),
-        None => format!("{}-{}", plugin_id, spec.id),
-    };
+        .and_then(|k| params.iter().find(|(pk, _)| pk == k).map(|(_, v)| v.clone()))
+        .map(|v| sanitize_label(&v));
+    let label = window_label(plugin_id, &spec.id, unique_label.as_deref());
 
     if let Some(existing) = app.get_webview_window(&label) {
         return match spec.on_existing {
@@ -312,11 +586,34 @@ fn open_on_main(
     let corner_position = is_corner_position(spec.position);
     let stack_offset = if corner_position && spec.stacked {
         let prefix = format!("{}-{}", plugin_id, spec.id);
-        app.webview_windows()
+        // 累加**实际**高度而不是声明高度：auto_height 窗口的声明值只是初值，
+        // 按它算会让第二条提醒卡压住第一条（症状是"只看到最上面那张"）。
+        let live: Vec<String> = app
+            .webview_windows()
             .keys()
-            .filter(|l| l.starts_with(&prefix))
-            .count() as f64
-            * (spec.height + 8.0)
+            .filter(|label| label.starts_with(&prefix))
+            .cloned()
+            .collect();
+        prune_content_heights(|label| !label.starts_with(&prefix) || live.iter().any(|l| l == label));
+        live.iter()
+            .map(|label| {
+                // 还没上报过高度的窗口（同一批提醒里刚建出来的第二、三张）只能退回声明值：
+                // 问窗口本身没用，未映射的 GTK 窗口报 0，而 0 会让它们全部叠在同一个位置。
+                let h = content_height_memory()
+                    .lock()
+                    .ok()
+                    .and_then(|mem| mem.get(label).copied())
+                    .filter(|h| *h >= 40.0)
+                    .or_else(|| {
+                        app.webview_windows()
+                            .get(label)
+                            .map(|w| logical_height(w, spec.height))
+                            .filter(|h| *h >= 40.0)
+                    })
+                    .unwrap_or(spec.height);
+                h + 8.0
+            })
+            .sum()
     } else {
         0.0
     };
@@ -329,10 +626,20 @@ fn open_on_main(
         .map(|v| format!("{} - {}", spec.title, v))
         .unwrap_or_else(|| spec.title.clone());
 
+    // 内容驱动高度的窗口不能让用户拖框改大小（长内容走内部滚动），但**窗口本身在
+    // Linux 上必须保持"可 resize"这个属性，应用侧的 set_size 才会被听**：GTK 对
+    // `resizable(false)` 的窗口直接忽略 `gtk_window_resize`，而 Tauri 照样返回 Ok(())，
+    // 于是症状是"前端在报高度、窗口永远停在声明值"，卡片下面留一条没画过的空白。
+    // 用户真拖了边框，由 mountPopup 的 resize 监听把窗口拉回内容高度。
+    let resizable = if spec.auto_height {
+        cfg!(target_os = "linux")
+    } else {
+        spec.resizable
+    };
     let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
         .title(window_title.as_str())
         .inner_size(spec.width, spec.height)
-        .resizable(spec.resizable)
+        .resizable(resizable)
         .decorations(spec.decorated)
         .always_on_top(spec.always_on_top)
         .skip_taskbar(spec.skip_taskbar)
@@ -362,15 +669,29 @@ fn open_on_main(
     if let (Some(mw), Some(mh)) = (spec.min_width, spec.min_height) {
         builder = builder.min_inner_size(mw, mh);
     }
-    if corner_position {
+    if spec.auto_height && spec.position == WindowPosition::Center {
+        // 居中窗口今天全靠 WM 摆放，而 WM 不知道我们随后要改高度。
+        // 显式 center 一次，首帧才落在真正的屏幕中央。
+        builder = builder.center();
+    }
+    if corner_position || spec.auto_height {
         // 建窗前先隐藏：Tauri 建窗时会用系统默认位置闪一下才落到角落，
         // 挂件这类常驻小窗不能有这种闪烁。
+        // auto_height 同理且更严重——首帧是"声明高度的空窗"，量完内容才收缩，
+        // 不藏起来就是一块白板闪一下。露脸的时机交给首次 set_content_size。
         builder = builder.visible(false);
     }
 
     let window = builder
         .build()
         .map_err(|e| format!("创建窗口 {} 失败: {}", label, e))?;
+
+    // 新窗口对宿主来说是一张白纸：`unique_by` 的视图重建后标签一模一样，
+    // 留着上一个窗口的矩形/高度记账，锚定与叠放就会照旧窗口的位置算。
+    if let Ok(mut mem) = popup_rect_memory().lock() {
+        mem.remove(&label);
+    }
+    remember_content_height(&label, spec.height);
 
     // GTK 的建窗下限修正必须发生在角落定位之前：定位按 spec 尺寸算，
     // 窗口实际被撑大时两者就对不上了
@@ -395,7 +716,11 @@ fn open_on_main(
                 let _ = window.set_position(LogicalPosition::new(x, y));
             }
         }
-        let _ = window.show();
+        // auto_height 的角落窗留到首次量高时再露脸（见 set_content_size）；
+        // 位置已经按底边/顶边摆好，改高度时按同一条边锚定，不会跳。
+        if !spec.auto_height {
+            let _ = window.show();
+        }
     }
 
     // Windows 11 会给无边框窗口画一圈 1px 系统边框（浅色主题下是白色），
@@ -405,6 +730,21 @@ fn open_on_main(
         // hwnd() 仅 cfg(windows) 存在；非 Windows 上窗口本来没有 DWM 边框
         #[cfg(target_os = "windows")]
         crate::desktop::remove_window_border(window.hwnd().map(|h| h.0 as isize).unwrap_or(0));
+    }
+
+    // 兜底露脸：视图异常一直没上报高度时，不能留下一个"永远隐藏"的窗口。
+    // 症状是"点了查看详情什么都没发生"，比首帧闪一下白板更难查。
+    if spec.auto_height {
+        let app2 = app.clone();
+        let label2 = label.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(POPUP_REVEAL_GRACE_MS));
+            if let Some(w) = app2.get_webview_window(&label2) {
+                if !w.is_visible().unwrap_or(true) {
+                    let _ = w.show();
+                }
+            }
+        });
     }
 
     // 兜底定时关闭：前端异常未自关时防弹窗残留
@@ -444,7 +784,14 @@ fn clamp_gtk_child_min_size(window: &WebviewWindow, spec: &ViewSpec) {
         return;
     };
     let w = spec.min_width.unwrap_or(spec.width).max(1.0) as i32;
-    let h = spec.min_height.unwrap_or(spec.height).max(1.0) as i32;
+    // auto_height 的下限绝不能回退到 spec.height：那是内容高度的**初值**，
+    // 拿它当 GTK 子控件下限等于告诉 GTK"不许缩到这么小"，
+    // 于是短内容的弹窗在 Linux 上永远缩不回去（症状是卡片下面一块窗口底色）。
+    let h = match (spec.auto_height, spec.min_height) {
+        (true, None) => ll_plugin_api::POPUP_MIN_H_FLOOR,
+        _ => spec.min_height.unwrap_or(spec.height),
+    }
+    .max(1.0) as i32;
     for child in gtk_window.children() {
         set_size_request_recursive(&child, w, h);
     }
@@ -1845,11 +2192,16 @@ impl ClipboardHistoryApiExt for HostClipboardHistoryApi {
     }
 }
 
-/// 分发一个 `svc.*` 调用。method 非法或对应权限未声明时返回结构化错误
+/// 分发一个 `svc.*` 调用。method 非法或对应权限未声明时返回结构化错误。
+///
+/// `caller` 是**发起这次 IPC 的窗口标签**，由命令层从 Tauri 的请求里取，
+/// 插件无法自报或伪造。sidecar（LLP）没有窗口，一律传 `None`，
+/// 于是"改自己窗口尺寸"这类调用会在宿主侧被明确拒绝，而不是猜一个窗口。
 pub fn dispatch_svc(
     ctx: &PluginContext,
     method: &str,
     params: &JsonValue,
+    caller: Option<&str>,
 ) -> Result<JsonValue, PluginError> {
     let p_str = |key: &str| params.get(key).and_then(|v| v.as_str()).map(String::from);
     let p_arr = |key: &str| -> Vec<JsonValue> {
@@ -2026,6 +2378,23 @@ pub fn dispatch_svc(
                 .unwrap_or_default();
             windows.open(&view, &pairs)?;
             Ok(JsonValue::Null)
+        }
+
+        // ── 内容驱动的尺寸（弹出式基窗改高 / 挂件改宽；需 windows 权限）──────
+        // 与 open 的风险面不同：open 只能开声明过的视图，这里是**改已存在窗口**的
+        // 几何。所以调用者身份必须由 IPC 层给出，宿主再校验它属于本插件——
+        // 绝不让插件自报一个标签来"改任意窗口"。
+        "svc.window.setContentSize" => {
+            let windows = ctx
+                .windows
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("windows"))?;
+            let caller = caller.ok_or_else(|| {
+                PluginError::bad_params("setContentSize 只能由视图窗口自身调用")
+            })?;
+            let width = params.get("width").and_then(|v| v.as_f64());
+            let height = params.get("height").and_then(|v| v.as_f64());
+            to_json(&windows.set_content_size(caller, width, height)?)
         }
 
         // ── 挂到桌面壁纸层（桌面小挂件；需 windows 权限）────────────────
@@ -2356,7 +2725,7 @@ mod m7_service_tests {
 
 #[cfg(test)]
 mod d_group_tests {
-    use super::{hit_rect, normalize_accel, HostShortcutApi};
+    use super::{baseline_rect, hit_rect, normalize_accel, HostShortcutApi};
     use ll_plugin_api::{PluginErrorCode, ShortcutApi};
 
     #[test]
@@ -2397,5 +2766,32 @@ mod d_group_tests {
         assert!(matches!(err.code, PluginErrorCode::Internal));
         // 上述失败都不应污染注册表
         assert!(api.list().is_empty());
+    }
+
+    /// 锚定基准的选择（真机量到的缺陷：pomo 悬停动画途中右边缘漂了 ±12px）。
+    /// 只测这一条规则，窗口对象不在场也不需要。
+    #[test]
+    fn baseline_uses_requested_rect_while_resize_in_flight() {
+        let prev = (2258.0, 16.0, 286.0, 88.0); // 我们刚请求过 286 宽
+        // live 还是上一帧的宽度 → 位置同样没更新，用 live 推锚边必漂
+        assert_eq!(
+            baseline_rect(Some(prev), (2238.0, 16.0, 306.0, 88.0)),
+            prev
+        );
+        // 亚像素取整不算"还在路上"
+        assert_eq!(
+            baseline_rect(Some(prev), (2258.4, 16.0, 286.4, 88.4)),
+            (2258.4, 16.0, 286.4, 88.4)
+        );
+    }
+
+    #[test]
+    fn baseline_follows_user_drag_once_resize_landed() {
+        let prev = (2258.0, 16.0, 186.0, 88.0);
+        // 尺寸已经生效、位置被用户拖走 → 必须回到实时矩形，否则窗口被拽回旧坐标
+        let dragged = (1000.0, 400.0, 186.0, 88.0);
+        assert_eq!(baseline_rect(Some(prev), dragged), dragged);
+        // 没有历史（第一次调用 / 窗口刚重建 / TTL 过期）→ 实时矩形
+        assert_eq!(baseline_rect(None, dragged), dragged);
     }
 }

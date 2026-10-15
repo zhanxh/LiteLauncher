@@ -217,10 +217,30 @@ export interface PluginShortcuts {
   ): Promise<() => void>;
 }
 
+/** [`PluginWindows.setContentSize`](#) 的返回值：宿主夹取后真正落到窗口上的尺寸 */
+export interface AppliedSize {
+  width: number;
+  height: number;
+  /** 请求尺寸被 `max_height` 截断 → 内容装不下，视图应转为内部滚动 */
+  clamped: boolean;
+}
+
 /** 窗口（`windows` 权限）：只能打开 manifest.views 里声明过的视图 */
 export interface PluginWindows {
   /** `params` 会透传为页面查询串（视图内用 `URLSearchParams` 读取） */
   open(view: string, params?: Record<string, string | number | boolean>): Promise<void>;
+  /**
+   * 把**发起调用的那个窗口自己**改成内容尺寸（配合 manifest 视图的 `auto_height`）。
+   *
+   * 只给一个轴就只改那个轴：弹出式基窗报高度、桌面挂件报宽度。
+   * 宿主负责三件事——夹取到 `[min_*, max_height]`、按当前矩形的边锚定
+   * （顶边/底边/右边缘，见 `popup_rect_after_size`）、物理↔逻辑像素换算。
+   * 插件既改不了别人的窗口，也不需要自己碰 `scaleFactor()`。
+   *
+   * 返回**实际生效**的尺寸：`clamped === true` 表示内容已被 `max_height` 截断，
+   * 此时该让内容自己滚（基窗样式已备好），继续上报更大的高度只是每帧白跑一次 IPC。
+   */
+  setContentSize(size: { width?: number; height?: number }): Promise<AppliedSize>;
   /**
    * 把已打开的视图窗口挂到桌面壁纸层（桌面小挂件 / Conky 那种）。
    *
@@ -510,6 +530,15 @@ export function getPluginContext(pluginId: string): PluginContext {
     windows: {
       open: async (view, params = {}) => {
         await svc('window.open', { view, params });
+      },
+      setContentSize: async ({ width, height }) => {
+        // 不给默认值：宿主没回实际尺寸说明这次没落窗，让调用方立刻看见，
+        // 好过静默当成"已按内容改好"（症状是窗口永远停在初值，还查不出原因）
+        const r = await svc<AppliedSize | null>('window.setContentSize', { width, height });
+        if (!r || !Number.isFinite(r.width) || !Number.isFinite(r.height)) {
+          throw new Error('setContentSize: 宿主未返回生效尺寸');
+        }
+        return r;
       },
       attachDesktop: async (label) => {
         // 不给默认值：宿主若返回异常结构，让调用方立刻炸在读 onWallpaper 上，

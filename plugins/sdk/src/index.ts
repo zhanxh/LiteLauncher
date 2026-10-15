@@ -6,6 +6,7 @@
  */
 export * from "./command";
 export * from "./lps";
+export * from "./popup";
 export * from "./registry";
 export * from "./searchRegistry";
 export * from "./viewRegistry";

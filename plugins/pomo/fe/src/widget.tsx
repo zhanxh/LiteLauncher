@@ -14,7 +14,7 @@
  * 且避免了"挂件窗口与 sidecar 建立额外 IPC 通道"这套复杂度。
  */
 import { createSignal, createMemo, onCleanup, onMount, Show } from 'solid-js';
-import { getCurrentWindow, LogicalPosition, LogicalSize } from '@tauri-apps/api/window';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getPluginContext } from '@ll/sdk';
 import {
   arcDasharray,
@@ -27,14 +27,7 @@ import {
   type TimerSnapshot,
   type WidgetState,
 } from './timer';
-import {
-  ANIM_MS,
-  COLLAPSED_W,
-  EXPANDED_W,
-  WIDGET_H,
-  frameAt,
-  widthFor,
-} from './hover-size';
+import { ANIM_MS, COLLAPSED_W, EXPANDED_W, easeOutCubic, lerp, widthFor } from './hover-size';
 import './widget.css';
 
 const ctx = getPluginContext('pomo');
@@ -79,34 +72,22 @@ export function PomoWidget() {
   let animToken = 0;
 
   /**
-   * 把窗口宽度动画到 `to`，右边缘钉住（详见 hover-size.ts 的方向选择理由）。
+   * 把窗口宽度动画到 `to`。
    *
-   * 基准（右边缘、顶边、起始宽度）在动画开始时读一次，之后每帧由基准推导，
-   * 不再查询——避免读到"上一条命令还没生效"的中间值而累积误差。
+   * 只报宽度：物理↔逻辑换算、"钉住右边缘向左生长"和夹回屏幕都由宿主
+   * `svc.window.setContentSize` 负责（锚定算法在 ll-plugin-api 的
+   * `popup_rect_after_size` 里，能单测）。挂件自己读 `outerPosition()`
+   * 做除法的历史版本，在 HiDPI 与多屏下都是要人守的坑。
    */
   async function resizeTo(to: number) {
     const token = ++animToken;
-    const win = getCurrentWindow();
-    let from = window.innerWidth;
-    let anchorRight = 0;
-    let top = 0;
-    try {
-      const scale = await win.scaleFactor();
-      const pos = await win.outerPosition();
-      // outerPosition 是物理像素，而 setSize/setPosition 收逻辑像素
-      top = pos.y / scale;
-      anchorRight = pos.x / scale + from;
-    } catch {
-      // 调试页等非桌面环境没有窗口 API：只让按钮显隐，尺寸不动
-      return;
-    }
+    const from = window.innerWidth;
     const t0 = performance.now();
     const step = () => {
       if (token !== animToken || !alive) return;
       const p = (performance.now() - t0) / ANIM_MS;
-      const f = frameAt(from, to, anchorRight, top, p);
-      void win.setSize(new LogicalSize(f.width, f.height)).catch(() => undefined);
-      void win.setPosition(new LogicalPosition(f.x, f.y)).catch(() => undefined);
+      const width = lerp(from, to, easeOutCubic(p));
+      void ctx.windows.setContentSize({ width }).catch(() => undefined);
       if (p < 1) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
@@ -217,28 +198,16 @@ export function PomoWidget() {
   });
 
   /**
-   * 拖动窗口。
+   * 拖拽开始前先收掉在跑的伸缩动画。
    *
-   * 为什么必须做：挂件是 `decorated: false`，没有标题栏，系统不提供拖动区。
-   * 用户想挪开它时如果拖不动，体感就是"这窗口卡死了/关不掉"——
-   * 这正是最初反馈的问题之一。
-   *
-   * 挂在 `.pw-card` 上而不是挂件根元素：按钮区的 mousedown 会冒泡到卡片，
-   * 那样点按钮会顺带拖一下窗口，故用 closest 判断落在按钮上就放弃拖动。
+   * 拖拽区本身是卡片上的 `data-tauri-drag-region="deep"`（按钮由 Tauri 的
+   * 拖拽脚本自动跳过）。这里只剩插件侧策略：动画记的是**拖动前**的右边缘，
+   * 若拖拽事务进行中还发 setSize，松手瞬间窗口会被拽回旧坐标（"拖不动/弹回"）。
+   * 作废令牌后直接落到当前悬停态的最终宽度，位置交给系统拖动。
    */
-  function beginDrag(ev: MouseEvent) {
-    const target = ev.target as HTMLElement | null;
-    if (target?.closest?.('.pw-actions')) return;
-    ev.preventDefault();
-    const win = getCurrentWindow();
-    // 拖动前必须停掉伸缩动画：动画记录的是**拖动前**的右边缘，
-    // 若继续跑，窗口会在用户拖到的新位置被拽回旧坐标（表现为"拖不动/弹回"）。
-    // 直接落到当前悬停状态的最终宽度，位置交给系统拖动。
+  function settleBeforeDrag() {
     animToken += 1;
-    void win
-      .setSize(new LogicalSize(widthFor(hovered()), WIDGET_H))
-      .catch(() => undefined);
-    void win.startDragging().catch(() => undefined);
+    void ctx.windows.setContentSize({ width: widthFor(hovered()) }).catch(() => undefined);
   }
 
   /**
@@ -307,8 +276,8 @@ export function PomoWidget() {
       onMouseLeave={onLeave}
     >
       {/* 卡片单独一层：根元素铺满窗口，背景/圆角/边框画在内层才不会被窗口矩形切出四角。
-          mousedown 触发拖动，让无边框窗口也能挪位置 */}
-      <div class="pw-card" onMouseDown={beginDrag}>
+          整张卡片都是拖拽区（deep），按钮由 Tauri 的拖拽脚本自动排除 */}
+      <div class="pw-card" data-tauri-drag-region="deep" onMouseDown={settleBeforeDrag}>
         <div class="pw-ring">
           <svg viewBox="0 0 64 64" width="64" height="64" aria-hidden="true">
             <circle class="pw-track" cx="32" cy="32" r={RADIUS} fill="none" stroke-width="4" />

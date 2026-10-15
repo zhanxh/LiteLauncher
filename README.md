@@ -67,6 +67,7 @@ flowchart TD
 - **多提醒 × 重复触发**：
   - 每条提醒在每个实例上**独立幂等**（复合主键 + `ON CONFLICT DO NOTHING`），重启不重弹。
   - 到点双通道提醒：**桌面右下角常驻卡片**（无边框置顶、不抢焦点，可拖走，点「我知道了」或 ✕ 才关；「查看详情」打开只读日程面板，面板里可就地「编辑」）+ **系统级通知**（进通知中心留历史），主窗口隐藏时依然有效。
+  - 提醒卡与详情窗都是**宿主弹出式基窗**：没有系统标题栏，拖标题行即可移动，**窗口高度跟着内容走**（编辑态展开就长高，顶边不动），内容超出上限时面板内滚动。
   - 关机/睡眠错过的提醒**只记账不补弹**，避免开机一次性炸出十几条弹窗。
 - **分类日历**：`/cal cal add 工作 #4c8dff` · `/cal cal rm 生活` · `/cal cal list`，每个分类一种颜色，窗口内可勾选显隐。
 - **`.ics` 双向**：`/cal export [天数]`（默认 90 天，落在"下载"目录）· `/cal import ~/downloads/plan.ics`；窗口内也有导入/导出按钮（导入走文件选择器）。按 **UID 幂等**——同一条日程重复导入只更新、不产生副本。
@@ -124,6 +125,7 @@ LiteLauncher 遵循**"一切皆插件"**：功能不硬编码进壳层，一律�
 | `svc.screen.list` / `cursor` / `pixel` / `capture` | `screen`（截图与取色） |
 | `svc.shortcut.register` / `unregister` / `list` | `shortcut:<accel>`（逐条声明、**无通配**） |
 | `svc.window.open` | `windows`（只能打开 manifest `views` 里声明过的视图） |
+| `svc.window.setContentSize` | `windows`（**只能改自己所在的视图窗口**，且改高度要求该视图声明 `auto_height`） |
 
 前端 SDK 把这些封装成同名属性，写起来就是普通方法调用：
 
@@ -136,10 +138,21 @@ const data = await ctx.http.json<T>(url);    // → svc.http.send（需 manifest
 const shot = await ctx.screen.capture({ monitor: -1, hideWindows: true, delayMs: 3000 });
 const { sample } = await ctx.screen.pixel({ radius: 7 });  // 取光标处颜色 + 放大镜方格
 await ctx.windows.open('panel', { id: '1' });             // 打开本插件声明的视图窗口
+await ctx.windows.setContentSize({ height: 240 });        // 基窗：上报内容自然高度，锚定与夹取由宿主做
 
 await ctx.shortcuts.register('alt+p');                    // manifest 需声明 shortcut:alt+p
 await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ });
 ```
+
+### 🪟 弹出式基窗（视图窗口的通用外壳）
+
+"在桌面上放一张卡片"是插件最常见的形状。自己拼要重复踩三个坑：去掉标题栏后没法拖、高度要跟着内容、内容超长要滚。
+宿主把它收成一项能力：manifest 里声明 `decorated:false` + `auto_height:true` + `max_height`，前端套一层 `PopupFrame`，
+就得到一个**无系统标题栏、可拖拽、高度自适应、超长内部滚动**的实心窗口（圆角交给系统）。
+物理/逻辑像素换算与四角锚定**只在宿主做**并有单测——插件不再手工量屏幕、拼坐标。
+标题行是 sticky 的：内容超长时滚的是整页，标题与拖拽区留在原地。
+两处平台例外写进了指南（Linux/GTK 会忽略不可 resize 窗口的 `set_size`；`index.html` 的 `#root` 是 ID 权重，底色与字色要重写到它上面）。
+用法与代价见 `docs/plugin-development-guide.md` §5.6。
 
 ### 已实现插件
 

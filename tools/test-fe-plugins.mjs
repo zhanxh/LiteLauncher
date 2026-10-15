@@ -386,6 +386,11 @@ const sdkStub = {
         open: async (view, params = {}) => {
           svcCalls.push({ pluginId, method: 'svc.window.open', params: { view, params } });
         },
+        setContentSize: async (size) => {
+          svcCalls.push({ pluginId, method: 'svc.window.setContentSize', params: size });
+          // 宿主返回的是**实际生效**尺寸，桩里原样回声
+          return { width: size.width ?? 0, height: size.height ?? 0, clamped: false };
+        },
       },
       // 剪贴板历史（P1 /clip）：内存实现，行为对齐宿主（隐私策略强制 + 上限 + 过期）
       clipboardHistory: {
@@ -460,7 +465,26 @@ const sdkStub = {
   isViewWindow: () => false,
 };
 
-const tauriStub = { __esModule: true, invoke: async () => null };
+/**
+ * 直连 `invoke` 的调用记录（只收 `plugin_call`）。
+ * popup.ts 这类"SDK 内部自己打 IPC"的行为，光看 svcCalls 看不到——
+ * svcCalls 来自 sdkStub，而 popup.ts 走的是真实 lps.ts。
+ */
+const invokeCalls = [];
+const tauriStub = {
+  __esModule: true,
+  invoke: async (cmd, args) => {
+    if (cmd === 'plugin_call') {
+      invokeCalls.push(args);
+      // setContentSize 的契约是"回实际生效尺寸"，桩照做，让上报链路能被验到
+      if (args?.method === 'svc.window.setContentSize') {
+        const p = args.params ?? {};
+        return { width: p.width ?? 0, height: p.height ?? 0, clamped: false };
+      }
+    }
+    return null;
+  },
+};
 const tauriEventStub = { __esModule: true, listen: async () => () => {} };
 const tauriWindowStub = {
   __esModule: true,
@@ -485,6 +509,9 @@ const moduleCache = new Map();
 /** 解析插件包内的模块引用；相对路径递归转译，视图组件（.tsx）桩成空模块 */
 function resolveModule(spec, fromFile) {
   if (spec === '@ll/sdk') return sdkStub;
+  // @ll/ui 只被视图组件（.tsx）使用，而 .tsx 在 Node 端一律桩成空模块；
+  // 这条分支是为了让"插件允许依赖 @ll/ui"这个约定在解析器里也成立
+  if (spec === '@ll/ui') return { __esModule: true, PopupFrame: () => null };
   if (spec === '@tauri-apps/api/core') return tauriStub;
   if (spec === '@tauri-apps/api/event') return tauriEventStub;
   if (spec === '@tauri-apps/api/window') return tauriWindowStub;
@@ -1636,9 +1663,12 @@ function testPomoTimerModule() {
  * 这块的坑都在"数字之间的关系"上，单测比真机点得快：
  *   - 收拢宽度装不下静态内容 → 标签被裁
  *   - 展开宽度装不下两个按钮 → 按钮被窗口切掉
- *   - 每帧只改宽度不改位置 → 右边缘漂移，几次悬停后挂件滑出屏幕
+ *   - 逐帧宽度不单调 / NaN 外溢 → 动画抖动、窗口尺寸被设成 NaN
  *   - manifest 的 width/min_width 与代码常量漂移 → set_size 被 min_inner_size 夹住，
  *     表现为"代码在动、窗口不动"（最难查的一种失效）
+ *
+ * 锚定（右边缘钉住）与物理↔逻辑像素换算已上收宿主的
+ * svc.window.setContentSize，那部分在 ll-plugin-api 的 cargo 单测里验。
  */
 function testPomoHoverModule() {
   const failures = [];
@@ -1680,26 +1710,33 @@ function testPomoHoverModule() {
     assert(H.easeOutCubic(0.5) > 0.5, 'ease-out 前半段应跑得比线性快');
     assert(H.easeOutCubic(0.25) < H.easeOutCubic(0.75), 'easing 必须单调递增');
 
-    // 5) 帧插值端点
-    const anchor = 1000;
-    const f0 = H.frameAt(H.COLLAPSED_W, H.EXPANDED_W, anchor, 16, 0);
-    const f1 = H.frameAt(H.COLLAPSED_W, H.EXPANDED_W, anchor, 16, 1);
-    assert(Math.abs(f0.width - H.COLLAPSED_W) < 1e-9, 't=0 应等于起始宽度');
-    assert(Math.abs(f1.width - H.EXPANDED_W) < 1e-9, 't=1 应等于目标宽度');
-    const fOver = H.frameAt(H.COLLAPSED_W, H.EXPANDED_W, anchor, 16, 4);
-    assert(Math.abs(fOver.width - H.EXPANDED_W) < 1e-9, 't>1 应夹到目标宽度');
-    const fNaN = H.frameAt(H.COLLAPSED_W, H.EXPANDED_W, anchor, 16, NaN);
-    assert(fNaN.width === H.COLLAPSED_W && fNaN.x === anchor - H.COLLAPSED_W,
-      'NaN 进度应回落到起始帧而不是产出 NaN 尺寸');
+    // 5) 逐帧宽度序列：端点正确、越界夹住、NaN 不外溢
+    //    （锚定与物理↔逻辑换算已上收宿主 svc.window.setContentSize，见 cargo 单测）
+    const seq = (from, to) => [0, 0.1, 0.35, 0.6, 0.9, 1].map((t) => H.lerp(from, to, H.easeOutCubic(t)));
+    const widths = seq(H.COLLAPSED_W, H.EXPANDED_W);
+    assert(Math.abs(widths[0] - H.COLLAPSED_W) < 1e-9, 't=0 应等于起始宽度');
+    assert(Math.abs(widths[widths.length - 1] - H.EXPANDED_W) < 1e-9, 't=1 应等于目标宽度');
+    assert(widths.every((w, i) => i === 0 || w >= widths[i - 1]), '逐帧宽度必须单调，否则动画来回抖');
+    assert(
+      Math.abs(H.lerp(H.COLLAPSED_W, H.EXPANDED_W, H.easeOutCubic(4)) - H.EXPANDED_W) < 1e-9,
+      't>1 应夹到目标宽度',
+    );
+    assert(
+      Number.isFinite(H.lerp(H.COLLAPSED_W, H.EXPANDED_W, H.easeOutCubic(NaN))),
+      'NaN 进度必须落在有限宽度上，否则窗口尺寸被设成 NaN',
+    );
 
-    // 6) 右边缘必须钉住：每帧 x + width == anchorRight（漂移会累积成"挂件滑走"）
-    for (const t of [0, 0.1, 0.35, 0.6, 0.9, 1]) {
-      const f = H.frameAt(H.COLLAPSED_W, H.EXPANDED_W, anchor, 16, t);
-      assert(Math.abs(f.x + f.width - anchor) < 1e-9,
-        `t=${t} 时右边缘应钉在 ${anchor}，实得 ${f.x + f.width}`);
-      assert(f.y === 16, '顶边不应随宽度变化');
-      assert(f.height === H.WIDGET_H, '高度应恒为 WIDGET_H');
-    }
+    // 6) 尺寸来源单一：挂件不再自己算坐标（历史上它读 outerPosition/scaleFactor，
+    //    HiDPI 与多屏下都是要人守的坑），也不再手写 startDragging
+    const src = readFileSync(path.join(pluginsDir, 'pomo', 'fe', 'src', 'widget.tsx'), 'utf8');
+    assert(!/scaleFactor\s*\(/.test(src), 'widget.tsx 不应再自己读 scaleFactor()：像素换算归宿主');
+    assert(!/setPosition\s*\(/.test(src), 'widget.tsx 不应再自己摆窗口位置：锚定归宿主');
+    assert(/windows\.setContentSize/.test(src), 'widget.tsx 应通过 ctx.windows.setContentSize 改宽度');
+    assert(
+      /data-tauri-drag-region="deep"/.test(src) && !/startDragging\s*\(/.test(src),
+      '拖拽应交给 data-tauri-drag-region，而不是手写 startDragging()',
+    );
+    assert(!/frameAt|leftEdgeOf/.test(src), 'widget.tsx 不应再引用已上收宿主的帧几何函数');
 
     // 7) 与 manifest 对齐：窗口默认宽/最小宽 = 收拢宽度。
     //    min_width 若仍是展开宽度，set_size 会被夹住，动画看着在跑窗口却不动
@@ -1725,6 +1762,225 @@ function testPomoHoverModule() {
     const labelWHover = css.match(/\.pw-root\.pw-hovered\s+\.pw-label\s*\{[^}]*max-width:\s*(\d+)px/);
     assert(labelWHover && Number(labelWHover[1]) === H.LABEL_W_HOVER,
       `悬停态标签宽度应为 ${H.LABEL_W_HOVER}，实得 ${labelWHover && labelWHover[1]}`);
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
+/**
+ * 弹出式基窗（宿主 `auto_height` + SDK `mountPopup` + @ll/ui popup.css）的回归。
+ *
+ * 这块的价值分两层：
+ *
+ * 1) **声明层**——manifest 少写一个字段，症状只出现在真机且很难归因：
+ *    - 漏 `decorated:false` → 用户看到系统标题栏（正是这次问题的起因）
+ *    - 漏 `resizable:false` → 手拉边框与 set_size 打架，窗口在两种高度间跳
+ *    - `min_width`/`min_height` 只写一个 → 宿主的 `min_inner_size` 整条不生效，
+ *      窗口可以被压到看不见（services.rs 只在两者同时声明时才下发下限）
+ *    - 视图标签没登记进 `capabilities/default.json` → **死窗**：窗口建得出来、
+ *      IPC 全部被权限层拒掉，表现为"点了没反应"。这条是本块价值最高的一断。
+ * 2) **行为层**——mountPopup 的取样与挂起规则：漏了死区会每帧打 IPC，
+ *    漏了拖拽挂起就是 pomo 当年那个"拖完弹回"（系统拖拽事务进行中改窗口几何，
+ *    松手瞬间被拖拽基准覆盖）。
+ */
+function testPopupBaseWindow() {
+  const failures = [];
+  const POPUP_MIN_H_FLOOR = 96.0; // 与 ll-plugin-api 的 POPUP_MIN_H_FLOOR 保持一致
+
+  // ── 1) 声明层 ────────────────────────────────────────────
+  try {
+    const autoViews = [];
+    for (const dir of readdirSync(pluginsDir)) {
+      const file = path.join(pluginsDir, dir, 'manifest.json');
+      if (!existsSync(file)) continue;
+      const manifest = JSON.parse(readFileSync(file, 'utf8'));
+      for (const v of manifest.views ?? []) {
+        if (v.auto_height) autoViews.push({ plugin: manifest.id, view: v });
+      }
+    }
+    assert(autoViews.length >= 2, `应至少收编 detail 与 reminder 两个 auto_height 视图，实得 ${autoViews.length}`);
+
+    for (const { plugin, view } of autoViews) {
+      const who = `${plugin}/${view.id}`;
+      assert(view.decorated === false, `${who}: auto_height 必须 decorated:false，否则还剩一条系统标题栏`);
+      assert(view.resizable === false, `${who}: 内容驱动高度必须 resizable:false，否则用户拖框与 set_size 互相打架`);
+      // 下限只在 min_width 与 min_height **同时**声明时才下发（services.rs 的 only-both 规则）
+      assert(
+        (view.min_width === undefined) === (view.min_height === undefined),
+        `${who}: min_width / min_height 必须成对声明，只写一个等于没写`,
+      );
+      assert(typeof view.max_height === 'number', `${who}: 必须声明 max_height，否则长内容会把窗口撑到全屏`);
+      assert(view.height <= view.max_height, `${who}: 首帧 height(${view.height}) 不应大于 max_height(${view.max_height})`);
+      // GTK 会把子控件下限夹到 200×200，宿主对 auto_height 用 POPUP_MIN_H_FLOOR 兜底；
+      // 声明值低于这个兜底就是自欺——窗口缩不到那里，代码却在往那里报
+      assert(view.min_height >= POPUP_MIN_H_FLOOR,
+        `${who}: min_height(${view.min_height}) 低于宿主兜底 ${POPUP_MIN_H_FLOOR}，缩不到声明值`);
+      assert(view.min_height < view.max_height, `${who}: min_height 必须小于 max_height`);
+    }
+
+    // 死窗防护：宿主建窗标签是 `<plugin>-<view>`，带 unique_by 时是 `<plugin>-<view>-<值>`
+    const caps = JSON.parse(readFileSync(path.join(root, 'src-tauri', 'capabilities', 'default.json'), 'utf8'));
+    const matched = (label) =>
+      caps.windows.some((g) => (g.endsWith('*') ? label.startsWith(g.slice(0, -1)) : g === label));
+    for (const dir of readdirSync(pluginsDir)) {
+      const file = path.join(pluginsDir, dir, 'manifest.json');
+      if (!existsSync(file)) continue;
+      const manifest = JSON.parse(readFileSync(file, 'utf8'));
+      for (const v of manifest.views ?? []) {
+        const exact = `${manifest.id}-${v.id}`;
+        assert(matched(exact), `capabilities 未登记窗口 ${exact}，该视图会是个建得出来却收不到 IPC 的死窗`);
+        if (v.unique_by) {
+          const suffixed = `${exact}-abc1234`;
+          assert(matched(suffixed), `capabilities 未登记带实例后缀的 ${suffixed}（unique_by 的窗口拿不到权限）`);
+        }
+      }
+    }
+  } catch (err) {
+    failures.push(err.message);
+  }
+
+  // ── 样式作用域 ───────────────────────────────────────────
+  try {
+    const css = readFileSync(path.join(pluginsDir, 'ui', 'src', 'popup.css'), 'utf8');
+    const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+    const selectors = [...stripped.matchAll(/([^{}]+)\{/g)].flatMap((m) =>
+      m[1].split(',').map((s) => s.trim()).filter(Boolean),
+    );
+    assert(selectors.length > 0, 'popup.css 没解析出任何规则');
+    for (const sel of selectors) {
+      assert(sel.startsWith('body.ll-popup-mode'),
+        `popup.css 的选择器 "${sel}" 没挂在 body.ll-popup-mode 下，会漏进启动器主窗`);
+    }
+    // index.html 用 !important 钉死了 html/body/#root 的底色与 overflow，压不住就等于没写
+    const bodyRule = stripped.match(/body\.ll-popup-mode\s*\{([^}]*)\}/);
+    assert(bodyRule && /background-color:[^;]*!important/.test(bodyRule[1]),
+      'popup.css 对 body 底色必须带 !important，否则浅色主题下是"亮卡片坐在深色底板上"');
+    assert(bodyRule && /overflow:\s*auto\s*!important/.test(bodyRule[1]),
+      'popup.css 必须把 body 的 overflow 抢回 auto !important，长内容才滚得动');
+    assert(/body\.ll-popup-mode\s*(?:>\s*)?#root\s*\{[^}]*height:\s*auto\s*!important/.test(stripped),
+      '#root 的 height 必须夹回 auto，否则测量值恒等于窗口高度，窗口永远缩不回去');
+    assert(/scrollbar-width:\s*thin\s*!important/.test(stripped)
+      && /-webkit-scrollbar[\s\S]*display:\s*block\s*!important/.test(stripped),
+      '要恢复可见滚动条：全局把滚动条藏了，弹窗里藏起来等于告诉用户"下面没有内容"');
+    // index.html 的 `html, body, #root { color:#f3f4f6 !important }` 是 ID 权重 (1,0,0)，
+    // 只写在 body 上会被 #root 挡回去 —— 真机症状是"没自己声明 color 的标题浅到看不见"。
+    const rootRule = stripped.match(/body\.ll-popup-mode\s*>\s*#root\s*\{([^}]*)\}/);
+    assert(rootRule && /color:[^;]*!important/.test(rootRule[1]),
+      '#root 的字色也必须重写，否则弹窗标题继承 index.html 的深色主题字色');
+    assert(/\.ll-popup-head\s*\{[^}]*position:\s*sticky/.test(stripped),
+      '标题行要 sticky：内容超过 max_height 时滚的是 body，不钉住的话一滚标题就没了');
+
+    // Linux/GTK 对 resizable(false) 的窗口直接忽略应用侧 set_size（Tauri 还返回 Ok），
+    // auto_height 在 Linux 必须保持可 resize，否则窗口停在声明高度、卡片下面一条空白。
+    const services = readFileSync(
+      path.join(root, 'src-tauri', 'crates', 'll-host', 'src', 'services.rs'), 'utf8');
+    assert(/let resizable = if spec\.auto_height \{\s*cfg!\(target_os = "linux"\)/.test(services),
+      'services.rs 里 auto_height 窗口的 resizable 必须按 cfg!(target_os = "linux") 走，GTK 不吃非可缩放窗口的 set_size');
+
+    // 旧的"卡片被拉成整窗"补丁必须消失，否则同一个窗口有两套互相打架的布局
+    const calCss = readFileSync(path.join(pluginsDir, 'todo', 'fe', 'src', 'calendar', 'calendar.css'), 'utf8');
+    assert(!/body\.detail-mode/.test(calCss), 'calendar.css 里不应再有 body.detail-mode 补丁');
+    assert(/\.cal-modal--inline/.test(calCss), 'EventModal 的 inline 态需要 .cal-modal--inline 摘掉浮层外观');
+    assert(!/cal-detail-root/.test(readFileSync(path.join(pluginsDir, 'todo', 'fe', 'src', 'calendar', 'EventDetail.tsx'), 'utf8')),
+      'EventDetail 不应再自带浮层遮罩根节点，外壳已由 PopupFrame 提供');
+  } catch (err) {
+    failures.push(err.message);
+  }
+
+  // ── 2) 行为层：mountPopup 的取样 / 死区 / 拖拽挂起 ─────────
+  try {
+    moduleCache.clear();
+    invokeCalls.length = 0;
+    const observers = [];
+    const rafs = [];
+    const winListeners = {};
+    const saved = {
+      window: globalThis.window,
+      document: globalThis.document,
+      ResizeObserver: globalThis.ResizeObserver,
+      requestAnimationFrame: globalThis.requestAnimationFrame,
+    };
+
+    const mkEl = () => ({
+      attrs: {},
+      handlers: {},
+      height: 200,
+      setAttribute(k, v) { this.attrs[k] = v; },
+      addEventListener(t, fn) { (this.handlers[t] ??= []).push(fn); },
+      removeEventListener(t, fn) { this.handlers[t] = (this.handlers[t] ?? []).filter((f) => f !== fn); },
+      getBoundingClientRect() { return { height: this.height }; },
+      fire(t) { (this.handlers[t] ?? []).forEach((fn) => fn({})); },
+    });
+    const classList = new Set();
+    globalThis.document = { body: { classList: { add: (c) => classList.add(c), remove: (c) => classList.delete(c) } } };
+    globalThis.window = {
+      __TAURI_INTERNALS__: { invoke: async () => null },
+      addEventListener: (t, fn) => { (winListeners[t] ??= []).push(fn); },
+      removeEventListener: (t, fn) => { winListeners[t] = (winListeners[t] ?? []).filter((f) => f !== fn); },
+    };
+    globalThis.ResizeObserver = class {
+      constructor(cb) { this.cb = cb; observers.push(this); }
+      observe() {}
+      disconnect() { this.disconnected = true; }
+    };
+    globalThis.requestAnimationFrame = (fn) => { rafs.push(fn); return rafs.length; };
+
+    /** 排空一帧：mountPopup 的上报都排在 rAF 里 */
+    const pump = () => { while (rafs.length) rafs.splice(0).forEach((fn) => fn()); };
+    const reports = () => invokeCalls.filter((c) => c.method === 'svc.window.setContentSize');
+
+    try {
+      const P = loadPluginModule(path.join(pluginsDir, 'sdk', 'src', 'popup.ts'));
+      const content = mkEl();
+      const drag = mkEl();
+      const popup = P.mountPopup({ pluginId: 'todo', content, drag });
+
+      assert(classList.has(P.POPUP_BODY_CLASS), 'mountPopup 应给 body 打上基窗类名');
+      assert(drag.attrs['data-tauri-drag-region'] === 'deep', '拖拽区应由 mountPopup 打上 deep 属性');
+      pump();
+      assert(reports().length === 1, `首帧应上报一次高度，实得 ${reports().length}`);
+      assert(reports()[0].params.height === 200, `首帧应上报内容自然高度 200，实得 ${reports()[0].params.height}`);
+
+      // 死区：同值与 1px 抖动都不值得打 IPC
+      observers.forEach((o) => o.cb());
+      pump();
+      assert(reports().length === 1, '同高度重复触发不应再发 IPC');
+      content.height = 201;
+      observers.forEach((o) => o.cb());
+      pump();
+      assert(reports().length === 1, '小于死区（2px）的抖动应被吞掉');
+
+      // 正常增长
+      content.height = 240;
+      observers.forEach((o) => o.cb());
+      pump();
+      assert(reports().length === 2 && reports()[1].params.height === 240,
+        `跨过死区应上报一次 240，实得 ${JSON.stringify(reports().map((r) => r.params.height))}`);
+
+      // 拖拽期间挂起：系统拖拽事务进行中改窗口几何，松手会被拖拽基准覆盖（pomo 的"弹回"）
+      drag.fire('mousedown');
+      content.height = 300;
+      observers.forEach((o) => o.cb());
+      pump();
+      assert(reports().length === 2, '拖拽进行中不得上报尺寸');
+      (winListeners.mouseup ?? []).forEach((fn) => fn({}));
+      pump();
+      assert(reports().length === 3 && reports()[2].params.height === 300,
+        '松手后必须补上拖拽期间攒下的那次变化，否则窗口停在旧尺寸');
+
+      popup.dispose();
+      assert(!classList.has(P.POPUP_BODY_CLASS), 'dispose 应摘掉基窗类名');
+      assert(observers.every((o) => o.disconnected), 'dispose 应断开 ResizeObserver');
+      assert((winListeners.mouseup ?? []).length === 0, 'dispose 应摘掉 window 上的 mouseup');
+    } finally {
+      Object.assign(globalThis, {
+        window: saved.window,
+        document: saved.document,
+        ResizeObserver: saved.ResizeObserver,
+        requestAnimationFrame: saved.requestAnimationFrame,
+      });
+    }
   } catch (err) {
     failures.push(err.message);
   }
@@ -2393,13 +2649,23 @@ async function main() {
   }
 
   // 纯函数模块：/pomo 挂件的悬停伸缩（宽度是否装得下内容 · 右边缘是否钉住 · 与 manifest 对齐）
-  const hoverFailures = testPomoHoverModule();
-  if (hoverFailures.length === 0) {
-    console.log('\n  ✓ 纯函数：/pomo 挂件悬停伸缩（宽度取值 · 右边缘钉住 · manifest 对齐）');
+    const hoverFailures = testPomoHoverModule();
+    if (hoverFailures.length === 0) {
+      console.log('\n  ✓ 纯函数：/pomo 挂件悬停伸缩（宽度取值 · manifest 对齐 · 尺寸改由宿主落窗）');
+    } else {
+      failed += 1;
+      console.log('\n  ✗ 纯函数：/pomo hover-size');
+      for (const f of hoverFailures) console.log(`      - ${f}`);
+    }
+
+  // 弹出式基窗：manifest 声明齐全 · CSS 作用域不越界 · mountPopup 的取样与挂起规则
+  const popupFailures = testPopupBaseWindow();
+  if (popupFailures.length === 0) {
+    console.log('\n  ✓ 弹出式基窗（auto_height 声明 · 死窗防护 · 样式作用域 · mountPopup 取样/死区/拖拽挂起）');
   } else {
     failed += 1;
-    console.log('\n  ✗ 纯函数：/pomo hover-size');
-    for (const f of hoverFailures) console.log(`      - ${f}`);
+    console.log('\n  ✗ 弹出式基窗');
+    for (const f of popupFailures) console.log(`      - ${f}`);
   }
 
   // 纯函数模块：全局热键速查表的分组与格式化（多修饰键归组、修饰键顺序归一）
