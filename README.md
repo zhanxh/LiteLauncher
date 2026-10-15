@@ -13,7 +13,7 @@
 flowchart TD
     A["全局快捷键 (Alt+Space / Alt+X)"] --> B["主搜索框 (居中/置顶/无边框)"]
     B --> C{"DSL 指令分词与解析器"}
-    C -->|"Action 命令 (如 /todo new)"| D["实时语义胶囊 + 回车直接执行"]
+    C -->|"Action 命令 (如 /cal new)"| D["实时语义胶囊 + 回车直接执行"]
     C -->|"Query 命令 (如 /note)"| E["展开结果面板"]
     C -->|"数学算式 (如 12 * 85)"| F["即时计算胶囊 + 回车复制"]
     C -->|"普通文本"| G["本地应用 / 系统命令 / 网络搜索"]
@@ -49,25 +49,30 @@ flowchart TD
 - **Action 模式**：输入 `/app add "应用名称" "可执行路径"`，实时预览胶囊，回车持久化保存至捷径库。
 - **拼音简写**：支持直接输入 `jsq`（计算器）、`jsb`（记事本）智能推荐。
 
-### 2. 待办日程 (`/todo`)
+### 2. 日程管理 (`/cal`)
+- **日程窗口 (`/cal app`)**：960×720 独立窗口，**月 / 周 / 日三视图**；左侧按分类日历勾选过滤，顶部一次 `query_range` 拉取当前区间的全部实例（含重复展开）。
+  - 月视图：每日堆叠条目 + 跨天条带；周/日视图：00–24 竖排时间轴，重叠日程自动分道。
+  - 时间轴上**按住空白处拖动即可新建**（按 15 分钟吸附），拖动已有条目可改时间。
+  - `/cal today` 直达今天的日视图，`/cal week` 直达本周。
 - **Action 即时添加**：
-  - `/todo new "下午技术周会" 14:30` → 今天 14:30 提醒（该时刻已过则顺延至明天）。
-  - `/todo new "项目评审" 2026-10-11 14:30` → 指定日期+时间的精确提醒。
-  - `/todo new "周报撰写" 2026-10-12` → 指定日期，当天 09:00 提醒。
-  - 提醒时间在保存时校验并规范化，过去的时间会给出明确错误提示。
-  - 到点双通道提醒：**桌面右下角弹窗**（应用自绘，无边框置顶、不抢焦点，点击关闭或超时自动消失）+ **系统级通知**（进入通知中心留存历史），主窗口隐藏时依然有效。
-  - 实时解析出内容与提醒标签，敲击回车直接写入 SQLite，Toast 提示并清空输入框。
-- **间隔重复提醒**：
-  - `/todo new "喝水" 15:00 every:30min` → 每 30 分钟提醒一次。
-  - 支持 `every:Nmin / Nh / Nd / Nw / Nmo`（分钟/小时/天/周/月，月度按日历推进，月末自动安全进位）。
-  - 关键词：`daily`（每天）、`weekly`（每周）、`mon`..`sun`（每周指定星期）。
-  - 触发后自动重排到下一次时间；已完成的待办不再触发。
-- **Query 列表管理**：
-  - 输入 `/todo` 展开待办列表（未完成置顶），回车一键切换已完成/待办状态。
-  - 已完成的待办不再触发提醒。
-- **管理面板 (`/todo app`)**：
-  - 打开独立待办管理窗口：未完成/已完成分区展示，支持编辑内容与提醒时间、一键切换完成状态、删除、快速添加。
-  - 设置面板可配置弹窗提醒显示时长（5-300 秒），并提供"测试弹窗"即时预览。
+  - `/cal new "需求评审" 10-15 14:00-15:30` → 指定日期 + 区间。
+  - `/cal new "周报" 2026-10-12` → 只给日期即为**全天事项**（不占时间轴格子）。
+  - `14:30` 简写按今天理解，该时刻已过则顺延至明天；`M-D` 省略年份时过期的日子按明年理解。
+  - 修饰参数：`--al 10,30`（多条提醒，提前分钟数）、`--al none`（显式关闭）、`--where 会议室`、`--note 备注`、`--cal 工作`（分类）、`--all-day`、`--free` / `--busy`（忙闲）。未知 `--flag` 静默忽略，裸词一律留作标题。
+  - 实时语义胶囊回显解析结果（`🗓 10-15 14:00–15:30 · 📍会议室 · ⏰ -30min/-10min · 🔁 每周`），回车写入 SQLite；保存后若与既有日程重叠会附带提示。
+- **间隔重复**：
+  - `every:30min` / `every:2hour` / `every:1day` / `every:1week` / `every:1month` / `every:1year`，月度按日历推进、月末自动安全进位（1-31 号不会崩）。
+  - 关键词：`daily`（每天）、`weekly`（每周）、`monthly`、`yearly`、`mon`..`sun`（每周指定星期）。
+  - 重复规则的终止由 `repeat_until` 表达（`'YYYY-MM-DD HH:MM'` 或 `count:N`），`.ics` 导入的 `UNTIL` / `COUNT` 会落在这里；日历渲染的是区间内**展开后的每一个实例**。
+- **多提醒 × 重复触发**：
+  - 每条提醒在每个实例上**独立幂等**（复合主键 + `ON CONFLICT DO NOTHING`），重启不重弹。
+  - 到点双通道提醒：**桌面右下角弹窗**（无边框置顶、不抢焦点，点击关闭或超时自动消失）+ **系统级通知**（进通知中心留历史），主窗口隐藏时依然有效。
+  - 关机/睡眠错过的提醒**只记账不补弹**，避免开机一次性炸出十几条弹窗。
+- **分类日历**：`/cal cal add 工作 #4c8dff` · `/cal cal rm 生活` · `/cal cal list`，每个分类一种颜色，窗口内可勾选显隐。
+- **`.ics` 双向**：`/cal export [天数]`（默认 90 天，落在"下载"目录）· `/cal import ~/downloads/plan.ics`；窗口内也有导入/导出按钮（导入走文件选择器）。按 **UID 幂等**——同一条日程重复导入只更新、不产生副本。
+- **Query 列表管理**：`/cal` 或 `/cal list 关键字` 展开清单（未完成置顶），回车一键切换完成状态；`/cal done 周报` · `/cal del 周报` 按标题匹配，**命中多条会拒绝执行而不是猜一条**。
+- **设置**：`todo.popup_auto_close_secs`（弹窗显示时长 5-300 秒，附"测试弹窗"即时预览）、`todo.default_duration_min`（新建日程的默认时长，`end_at` 缺省时用它补齐）。
+- **兼容 `/todo`**：`/todo` 注册为隐藏别名（同一个 `plugin_id`），老指令、老数据、老管理窗口视图全部照常可用；斜杠补全与 `/help` 里只显示 `/cal`。
 
 ### 5. 应用设置 (`/setting`)
 - **皮肤切换**：亮色 / 暗色主题一键切换，立即生效并同步到所有窗口（启动器、笔记编辑器、待办面板、提醒弹窗、设置面板），选择持久化保存。
@@ -87,7 +92,7 @@ flowchart TD
 ### 4. 辅助指令与计算
 - **帮助指南**：`/help` 查看所有已注册指令与语法。
 - **实时计算器**：输入任意算术表达式（如 `12 * 85 + 3.14`），实时展现计算结果，回车一键复制。
-- **无斜杠直达**：输入 `todo`、`note`、`app` 自动智能映射到对应指令。
+- **无斜杠直达**：输入 `cal`、`todo`、`note`、`app` 自动智能映射到对应指令。
 - **模糊容错**：输入 `/not`、`/notes` 等前缀会推荐 `/note` 候选，回车一键补全。
 
 ---
@@ -231,6 +236,19 @@ npm run plugin:test:fe
 - **Windows 构建工具**：二选一
   - MSVC 工具链：Visual Studio 2022 C++ 构建工具（官方默认路径），或
   - GNU 工具链：`rustup default stable-x86_64-pc-windows-gnu` + 完整 MinGW binutils/gcc（无需管理员权限）
+- **Linux 系统依赖**（Debian 12 / Ubuntu 一类，`build.sh` 会预检并在这一步失败时打印同一条命令）：
+  ```bash
+  sudo apt-get install -y build-essential pkg-config libclang-dev \
+    libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+    libsoup-3.0-dev libgbm-dev libpipewire-0.3-dev libspa-0.2-dev
+  ```
+  每一项都对应一个真实的编译期探针，不是照着清单凑的：
+  `libclang-dev`（bindgen 找 `libclang.so`，`xcap → pipewire-sys / libspa-sys` 要先过它）、
+  `libgbm-dev`（链接 `-lgbm`，机器上往往只有运行库 `libgbm.so.1`，缺的是 dev 符号链接）、
+  `libpipewire-0.3-dev` / `libspa-0.2-dev`（`pkg-config` 探针，缺了就报
+  `was not found in the pkg-config search path`）、webkit 三件套（Tauri webview）。
+- 判据：报 `Unable to find libclang` 或 `was not found in the pkg-config search path`
+  **都是缺 `-dev`，不是版本或代码问题，别去改 `build.rs`。**
 
 ### 2. 启动开发模式
 ```powershell
@@ -271,6 +289,41 @@ build.cmd ship
 
 > ⚠️ **注意**：请使用 `npx tauri build`（或 `build.cmd`）打包，不要直接用 `cargo build --release`。
 > 后者不会启用 `custom-protocol` 特性，产出的 exe 会去连 `localhost:1420` dev server，导致窗口白屏或"localhost 拒绝连接"。
+
+**Linux 上 `./build.sh ship` 多打一个 `.deb`**（落在 `src-tauri/target-ship/release/bundle/deb/`，日常构建仍然 `--no-bundle`）：
+
+- deb 的 `Depends` 是 Tauri 自己探模块写出来的**短列表**（本项目当前是
+  `libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0`），**不是 `dpkg-shlibdeps`
+  从 `ldd` 反推的**。它现在够用，但这是要验的，不是能假设的：把上面 3 项的
+  传递依赖闭包和产物 `ldd` 的包归属对一遍，实测在本机是**完全覆盖**的
+  （167 个 NEEDED、125 个包归属，差集为空；`libgbm1` / `libsoup-3.0-0` / `libicu72` / GStreamer
+  都靠 `libwebkit2gtk-4.1-0` 一条链带进来）。
+  覆盖关系靠的是 webkit 自己的 Depends 边，所以**新接一个直接依赖原生库的 crate**
+  （或直接上 tray 之外的原生依赖）时这条链未必还罩得住，发版前要重跑一遍对账：
+  ```bash
+  # 差集为空 = deb 的 Depends 闭包罩得住产物的全部运行库
+  deb=$(ls src-tauri/target/release/bundle/deb/*.deb)
+  BIN=src-tauri/target/release/LiteLauncher
+  comm -23 \
+    <(ldd "$BIN" | awk '/=> \//{print $3}' \
+        | while read -r l; do dpkg -S "$l" 2>/dev/null || dpkg -S "$(realpath "$l")" 2>/dev/null; done \
+        | cut -d: -f1 | sed 's/:amd64$//;/^$/d' | sort -u) \
+    <(dpkg-deb -f "$deb" Depends | tr ',' '\n' | sed 's/^ //' \
+        | while read -r p; do apt-cache depends --recurse --no-recommends --no-suggests \
+              --no-conflicts --no-breaks --no-replaces --no-enhances "$p" 2>/dev/null \
+              | grep -E '^[a-z0-9]'; done \
+        | sed 's/:amd64$//' | sort -u)
+  ```
+  （`dpkg -S` 要对 `/lib` 与 `/usr/lib` 两种路径各试一次：deb12 的 usr-merge 让同一 `.so`
+  在两边有不同记法，只试一种会漏掉 `libc6`/`zlib1g` 那批。）
+- **编译期那堆 `-dev` 一个都不用带到目标机**：头文件、`.pc`、`libgbm.so → libgbm.so.1` 这类符号链接只在链接阶段被读，运行期只要带 soname 的 `.so`（`libgbm1`、`libwebkit2gtk-4.1-0`，都不带 `-dev`）。
+- 顺带一条实测结论：当前产物的 `NEEDED` 里**没有** `libpipewire-0.3.so` / `libspa`。`xcap` 只在 Wayland portal 截图路径用到 pipewire，那段代码经死代码消除后被 `--as-needed` 掉了 —— 装 `libpipewire-0.3-dev` 纯粹是"过编译"，对运行没有任何影响。
+- 换机器自查（有输出就是缺运行库，装对应包，别装 `-dev`）：
+  ```bash
+  ldd LiteLauncher | grep "not found"
+  ```
+  真正决定能不能跑的是 webkit/GTK 那一坨：`libwebkit2gtk-4.1`、`libjavascriptcoregtk-4.1`、`libgtk-3`、`libsoup-3.0`、`libgbm1`、GStreamer、`libicu72`。带桌面的 Debian/Ubuntu 一般自带，精简镜像未必；`libicu72`、`libsoup-3.0` 这类 soname 里焊了版本号，跨发行版（如 Ubuntu 24.04 是 `libicu74`）会直接加载失败 —— 要跨发行版就自己加 `--bundles appimage`，代价是首次要联网下 linuxdeploy。
+- **`.deb` 里只有主程序**，外部插件不在包内：装完把 `release/plugins/` 放到 `~/.local/share/LiteLauncher/extplugins/`（两级部署见 `src-tauri/src/lib.rs:194`）。Python 类插件（pomo 等）还要求目标机 PATH 上有 `python3`（`src-tauri/crates/ll-host/src/python.rs:161`）。
 
 ### 4. 排障日志
 - `lifecycle.log`：生成在 exe 同目录，记录窗口事件、IPC 调用与前端 console 转发，排障首选。
