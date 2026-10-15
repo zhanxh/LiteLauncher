@@ -156,6 +156,15 @@ body.ll-popup-mode .ll-popup-body-inner {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: relative; /* .ll-popup-fill-fixed 的定位基准 */
+}
+
+/* fill 的自滚动形态：内容根钉成窗口大小（absolute 脱流后 inner 恰好只剩
+   min-height:100%，外层滚动永不发生），由内容根自己决定谁内部滚动——
+   比如设置窗：左侧分类导航固定，只有右侧内容滚。 */
+body.ll-popup-mode .ll-popup-fill-fixed {
+  position: absolute;
+  inset: 0;
 }
 
 /* 状态栏：固定段，规格与 .cal-modal-foot 一致。内容是插件给的（按钮/文案），

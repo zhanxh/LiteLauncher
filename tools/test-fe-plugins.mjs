@@ -1880,6 +1880,11 @@ function testPopupBaseWindow() {
       '内容区必须是唯一的滚动区（overflow-y:auto + min-height:0），标题/状态栏不能跟着滚');
     assert(/body\.ll-popup-mode\s+\.ll-popup-foot\s*\{[^}]*flex:\s*none/.test(stripped),
       '状态栏必须是 flex 固定段（flex:none），长内容时钉在窗口底边');
+    // fill 的自滚动形态：设置窗这类"内容根自己管滚动"的窗口靠它把 tab 导航钉住，
+    // 丢了它长内容会把整个内容根撑高、外层滚动连导航一起滚走
+    assert(/body\.ll-popup-mode\s+\.ll-popup-fill-fixed\s*\{[^}]*position:\s*absolute/.test(stripped)
+      && /position:\s*relative/.test(stripped.match(/body\.ll-popup-mode\s+\.ll-popup-body-inner\s*\{([^}]*)\}/)?.[1] ?? ''),
+      '.ll-popup-fill-fixed（absolute）+ .ll-popup-body-inner（relative）必须成对存在，fill 窗口的内容根才钉得住');
 
     // Linux/GTK 对 resizable(false) 的窗口直接忽略应用侧 set_size（Tauri 还返回 Ok），
     // auto_height 在 Linux 必须保持可 resize，否则窗口停在声明高度、卡片下面一条空白。

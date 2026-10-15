@@ -1,6 +1,7 @@
 /* 应用设置面板（独立窗口，view=settings）
-   窗口外壳（标题栏/状态栏/滚动区）由 @ll/ui 的基窗 PopupFrame 提供（fill 定尺寸窗），
-   颜色全部取自 launcher.css 的全局主题变量，跟随亮/暗皮肤切换 */
+   窗口外壳（标题栏/状态栏）由 @ll/ui 的基窗 PopupFrame 提供（fill 定尺寸窗）。
+   布局：左侧竖排分类导航（固定）+ 右侧内容区（内部滚动），横版窗口（宽 > 高）。
+   ll-popup-fill-fixed 把内容根钉成窗口大小：插件再多滚的也只是右栏，tab 不动 */
 
 body.settings-mode {
   margin: 0;
@@ -11,11 +12,69 @@ body.settings-mode {
 
 .settings-app {
   display: flex;
-  flex-direction: column;
   color: var(--text-main);
   font-family: var(--font-family);
-  padding: 16px 18px 18px;
   box-sizing: border-box;
+}
+
+/* ── 左侧分类导航 ── */
+.settings-nav {
+  flex: none;
+  width: 152px;
+  padding: 12px 8px;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-solid);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+
+.settings-nav-item:hover {
+  background: var(--hover-overlay);
+  color: var(--text-main);
+}
+
+.settings-nav-item.active {
+  background: var(--accent-light);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.settings-nav-icon {
+  font-size: 14px;
+  flex: none;
+}
+
+/* ── 右侧内容区 ── */
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 16px 20px 18px;
+}
+
+.settings-card {
+  background: var(--editor-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 16px 18px;
 }
 
 .settings-app .ll-btn {
@@ -41,14 +100,6 @@ body.settings-mode {
 
 .settings-app .ll-btn.ghost:hover {
   background: var(--keyhint-bg);
-}
-
-.settings-card {
-  background: var(--editor-bg);
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  padding: 16px 18px;
-  margin-bottom: 14px;
 }
 
 .settings-card h2 {

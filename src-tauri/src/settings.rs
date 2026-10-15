@@ -85,8 +85,9 @@ pub async fn open_settings_window(app: AppHandle) -> Result<(), String> {
         WebviewUrl::App("index.html?view=settings".into()),
     )
     .title("LiteLauncher - 设置")
-    .inner_size(500.0, 600.0)
-    .min_inner_size(440.0, 480.0)
+    // 横版布局：左侧竖排分类导航 + 右侧内容区，宽度大于高度才摆得下
+    .inner_size(800.0, 560.0)
+    .min_inner_size(660.0, 480.0)
     .resizable(true)
     // 无边框窗：标题栏/关闭按钮由前端的通用基窗（PopupFrame）提供，
     // 与日历、插件弹窗保持同一套窗口外观；拖拽走基窗标题栏的 drag-region
