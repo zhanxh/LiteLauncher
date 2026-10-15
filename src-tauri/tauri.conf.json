@@ -32,8 +32,12 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
     "targets": "all",
+    "category": "Utility",
+    "license": "MIT",
+    "shortDescription": "桌面快捷启动器：插件化的搜索、截图、剪贴板与工具集合",
+    "longDescription": "LiteLauncher 是无边框常驻桌面的启动器。内置待办/应用/笔记/AI 插件，外部插件（LLP/1）拷入目录即装，支持 Python 等任意语言运行时。",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -28,6 +28,53 @@ if (( node_ok == 0 )); then
     exit 1
 fi
 
+# ── Linux 系统依赖预检 ──────────────────────────────────────
+# 只查编译期真正要用的东西：pkg-config 探针 + bindgen 要的 libclang.so。
+# 全部是 -dev 包，运行期一个都不需要（运行期要的是 .so，见 README 的自检命令）。
+# libxdo-dev 不在列：global-hotkey 走 dlopen，编译期探不到它。
+# librsvg2-dev 不在列：本项目的依赖图实际没探它，装上只是浪费。
+check_linux_deps() {
+    local missing=()
+    command -v pkg-config >/dev/null || missing+=(pkg-config)
+
+    # bindgen 找的是 libclang.so（不带版本号那个 dev 符号链接）
+    local clang_ok=0
+    if ls /usr/lib/llvm-*/lib/libclang.so >/dev/null 2>&1; then
+        clang_ok=1
+    elif command -v ldconfig >/dev/null && ldconfig -p | grep -q 'libclang\.so'; then
+        clang_ok=1
+    fi
+    (( clang_ok )) || missing+=(libclang-dev)
+
+    local probes=(
+        gtk+-3.0                 # gtk 绑定（services.rs 里压小窗尺寸下限）
+        webkit2gtk-4.1           # Tauri webview
+        javascriptcoregtk-4.1    # Tauri webview
+        libsoup-3.0              # webkit 的 HTTP 栈
+        gbm                      # mesa 的 buffer 管理，链接期要 -lgbm
+        libpipewire-0.3          # xcap → pipewire-sys
+        libspa-0.2               # xcap → libspa-sys
+    )
+    local m
+    for m in "${probes[@]}"; do
+        pkg-config --exists "$m" 2>/dev/null || missing+=("$m")
+    done
+
+    if (( ${#missing[@]} )); then
+        echo "[错误] 缺少 Linux 编译依赖：${missing[*]}"
+        echo "       修复（Debian/Ubuntu，装完直接重跑本脚本）："
+        echo "         sudo apt-get install -y build-essential pkg-config libclang-dev \\"
+        echo "           libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \\"
+        echo "           libsoup-3.0-dev libgbm-dev libpipewire-0.3-dev libspa-0.2-dev"
+        echo "       判据：报 \"Unable to find libclang\" 或 \"was not found in the pkg-config"
+        echo "       search path\" 都是缺 -dev，不是版本/代码问题，别去改 build.rs。"
+        exit 1
+    fi
+}
+if [[ "$(uname -s)" == "Linux" ]]; then
+    check_linux_deps
+fi
+
 # ship = 正式发布档。日常构建直接用 Cargo.toml 里的快速档。
 SHIP=0
 if [[ "${1:-}" == "ship" ]]; then SHIP=1; fi   # 不用 && 形式：set -e 下的返回值容易误判
@@ -73,7 +120,14 @@ if (( SHIP )); then
 else
     echo "[2/4] 构建主程序（Tauri release，含内置插件）..."
 fi
-npx tauri build --no-bundle
+# ship = 正式发布包：顺手打 .deb，让目标机用 apt 补运行库。
+# 日常构建保持 --no-bundle（快，且不碰网络）。目标只有 deb：rpm 要装 rpmbuild，
+# appimage 要从 GitHub 下 linuxdeploy，两者都不适合放进构建默认路径。
+if (( SHIP )) && [[ "$(uname -s)" == "Linux" ]]; then
+    npx tauri build --bundles deb
+else
+    npx tauri build --no-bundle
+fi
 
 [[ -f "$BIN" ]] || { echo "[错误] 未产出 $BIN，Tauri 步骤没有生成二进制"; exit 1; }
 echo "[3/4] 拷贝主程序到 release/LiteLauncher..."
@@ -86,3 +140,14 @@ node tools/deploy-portable-plugins.mjs
 echo "构建完成。可分发内容："
 echo "  release/LiteLauncher        主程序（内置 todo/apps/notes/ai 插件）"
 echo "  release/plugins/            外部插件（便携部署，随程序分发）"
+
+# deb 里只有主程序，外部插件不在包内：装完要把 release/plugins/ 放到
+# ~/.local/share/LiteLauncher/extplugins/（用户安装目录，见 src-tauri/src/lib.rs 的两级部署）
+if (( SHIP )) && [[ "$(uname -s)" == "Linux" ]]; then
+    echo "  src-tauri/target-ship/release/bundle/deb/*.deb   安装包"
+    if ! ls src-tauri/target-ship/release/bundle/deb/*.deb >/dev/null 2>&1; then
+        echo "[警告] 上面这一步没找到 .deb，tauri 打包步骤可能静默失败，请检查上方输出"
+    else
+        echo "  发版前把 Depends 与产物 ldd 对一遍（见 README「Linux 上 ./build.sh ship 多打一个 .deb」）"
+    fi
+fi
