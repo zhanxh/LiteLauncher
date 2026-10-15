@@ -6,7 +6,7 @@
 //          （宿主据此注册插件，权限门控与设置面板的启用/禁用都依赖它）
 // 由 build.sh / build.cmd 在构建末尾自动调用，也可手动执行：
 //   node tools/deploy-portable-plugins.mjs
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
@@ -14,6 +14,50 @@ const root = process.cwd();
 const srcRoot = path.join(root, "plugins");
 const destRoot = path.join(root, "release", "plugins");
 const EXTERNAL_KINDS = new Set(["llp", "none"]);
+// Windows 上"删不掉"是常态而非事故：EPERM/EBUSY 都可能来自占用，只读属性也报 EPERM。
+const OCCUPIED = new Set(["EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]);
+
+function rmdir(dir) {
+  rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 120 });
+}
+
+function clearReadonly(dir) {
+  for (const dirent of readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, dirent.name);
+    try {
+      if (dirent.isDirectory()) {
+        chmodSync(p, 0o755);
+        clearReadonly(p);
+      } else {
+        chmodSync(p, 0o644);
+      }
+    } catch {}
+  }
+}
+
+// 清空目标目录，返回是否真的清空了。删不掉的两种成因：
+//   1. 宿主以插件目录为子进程 cwd（llp.rs 的 current_dir），进程活着时该目录不可删除；
+//      番茄钟这类常驻挂件尤其明显。
+//   2. 旧文件带只读属性，Windows 拒绝 unlink。
+// 情况 2 清掉属性就能删；情况 1 只能等进程退出，脚本不该因此中断整个构建。
+function resetDir(dir) {
+  if (!existsSync(dir)) return true;
+  try {
+    rmdir(dir);
+    return true;
+  } catch (err) {
+    if (!OCCUPIED.has(err.code)) throw err;
+  }
+  try {
+    chmodSync(dir, 0o755);
+    clearReadonly(dir);
+    rmdir(dir);
+    return true;
+  } catch (err) {
+    if (!OCCUPIED.has(err.code)) throw err;
+    return false;
+  }
+}
 
 if (!existsSync(srcRoot)) {
   console.error("[deploy-plugins] 未找到 plugins/ 目录");
@@ -32,7 +76,9 @@ for (const dirent of readdirSync(srcRoot, { withFileTypes: true })) {
   if (!EXTERNAL_KINDS.has(kind)) continue; // 编译期内置插件：无部署物
 
   const dest = path.join(destRoot, dirent.name);
-  rmSync(dest, { recursive: true, force: true });
+  if (!resetDir(dest)) {
+    console.warn(`[deploy-plugins] ${dirent.name}：旧目录删不掉（LiteLauncher 大概率正在运行），改为就地覆盖；如需干净副本请退出宿主后手动删除 release/plugins/${dirent.name}`);
+  }
   if (kind === "none") {
     mkdirSync(dest, { recursive: true });
     cpSync(manifestPath, path.join(dest, "manifest.json"));
