@@ -1,6 +1,7 @@
 /* 日程提醒右下角常驻卡片（独立小窗口内容视图，窗口尺寸见 manifest.views["reminder"]）
-   注意：本文件随主 bundle 全局加载，body 重置必须限定在 .reminder-mode 下，
-   避免污染主窗口与编辑器窗口 */
+   注意：本文件随主 bundle 全局加载，body 类名必须限定在 .reminder-mode 下，
+   避免污染主窗口与编辑器窗口。外壳（标题栏/状态栏/滚动）由 @ll/ui 的基窗
+   PopupFrame 提供，这里只写卡片自己的内容样式。 */
 
 body.reminder-mode {
   margin: 0;
@@ -9,23 +10,11 @@ body.reminder-mode {
   overflow: hidden;
 }
 
-.reminder-card {
-  box-sizing: border-box;
-  width: 100vw;
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 12px 14px 12px;
-  border-radius: 12px;
-  background: var(--editor-bg);
-  border: 1px solid var(--border-subtle);
-  box-shadow: var(--pop-shadow);
-  color: var(--text-main);
-  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  user-select: none;
+/* 入场动画挂在基窗骨架上：整张卡片（含标题栏按钮行）一起滑进来 */
+body.reminder-mode .ll-popup-root {
   animation: reminder-slide-in 0.28s cubic-bezier(0.21, 1.02, 0.73, 1);
-  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 @keyframes reminder-slide-in {
@@ -39,50 +28,16 @@ body.reminder-mode {
   }
 }
 
-/* 基窗模式（manifest 的 auto_height）下窗口就是这张卡片本身：
-   - 高度必须交回内容，`height: 100vh` 会让上报值恒等于当前窗高，窗口永远缩不回去
-   - 自带的圆角/边框/阴影会跟系统圆角与基窗底色叠出两层边，底色也已由基窗给出 */
-body.ll-popup-mode .reminder-card {
-  height: auto;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  box-shadow: none;
+/* 正文区的留白是这张卡片自己的（基窗不垫 padding，见 popup.css） */
+body.reminder-mode .ll-popup-body-inner {
+  padding: 10px 14px 12px;
 }
 
-.rm-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
-}
-
-.rm-kicker {
-  font-size: 12px;
-  letter-spacing: 0.4px;
-  color: var(--text-muted);
-}
-
-.rm-x {
-  margin-left: auto;
-  border: none;
-  background: none;
-  padding: 2px 4px;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-radius: 6px;
-}
-
-.rm-x:hover {
-  background: var(--item-bg-hover);
-  color: var(--text-main);
+body.reminder-mode .ll-popup-foot {
+  justify-content: flex-end;
 }
 
 .rm-body {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -132,13 +87,6 @@ body.ll-popup-mode .reminder-card {
   height: 8px;
   border-radius: 50%;
   background: var(--accent-text);
-  flex: none;
-}
-
-.rm-foot {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
   flex: none;
 }
 

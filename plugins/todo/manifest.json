@@ -14,7 +14,7 @@
       "min_width": 720.0,
       "min_height": 560.0,
       "resizable": true,
-      "decorated": true,
+      "decorated": false,
       "focusable": true,
       "position": "center",
       "on_existing": "focus"
@@ -27,7 +27,7 @@
       "min_width": 480.0,
       "min_height": 520.0,
       "resizable": true,
-      "decorated": true,
+      "decorated": false,
       "focusable": true,
       "position": "center",
       "on_existing": "focus"

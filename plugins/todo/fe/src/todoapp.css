@@ -1,4 +1,5 @@
 /* 待办管理面板（独立窗口，view=todoapp）
+   窗口外壳（标题栏/滚动区）由 @ll/ui 的基窗 PopupFrame 提供（fill 定尺寸窗）；
    body 重置与高度限定在 .todoapp-mode 作用域内，避免污染其他窗口 */
 
 body.todoapp-mode {
@@ -8,34 +9,14 @@ body.todoapp-mode {
   background: var(--bg-solid);
 }
 
+/* 基窗 fill 模式的内容根：撑满窗口，滚动交给基窗的内容区 */
 .todoapp {
-  position: absolute;
-  inset: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-solid);
   color: var(--text-main);
   font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  overflow-y: auto;
-  padding: 18px 22px 60px;
+  padding: 16px 20px 56px;
   box-sizing: border-box;
-}
-
-.todoapp-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
-}
-
-.todoapp-header h1 {
-  font-size: 20px;
-  margin: 0;
-}
-
-.todoapp-header-actions {
-  display: flex;
-  gap: 8px;
 }
 
 /* 通用按钮 */

@@ -1,4 +1,5 @@
 /* 日程窗口（独立窗口，view=calendar）
+   窗口外壳（标题栏/状态栏/滚动区）由 @ll/ui 的基窗 PopupFrame 提供，
    body 重置限定在 .calendar-mode 作用域内，避免污染其他窗口 */
 
 body.calendar-mode {
@@ -6,39 +7,35 @@ body.calendar-mode {
   height: 100vh;
   overflow: hidden;
   background: var(--bg-solid);
-}
-
-.cal-root {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-solid);
   color: var(--text-main);
   font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  box-sizing: border-box;
 }
 
-/* ── 顶栏 ─────────────────────────────────────────────── */
-.cal-bar {
+/* 基窗 fill 模式下 .cal-main 是内层的唯一在流子节点，撑满窗口剩余高度 */
+.cal-main {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border-subtle);
-  flex: none;
 }
 
-/* 这里曾踩过一次：类名与 todoapp.css 的 .cal-nav/.cal-title 撞车，同一份 FE bundle
-   一起注入后导航容器被压成 28px，点击全落在父 div 上。那两个类已随旧日期选择器删除，
-   但约束不变——新组件一律带自己的前缀（日期时间选择器用 dtf-）。 */
+/* ── 标题栏内容（由基窗 .ll-popup-head 承载）──────────── */
 .cal-head-nav {
   display: flex;
   align-items: center;
   gap: 8px;
   /* 状态文案（如"重复实例过多"）很长，flex 默认会把导航组挤窄到只剩字形宽度，
      按钮热区随之消失；导航区不参与收缩。 */
+  flex: none;
+  /* 这里曾踩过一次：类名与 todoapp.css 的 .cal-nav/.cal-title 撞车，同一份 FE bundle
+     一起注入后导航容器被压成 28px，点击全落在父 div 上。那两个类已随旧日期选择器删除，
+     但约束不变——新组件一律带自己的前缀（日期时间选择器用 dtf-）。 */
+}
+
+/* 导航组与导入/导出/新建之间的一条竖分隔，避免挤成一片 */
+.cal-head-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border-subtle);
   flex: none;
 }
 
@@ -220,12 +217,6 @@ body.calendar-mode {
 }
 
 /* ── 主体：左侧分类栏 + 网格 ───────────────────────────── */
-.cal-main {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-}
-
 .cal-side {
   flex: none;
   width: 184px;
@@ -359,8 +350,9 @@ body.calendar-mode {
 }
 
 /* ── 编辑器浮层 ───────────────────────────────────────── */
+/* 编辑器浮层盖住整个窗口（含基窗标题栏）：浮层自带标题与关闭，层级压过壳 */
 .cal-modal-mask {
-  position: absolute;
+  position: fixed;
   inset: 0;
   z-index: 20;
   background: rgba(0, 0, 0, 0.45);
@@ -401,10 +393,6 @@ body.calendar-mode {
 .cal-modal-title {
   font-size: 14px;
   font-weight: 600;
-}
-
-.cal-foot-space {
-  flex: 1;
 }
 
 .cal-modal-body {
@@ -552,7 +540,7 @@ body.calendar-mode {
 }
 
 /* ── 只读详情（提醒卡片「查看详情」打开的基窗）───────────
-   外壳、底色、字体、滚动条都在 @ll/ui 的 popup.css 里（auto_height 视图），
+   外壳、底色、字体、滚动区都在 @ll/ui 的 popup.css 里（auto_height 视图），
    这里只把浮层那套「卡片自带边框与高度上限」的写法摘掉。 */
 .cal-modal--inline {
   width: 100%;
@@ -561,6 +549,15 @@ body.calendar-mode {
   border-radius: 0;
   box-shadow: none;
   background: transparent;
+}
+
+/* 详情窗里编辑超长日程时内容区被 max_height 夹住，滚动发生在基窗的内容区；
+   删除/取消/保存钉在底部（sticky 不改自然高度，量高不受影响），
+   滚到任何一行保存按钮都在手边。 */
+.cal-modal--inline .cal-modal-foot {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface-raised);
 }
 
 .cal-detail-title {
@@ -583,14 +580,18 @@ body.calendar-mode {
   color: var(--text-secondary);
 }
 
-/* ── 底栏 ─────────────────────────────────────────────── */
+/* ── 状态栏内容（由基窗 .ll-popup-foot 承载）──────────── */
 .cal-foot {
-  flex: none;
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 16px;
   font-size: 12px;
+}
+
+.cal-foot-space {
+  flex: 1;
 }
 
 .cal-status {

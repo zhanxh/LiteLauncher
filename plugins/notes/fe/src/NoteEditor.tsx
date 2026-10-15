@@ -1,5 +1,6 @@
 import { Component, createSignal, onMount, onCleanup } from 'solid-js';
 import { getPluginContext } from '@ll/sdk';
+import { PopupFrame } from '@ll/ui';
 
 interface NoteEditorProps {
   filePath: string;
@@ -134,18 +135,13 @@ export const NoteEditor: Component<NoteEditorProps> = (props) => {
   };
 
   return (
-    <div class="editor-window-root">
-      {/* 顶部工具栏 */}
-      <header class="editor-header">
-        <div class="editor-title-group">
-          <span class="editor-icon">📝</span>
-          <span class="editor-title">{props.title}</span>
-          <span class={`editor-save-badge ${isSaved() ? 'saved' : 'unsaved'}`}>
-            {saveStatusText()}
-          </span>
-        </div>
-
-        <div class="editor-actions">
+    // 定尺寸窗：文件名在标题栏（宿主 title_param 注入到任务栏，这里同步展示），
+    // 保存状态进状态栏；Ctrl+S / Esc 快捷键不经过标题栏，不受收编影响
+    <PopupFrame
+      fill
+      title={<span>📝 {props.title}</span>}
+      actions={
+        <>
           <div class="editor-tab-switch">
             <button
               class={`tab-btn ${activeTab() === 'split' ? 'active' : ''}`}
@@ -166,41 +162,47 @@ export const NoteEditor: Component<NoteEditorProps> = (props) => {
               预览
             </button>
           </div>
-
           <button class="editor-save-btn" onClick={handleSave} title="保存 (Ctrl+S)">
             💾 保存 (Ctrl+S)
           </button>
-          <button class="editor-close-btn" onClick={handleClose} title="关闭窗口 (Esc)">
-            ✕ 关闭 (Esc)
-          </button>
-        </div>
-      </header>
+        </>
+      }
+      onClose={() => void handleClose()}
+      footer={
+        <span class="editor-foot">
+          <span class={`editor-save-badge ${isSaved() ? 'saved' : 'unsaved'}`}>
+            {saveStatusText()}
+          </span>
+        </span>
+      }
+    >
+      <div class="editor-window-root">
+        {/* 核心工作区 */}
+        <main class={`editor-body mode-${activeTab()}`}>
+          {/* 左侧编辑区域 */}
+          {(activeTab() === 'split' || activeTab() === 'edit') && (
+            <div class="editor-pane edit-pane">
+              <textarea
+                class="editor-textarea"
+                value={content()}
+                onInput={(e) => handleInput(e.currentTarget.value)}
+                placeholder="在此编写 Markdown 笔记..."
+                spellcheck={false}
+              />
+            </div>
+          )}
 
-      {/* 核心工作区 */}
-      <main class={`editor-body mode-${activeTab()}`}>
-        {/* 左侧编辑区域 */}
-        {(activeTab() === 'split' || activeTab() === 'edit') && (
-          <div class="editor-pane edit-pane">
-            <textarea
-              class="editor-textarea"
-              value={content()}
-              onInput={(e) => handleInput(e.currentTarget.value)}
-              placeholder="在此编写 Markdown 笔记..."
-              spellcheck={false}
-            />
-          </div>
-        )}
-
-        {/* 右侧实时渲染预览区域 */}
-        {(activeTab() === 'split' || activeTab() === 'preview') && (
-          <div class="editor-pane preview-pane">
-            <div
-              class="markdown-rendered-content"
-              innerHTML={renderMarkdownPreview(content())}
-            />
-          </div>
-        )}
-      </main>
-    </div>
+          {/* 右侧实时渲染预览区域 */}
+          {(activeTab() === 'split' || activeTab() === 'preview') && (
+            <div class="editor-pane preview-pane">
+              <div
+                class="markdown-rendered-content"
+                innerHTML={renderMarkdownPreview(content())}
+              />
+            </div>
+          )}
+        </main>
+      </div>
+    </PopupFrame>
   );
 };

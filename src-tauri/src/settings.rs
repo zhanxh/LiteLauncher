@@ -88,6 +88,9 @@ pub async fn open_settings_window(app: AppHandle) -> Result<(), String> {
     .inner_size(500.0, 600.0)
     .min_inner_size(440.0, 480.0)
     .resizable(true)
+    // 无边框窗：标题栏/关闭按钮由前端的通用基窗（PopupFrame）提供，
+    // 与日历、插件弹窗保持同一套窗口外观；拖拽走基窗标题栏的 drag-region
+    .decorations(false)
     .center()
     .build()
     .map_err(|e| format!("创建设置窗口失败: {}", e))?;

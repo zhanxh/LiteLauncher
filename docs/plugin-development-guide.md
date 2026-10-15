@@ -443,11 +443,15 @@ export function setup(): void {
 }
 ```
 
-### 5.6 弹出式基窗（`auto_height` + `PopupFrame`）
+### 5.6 通用基窗（`PopupFrame` 三段式 + `auto_height`）
 
 「放一张卡片在桌面上」是插件最常要的形状：详情窗、提醒卡、小工具面板。
 自己拼这套形状，每个插件都要重复写三件最容易错的事：无边框后怎么拖、
 高度怎么跟着内容、内容超长怎么滚。宿主把它收成了基窗能力，插件只剩两步。
+
+标准窗口是**三段式**：标题栏（可隐藏，整行拖拽区，可放按钮）、内容区
+（**唯一**的滚动区）、状态栏（可隐藏，放操作按钮或状态文案）。窗口本身
+永不滚动——标题和状态栏天然钉死在窗口上下边，长内容只有内容区出滚动条。
 
 **第一步：manifest 声明**
 
@@ -456,7 +460,7 @@ export function setup(): void {
   "id": "detail",
   "width": 440.0, "height": 420.0,     // height 只是首帧尺寸，量到内容后立刻被替换
   "min_width": 440.0, "min_height": 160.0,   // 成对声明，宿主才下发下限
-  "max_height": 720.0,                 // 内容再长也到此为止，多出来的走内部滚动
+  "max_height": 720.0,                 // 内容再长也到此为止，多出来的走内容区内部滚动
   "auto_height": true,
   "resizable": false,                  // 声明"不让用户拖框"；Linux 上宿主会替 auto_height 窗口翻成 true（见下面第 4 条）
   "decorated": false,                  // 基窗的前提：没有系统标题栏就没有"外壳"
@@ -474,6 +478,7 @@ import { PopupFrame } from '@ll/ui';
   pluginId="myplug"
   title="日程详情"
   actions={<button onClick={() => setEditing(true)}>编辑</button>}
+  footer={<span>上次同步 3 分钟前</span>}
   onClose={() => void getCurrentWindow().destroy()}
 >
   <MyWidget />
@@ -481,9 +486,21 @@ import { PopupFrame } from '@ll/ui';
 ```
 
 `PopupFrame` 做三件事：给 `<body>` 打 `ll-popup-mode`（`@ll/ui` 的 popup.css 全靠它作用域）、
-把头部标成 `data-tauri-drag-region="deep"`、用 `ResizeObserver` 把内容自然高度报给宿主
-（`ctx.windows.setContentSize`）。不需要壳给的头（比如悬停才展开的挂件）直接调
-`mountPopup({ pluginId, content, drag })` 自己排骨架即可。
+把标题栏标成 `data-tauri-drag-region="deep"`、用 `ResizeObserver` 把
+"标题 + 内容自然高 + 状态栏"报给宿主（`ctx.windows.setContentSize`）。
+
+**定尺寸窗口（用户自己拽大小的）传 `fill`**：内容撑满窗口、不上报高度
+（`pluginId` 都不用给——报了也会被宿主以"未声明 auto_height"拒掉），
+标题/状态栏照旧钉在窗口上下边，长内容照旧只滚内容区。现成例子：日程、
+待办管理、设置、AI 对话、笔记编辑器、截图标注（`CalendarApp.tsx` /
+`TodoManager.tsx` / `SettingsPanel.tsx` / `ChatView.tsx` / `NoteEditor.tsx` /
+`annotate-view.tsx`）。刻意**不**套壳的例外：启动器主窗（搜索条形态本身）、
+pomo 挂件（悬停展开条，自己排骨架）、`shot/select`（全屏透明遮罩）、
+`pick/panel`（贴边采样工具，无标题栏是形态本身）。
+
+不需要壳给的头（比如悬停才展开的挂件）直接调 `mountPopup()` 自己排骨架即可；
+`pluginId` 省略 = 只借骨架（body 类 + 拖拽区标记）不上报。三段式骨架之外的
+自定义测量用 `measure`（返回自然高度）+ `watch`（额外观察目标）。
 
 **宿主的硬保证（插件不必也无法绕过）**
 
@@ -525,10 +542,13 @@ import { PopupFrame } from '@ll/ui';
    「弹出式基窗」那一组会按声明的标签（含 `unique_by` 后缀形式）逐条比对白名单。
 4. Wayland：`set_position` 归 compositor，角落锚定可能静默失效（缩放仍应工作）。
    与 `attachDesktop` 一样按"如实降级"看待，不要当成 bug。
-5. 测量目标是内容的**自然高度**，不是窗口高度——否则"窗口矮 → 量出来矮 → 窗口更矮"
-   会自激。因此内容根节点不能带 `height: 100vh`（`min-height: 100vh` 同样禁止）。
-   滚动因此发生在 `<body>` 这一层，`PopupFrame` 的标题行是 `position: sticky`：
-   滚到任何一行都还看得见"这是哪条日程"，拖拽区也始终在手边。
+5. 测量目标是内容的**自然高度**（三段式下 = 标题 + 内容 + 状态栏之和），不是窗口高度
+   ——否则"窗口矮 → 量出来矮 → 窗口更矮"会自激。因此内容根节点不能带 `height: 100vh`
+   （`min-height: 100vh` 同样禁止）。滚动只发生在基窗的内容区 `.ll-popup-body`：
+   滚到任何一行都还看得见标题与底部按钮，拖拽区始终在手边。
+   不要改回"body 滚动 + 标题 sticky"——`index.html` 给 `#root` 写死的
+   `overflow:hidden` 会让 sticky 找错滚动容器（sticky 只认最近的 overflow≠visible
+   祖先，而 `#root` 永远不滚），症状是"一滚标题也跟着滚走了"。
 
 
 ---

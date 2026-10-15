@@ -1,5 +1,6 @@
 import { Component, createSignal, For, onMount, onCleanup, Show } from 'solid-js';
 import { getPluginContext } from '@ll/sdk';
+import { PopupFrame } from '@ll/ui';
 import { repeatLabel } from './todoPlugin';
 import { DateTimeField } from './calendar/DateTimeField';
 import { RepeatPicker } from './RepeatPicker';
@@ -218,79 +219,82 @@ export const TodoManager: Component = () => {
   );
 
   return (
-    <div class="todoapp">
-      <header class="todoapp-header">
-        <h1>待办管理</h1>
-        <div class="todoapp-header-actions">
-          <button
-            class="btn ghost"
-            classList={{ active: showSettings() }}
-            onClick={() => setShowSettings(!showSettings())}
-          >
-            ⚙ 设置
-          </button>
-          <button class="btn ghost" onClick={() => void closeWindow()}>✕ 关闭</button>
-        </div>
-      </header>
-
-      <Show when={showSettings()}>
-        <section class="todoapp-settings">
-          <div class="setting-row">
-            <label for="popup-test">提醒弹窗</label>
-            <div class="setting-controls">
-              <button id="popup-test" class="btn ghost small" onClick={() => void testPopup()}>
-                测试弹窗
-              </button>
+    // 定尺寸窗：内容撑满窗口不上报高度；标题栏拖拽/关闭由基窗提供
+    <PopupFrame
+      fill
+      title="待办管理"
+      actions={
+        <button
+          type="button"
+          class="btn ghost"
+          classList={{ active: showSettings() }}
+          onClick={() => setShowSettings(!showSettings())}
+        >
+          ⚙ 设置
+        </button>
+      }
+      onClose={() => void closeWindow()}
+    >
+      <div class="todoapp">
+        <Show when={showSettings()}>
+          <section class="todoapp-settings">
+            <div class="setting-row">
+              <label for="popup-test">提醒弹窗</label>
+              <div class="setting-controls">
+                <button id="popup-test" class="btn ghost small" onClick={() => void testPopup()}>
+                  测试弹窗
+                </button>
+              </div>
             </div>
+            <p class="setting-hint">到点提醒时右下角弹出卡片，常驻不自动消失，点「我知道了」或 ✕ 才关。</p>
+          </section>
+        </Show>
+
+        <section class="todoapp-add">
+          <input
+            class="ti"
+            placeholder='新待办内容，如：团队周会'
+            value={newContent()}
+            onInput={(e) => setNewContent(e.currentTarget.value)}
+            onKeyDown={(e) => e.key === 'Enter' && void quickAdd()}
+          />
+          <DateTimeField
+            value={newRemind()}
+            datePlaceholder="日期（可空）"
+            timePlaceholder="时间"
+            allowClear
+            onChange={setNewRemind}
+          />
+          <RepeatPicker value={newRepeat()} onChange={setNewRepeat} />
+          <div class="todo-edit-actions">
+            <button class="btn primary" onClick={() => void quickAdd()}>添加</button>
           </div>
-          <p class="setting-hint">到点提醒时右下角弹出卡片，常驻不自动消失，点「我知道了」或 ✕ 才关。</p>
         </section>
-      </Show>
 
-      <section class="todoapp-add">
-        <input
-          class="ti"
-          placeholder='新待办内容，如：团队周会'
-          value={newContent()}
-          onInput={(e) => setNewContent(e.currentTarget.value)}
-          onKeyDown={(e) => e.key === 'Enter' && void quickAdd()}
-        />
-        <DateTimeField
-          value={newRemind()}
-          datePlaceholder="日期（可空）"
-          timePlaceholder="时间"
-          allowClear
-          onChange={setNewRemind}
-        />
-        <RepeatPicker value={newRepeat()} onChange={setNewRepeat} />
-        <div class="todo-edit-actions">
-          <button class="btn primary" onClick={() => void quickAdd()}>添加</button>
-        </div>
-      </section>
+        <main class="todoapp-list">
+          <h2 class="section-title">未完成 <span class="count">{unfinished().length}</span></h2>
+          <Show
+            when={unfinished().length > 0}
+            fallback={<p class="empty">没有未完成的待办，输入上方表单快速添加</p>}
+          >
+            <For each={unfinished()}>{(item) => renderItem(item)}</For>
+          </Show>
 
-      <main class="todoapp-list">
-        <h2 class="section-title">未完成 <span class="count">{unfinished().length}</span></h2>
-        <Show
-          when={unfinished().length > 0}
-          fallback={<p class="empty">没有未完成的待办，输入上方表单快速添加</p>}
-        >
-          <For each={unfinished()}>{(item) => renderItem(item)}</For>
+          <h2 class="section-title">
+            已完成 <span class="count">{finished().length}</span>
+          </h2>
+          <Show
+            when={finished().length > 0}
+            fallback={<p class="empty">暂无已完成的待办</p>}
+          >
+            <For each={finished()}>{(item) => renderItem(item)}</For>
+          </Show>
+        </main>
+
+        <Show when={statusText()}>
+          <div class="todoapp-toast">{statusText()}</div>
         </Show>
-
-        <h2 class="section-title">
-          已完成 <span class="count">{finished().length}</span>
-        </h2>
-        <Show
-          when={finished().length > 0}
-          fallback={<p class="empty">暂无已完成的待办</p>}
-        >
-          <For each={finished()}>{(item) => renderItem(item)}</For>
-        </Show>
-      </main>
-
-      <Show when={statusText()}>
-        <div class="todoapp-toast">{statusText()}</div>
-      </Show>
-    </div>
+      </div>
+    </PopupFrame>
   );
 };

@@ -99,7 +99,16 @@
 - `auto_height` 的宿主硬保证：建窗时 `resizable` 一律 false、`visible(false)` + 兜底 `show()`（消白闪）、
   `stacked` 偏移累加**实际高度**而非声明高度、GTK 下限取 `POPUP_MIN_H_FLOOR` 而非 spec。
 - ⚠️ **测量的目标是内容的自然高度，永远不是窗口高度**。被测量元素不能带 `height:100vh`/`min-height:100vh`，
-  否则形成自激棘轮（窗口长高→内容更高→再长高）。body 是滚动容器，`#root`/卡片按内容取高。
+  否则形成自激棘轮（窗口长高→内容更高→再长高）。三段式骨架（2026-10-15 起）的量高单位是
+  **标题 + `.ll-popup-body-inner` 自然高 + 状态栏** 三段之和（`mountPopup` 的 `measure` 回调），
+  没有单个元素量得出来；`watch` 要把头/尾也挂上（内容被窗口夹住时 inner 不动，头尾换行也得重报）。
+- **标准窗口是三段式：标题栏 / 内容区 / 状态栏，只有内容区滚动**（2026-10-15 定稿，收编日历+设置后通用）。
+  `body.ll-popup-mode` 是 `overflow:hidden`，`#root` 钉 `height:100%`，`.ll-popup-body`
+  （`flex:1; min-height:0; overflow-y:auto`）是**唯一**滚动容器，头/尾是 `flex:none` 固定段。
+  ⚠️ 不要改回"body 滚动 + 标题 sticky"：`index.html` 给 `#root` 写死的 `overflow:hidden` 会让 sticky
+  找错滚动容器（sticky 只认最近的 overflow≠visible 祖先，而 `#root` 永远不滚），症状是"一滚标题也跟着滚走"。
+  定尺寸窗口（日历/设置，用户自己拽大小）用 `<PopupFrame fill>`：内容撑满窗口、不上报高度
+  （`pluginId` 都不用给），头/尾照样钉死；`mountPopup` 不传 `pluginId` = 只借骨架不发 IPC。
 - ⚠️ `index.html` 用 `!important` 钉死了 `html,body,#root` 的底色并**全局隐藏滚动条**，
   弹窗样式必须**同样带 `!important`** 才压得住；`popup.css` 每条选择器都要收在 `body.ll-popup-mode` 下
   （一个 bundle 全窗共享，加类的是 body 不是 html —— `html` 保留 `overflow:hidden` 才不出双滚动条）。

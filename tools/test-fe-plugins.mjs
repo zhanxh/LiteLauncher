@@ -1856,10 +1856,10 @@ function testPopupBaseWindow() {
     const bodyRule = stripped.match(/body\.ll-popup-mode\s*\{([^}]*)\}/);
     assert(bodyRule && /background-color:[^;]*!important/.test(bodyRule[1]),
       'popup.css 对 body 底色必须带 !important，否则浅色主题下是"亮卡片坐在深色底板上"');
-    assert(bodyRule && /overflow:\s*auto\s*!important/.test(bodyRule[1]),
-      'popup.css 必须把 body 的 overflow 抢回 auto !important，长内容才滚得动');
-    assert(/body\.ll-popup-mode\s*(?:>\s*)?#root\s*\{[^}]*height:\s*auto\s*!important/.test(stripped),
-      '#root 的 height 必须夹回 auto，否则测量值恒等于窗口高度，窗口永远缩不回去');
+    assert(bodyRule && /overflow:\s*hidden\s*!important/.test(bodyRule[1]),
+      'popup.css 必须把 body 的 overflow 钉成 hidden !important：标准三段式里窗口本身不滚，滚动只发生在内容区');
+    assert(/body\.ll-popup-mode\s*(?:>\s*)?#root\s*\{[^}]*height:\s*100%\s*!important/.test(stripped),
+      '#root 必须钉成窗口高（100% !important），骨架才能铺满窗口、标题/状态栏才钉得住');
     assert(/scrollbar-width:\s*thin\s*!important/.test(stripped)
       && /-webkit-scrollbar[\s\S]*display:\s*block\s*!important/.test(stripped),
       '要恢复可见滚动条：全局把滚动条藏了，弹窗里藏起来等于告诉用户"下面没有内容"');
@@ -1868,8 +1868,18 @@ function testPopupBaseWindow() {
     const rootRule = stripped.match(/body\.ll-popup-mode\s*>\s*#root\s*\{([^}]*)\}/);
     assert(rootRule && /color:[^;]*!important/.test(rootRule[1]),
       '#root 的字色也必须重写，否则弹窗标题继承 index.html 的深色主题字色');
-    assert(/\.ll-popup-head\s*\{[^}]*position:\s*sticky/.test(stripped),
-      '标题行要 sticky：内容超过 max_height 时滚的是 body，不钉住的话一滚标题就没了');
+    // 三段式：头尾是 flex 固定段，内容区是唯一的滚动区。不要改回"body 滚动 + 标题
+    // sticky"——index.html 给 #root 写死的 overflow:hidden 会让 sticky 找错滚动容器
+    //（sticky 只认最近的 overflow≠visible 祖先，而 #root 永远不滚），
+    // 症状就是"一滚标题也跟着滚走了"。
+    const headRule = stripped.match(/body\.ll-popup-mode\s+\.ll-popup-head\s*\{([^}]*)\}/);
+    assert(headRule && /flex:\s*none/.test(headRule[1]),
+      '标题栏必须是 flex 固定段（flex:none），长内容时钉在窗口顶边');
+    const bodyScrollRule = stripped.match(/body\.ll-popup-mode\s+\.ll-popup-body\s*\{([^}]*)\}/);
+    assert(bodyScrollRule && /overflow-y:\s*auto/.test(bodyScrollRule[1]) && /min-height:\s*0/.test(bodyScrollRule[1]),
+      '内容区必须是唯一的滚动区（overflow-y:auto + min-height:0），标题/状态栏不能跟着滚');
+    assert(/body\.ll-popup-mode\s+\.ll-popup-foot\s*\{[^}]*flex:\s*none/.test(stripped),
+      '状态栏必须是 flex 固定段（flex:none），长内容时钉在窗口底边');
 
     // Linux/GTK 对 resizable(false) 的窗口直接忽略应用侧 set_size（Tauri 还返回 Ok），
     // auto_height 在 Linux 必须保持可 resize，否则窗口停在声明高度、卡片下面一条空白。
@@ -1973,6 +1983,39 @@ function testPopupBaseWindow() {
       assert(!classList.has(P.POPUP_BODY_CLASS), 'dispose 应摘掉基窗类名');
       assert(observers.every((o) => o.disconnected), 'dispose 应断开 ResizeObserver');
       assert((winListeners.mouseup ?? []).length === 0, 'dispose 应摘掉 window 上的 mouseup');
+
+      // 自定义测量（三段式骨架）：窗口高度 = 标题 + 内容 + 状态栏，没有单个元素量得出来
+      const head = mkEl(); head.height = 40;
+      const inner = mkEl(); inner.height = 260;
+      const foot = mkEl(); foot.height = 46;
+      const before = reports().length;
+      const popup2 = P.mountPopup({
+        pluginId: 'todo',
+        content: inner,
+        watch: [head, foot],
+        measure: () => head.height + inner.height + foot.height,
+      });
+      pump();
+      assert(reports().length === before + 1 && reports().at(-1).params.height === 346,
+        `三段式应上报三段之和 346，实得 ${JSON.stringify(reports().slice(before).map((r) => r.params.height))}`);
+      // 内容被窗口夹住时 inner 纹丝不动，头/尾的高度变化也要触发重新上报
+      foot.height = 60;
+      observers.forEach((o) => o.cb());
+      pump();
+      assert(reports().length === before + 2 && reports().at(-1).params.height === 360,
+        'watch 元素的变化必须触发重新上报，否则状态栏换行后窗口高度停在旧值');
+      popup2.dispose();
+      assert(!classList.has(P.POPUP_BODY_CLASS), 'dispose 应摘掉基窗类名');
+
+      // 不传 pluginId = 定尺寸窗口（日历/设置）只借骨架：body 类照打，但一次 IPC 都不发
+      const lone = mkEl();
+      const before2 = reports().length;
+      const popup3 = P.mountPopup({ content: lone });
+      pump();
+      assert(classList.has(P.POPUP_BODY_CLASS), '无 pluginId 也应打上基窗类名（popup.css 全靠它作用域）');
+      assert(reports().length === before2, '无 pluginId 不得上报尺寸：定尺寸窗报高会被宿主以"未声明 auto_height"拒掉');
+      popup3.dispose();
+      assert(!classList.has(P.POPUP_BODY_CLASS), 'dispose 应摘掉基窗类名');
     } finally {
       Object.assign(globalThis, {
         window: saved.window,

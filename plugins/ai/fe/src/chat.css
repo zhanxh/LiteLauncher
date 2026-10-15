@@ -1,22 +1,15 @@
-/* AI 对话窗口样式（跟随主题令牌） */
+/* AI 对话窗口样式（跟随主题令牌）
+   窗口外壳由 @ll/ui 的基窗 PopupFrame 提供（fill 定尺寸窗）：这里的内容根
+   撑满基窗内容区，消息列表内部滚动，输入框不参与滚动 */
 .ai-chat {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
   background: var(--bg-solid);
   color: var(--text-main);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-
-.ai-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-.ai-header h1 { font-size: 15px; margin: 0; font-weight: 600; }
-.ai-header-actions { display: flex; gap: 6px; }
 
 .ai-btn {
   padding: 6px 14px;

@@ -8,6 +8,7 @@
 import { Component, For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import { listen } from '@tauri-apps/api/event';
 import { getPluginContext, isHostAvailable } from '@ll/sdk';
+import { PopupFrame } from '@ll/ui';
 import { daysInMonth, firstWeekday, dateKey, todayKey } from './grid';
 import { CalInstance, parseLocal } from './daymath';
 import { CalendarMeta, UNCLASSIFIED, toggleId } from './calendars';
@@ -365,36 +366,99 @@ export const CalendarApp: Component = () => {
     setAnchor(key);
   };
 
+  // 无边框窗没有系统关闭按钮，✕ 是唯一的窗口出口；编辑器开着时先收编辑器
+  const closeWindow = async () => {
+    if (!isHostAvailable()) return;
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      await getCurrentWindow().destroy();
+    } catch (err) {
+      console.error('关闭日程窗口失败:', err);
+    }
+  };
+
+  const requestClose = () => {
+    if (seed()) {
+      setSeed(null);
+      return;
+    }
+    void closeWindow();
+  };
+
   return (
-    <div class="cal-root">
-      <header class="cal-bar">
-        <div class="cal-head-nav">
-          <button type="button" class="cal-btn cal-btn--icon" onClick={() => shift(-1)} title="上一段">
-            ‹
-          </button>
-          <span class="cal-head-title">{title()}</span>
-          <button type="button" class="cal-btn cal-btn--icon" onClick={() => shift(1)} title="下一段">
-            ›
-          </button>
-          <button type="button" class="cal-btn" onClick={goToday}>
-            今天
-          </button>
-          <div class="cal-seg">
-            <For each={VIEWS}>
-              {(v) => (
-                <button
-                  type="button"
-                  class="cal-seg-btn"
-                  classList={{ sel: view() === v.id }}
-                  onClick={() => setView(v.id)}
-                >
-                  {v.label}
-                </button>
-              )}
-            </For>
+    <PopupFrame
+      // 定尺寸窗（用户拽边框改大小），内容撑满窗口、不上报高度
+      fill
+      title="日程"
+      actions={
+        <>
+          <div class="cal-head-nav">
+            <button type="button" class="cal-btn cal-btn--icon" onClick={() => shift(-1)} title="上一段">
+              ‹
+            </button>
+            <span class="cal-head-title">{title()}</span>
+            <button type="button" class="cal-btn cal-btn--icon" onClick={() => shift(1)} title="下一段">
+              ›
+            </button>
+            <button type="button" class="cal-btn" onClick={goToday}>
+              今天
+            </button>
+            <div class="cal-seg">
+              <For each={VIEWS}>
+                {(v) => (
+                  <button
+                    type="button"
+                    class="cal-seg-btn"
+                    classList={{ sel: view() === v.id }}
+                    onClick={() => setView(v.id)}
+                  >
+                    {v.label}
+                  </button>
+                )}
+              </For>
+            </div>
           </div>
-        </div>
-        <div class="cal-meta">
+          <span class="cal-head-sep" />
+          <div class="cal-meta">
+            <button type="button" class="btn small" onClick={() => fileInput?.click()}>
+              导入
+            </button>
+            <button type="button" class="btn small" onClick={() => void exportIcs()}>
+              导出
+            </button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".ics,text/calendar"
+              class="cal-hidden-input"
+              onChange={(e) => void onPickFile(e.currentTarget.files)}
+            />
+            <button type="button" class="btn primary small" onClick={newEvent}>
+              ＋ 新建日程
+            </button>
+          </div>
+        </>
+      }
+      onClose={requestClose}
+      footer={
+        <>
+          <Show when={selectedDay()}>
+            <button
+              type="button"
+              class="cal-mini"
+              title={`在 ${selectedDay()} 新建日程`}
+              onClick={newEvent}
+            >
+              ＋ {selectedDay()}
+            </button>
+          </Show>
+          <Show when={view() !== 'month'}>
+            <span class="cal-muted">在时间轴上按住拖动即可新建，拖动已有日程可改期</span>
+          </Show>
+          <span class="cal-foot-space" />
+          <Show when={statusText()}>
+            <span class="cal-status">{statusText()}</span>
+          </Show>
           <Show when={busy()}>
             <span class="cal-muted">载入中…</span>
           </Show>
@@ -404,25 +468,9 @@ export const CalendarApp: Component = () => {
           <Show when={truncated()}>
             <span class="cal-warn">这段区间的重复实例过多，仅显示前 5000 条</span>
           </Show>
-          <button type="button" class="btn small" onClick={() => fileInput?.click()}>
-            导入
-          </button>
-          <button type="button" class="btn small" onClick={() => void exportIcs()}>
-            导出
-          </button>
-          <input
-            ref={fileInput}
-            type="file"
-            accept=".ics,text/calendar"
-            class="cal-hidden-input"
-            onChange={(e) => void onPickFile(e.currentTarget.files)}
-          />
-          <button type="button" class="btn primary small" onClick={newEvent}>
-            ＋ 新建日程
-          </button>
-        </div>
-      </header>
-
+        </>
+      }
+    >
       <div class="cal-main">
         <CalSidebar
           calendars={calendars()}
@@ -460,25 +508,6 @@ export const CalendarApp: Component = () => {
         </Show>
       </div>
 
-      <footer class="cal-foot">
-        <Show when={selectedDay()}>
-          <button
-            type="button"
-            class="cal-mini"
-            title={`在 ${selectedDay()} 新建日程`}
-            onClick={newEvent}
-          >
-            ＋ {selectedDay()}
-          </button>
-        </Show>
-        <Show when={view() !== 'month'}>
-          <span class="cal-muted">在时间轴上按住拖动即可新建，拖动已有日程可改期</span>
-        </Show>
-        <Show when={statusText()}>
-          <span class="cal-status">{statusText()}</span>
-        </Show>
-      </footer>
-
       <EventModal
         seed={seed()}
         calendars={calendars()}
@@ -486,6 +515,6 @@ export const CalendarApp: Component = () => {
         onSaved={flash}
         onChanged={() => void load()}
       />
-    </div>
+    </PopupFrame>
   );
 };

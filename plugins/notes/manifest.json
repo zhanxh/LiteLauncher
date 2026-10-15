@@ -15,7 +15,7 @@
       "min_width": 600.0,
       "min_height": 400.0,
       "resizable": true,
-      "decorated": true,
+      "decorated": false,
       "focusable": true,
       "position": "center",
       "unique_by": "path",

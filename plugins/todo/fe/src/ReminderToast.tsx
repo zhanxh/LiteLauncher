@@ -1,5 +1,6 @@
 import { Component, Show, onCleanup, onMount } from 'solid-js';
-import { getPluginContext, isHostAvailable, mountPopup } from '@ll/sdk';
+import { getPluginContext, isHostAvailable } from '@ll/sdk';
+import { PopupFrame } from '@ll/ui';
 import { detailParams, leadLabel, spanLabel, type ReminderPayload } from './remindfmt';
 import './reminder.css';
 
@@ -15,16 +16,14 @@ const ctx = getPluginContext('todo');
  * 文案在开窗那一刻算完就不再变（窗口没有定时刷新），所以措辞一律是
  * "几分钟后 / 现在开始"这种粗粒度说法，放久了也不会读成假的倒计时。
  *
- * 外壳是宿主的弹出式基窗（manifest 里 `auto_height: true`）：卡片不标行数，
- * 高度由内容决定，堆叠偏移才按真实高度算。拖拽交给整张卡片上的
- * `data-tauri-drag-region="deep"`，按钮由 Tauri 的拖拽脚本自己跳过。
+ * 外壳是宿主的通用基窗（PopupFrame 三段式）：manifest 里 `auto_height: true`，
+ * 高度由内容决定，堆叠偏移才按真实高度算；万一内容超过 max_height，
+ * 滚动落在内容区，标题栏与按钮行始终在手边。拖拽在标题栏上。
  */
 export const ReminderToast: Component<{ payload: ReminderPayload }> = (props) => {
   const p = props.payload;
   const lead = leadLabel(p, new Date());
   const span = spanLabel(p, new Date());
-
-  let card!: HTMLDivElement;
 
   let closed = false;
   const closeWindow = async () => {
@@ -50,29 +49,29 @@ export const ReminderToast: Component<{ payload: ReminderPayload }> = (props) =>
   };
 
   onMount(() => {
-    // 本文件随主 bundle 全局加载，body 重置必须锁在 .reminder-mode 里
+    // 本文件随主 bundle 全局加载，body 类名必须锁在 .reminder-mode 里
     document.body.classList.add('reminder-mode');
-    const popup = mountPopup({ pluginId: 'todo', content: card, drag: card });
-    onCleanup(() => {
-      popup.dispose();
-      document.body.classList.remove('reminder-mode');
-    });
+    onCleanup(() => document.body.classList.remove('reminder-mode'));
   });
 
   return (
-    <div class="reminder-card" ref={card}>
-      <div class="rm-head">
-        <span class="rm-kicker">📅 日程提醒</span>
-        <button
-          type="button"
-          class="rm-actions rm-x"
-          title="关闭"
-          onClick={() => void closeWindow()}
-        >
-          ✕
-        </button>
-      </div>
-
+    <PopupFrame
+      pluginId="todo"
+      title="日程提醒"
+      onClose={() => void closeWindow()}
+      footer={
+        <>
+          <Show when={p.event}>
+            <button type="button" class="rm-btn" onClick={() => void openDetail()}>
+              查看详情
+            </button>
+          </Show>
+          <button type="button" class="rm-btn rm-btn--primary" onClick={() => void closeWindow()}>
+            我知道了
+          </button>
+        </>
+      }
+    >
       <div class="rm-body">
         <div class="rm-lead">{lead}</div>
         <div class="rm-title">{p.content || '（无标题）'}</div>
@@ -87,17 +86,6 @@ export const ReminderToast: Component<{ payload: ReminderPayload }> = (props) =>
           </div>
         </Show>
       </div>
-
-      <div class="rm-foot rm-actions">
-        <Show when={p.event}>
-          <button type="button" class="rm-btn" onClick={() => void openDetail()}>
-            查看详情
-          </button>
-        </Show>
-        <button type="button" class="rm-btn rm-btn--primary" onClick={() => void closeWindow()}>
-          我知道了
-        </button>
-      </div>
-    </div>
+    </PopupFrame>
   );
 };

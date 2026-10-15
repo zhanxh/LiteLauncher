@@ -13,6 +13,7 @@
 import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getPluginContext } from '@ll/sdk';
+import { PopupFrame } from '@ll/ui';
 import {
   arrowHead,
   DEFAULT_WIDTH,
@@ -61,7 +62,12 @@ export function ShotAnnotate() {
   /** 文字输入：非空时弹出一个输入框 */
   const [textDraft, setTextDraft] = createSignal<{ x: number; y: number; value: string } | null>(null);
 
-  const win = getCurrentWindow();
+  // 浏览器预览没有 __TAURI_INTERNALS__，getCurrentWindow() 会直接抛错——
+  // 真机关窗走这里，预览态降级成 no-op（否则整页渲染不出来）
+  const closeSelf = async (): Promise<void> => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    await getCurrentWindow().close();
+  };
   let canvasRef: HTMLCanvasElement | undefined;
   let seq = 0;
   let drawing = false;
@@ -381,114 +387,127 @@ function drawBase(): void {
             : `${saved.width}×${saved.height} · 已保存到 ${saved.path}`,
         )
         .catch(() => undefined);
-      await win.close();
+      await closeSelf();
     } catch (err) {
       setError(`导出失败：${messageOf(err)}`);
       setBusy(false);
     }
   }
 
+  // 标题栏里窗口命令按钮的两种样式（沿用原工具栏的内联写法）
+  const ghostBtn = (disabled: boolean) =>
+    ({
+      padding: '4px 10px', 'font-size': '12px', cursor: 'pointer',
+      'border-radius': '6px', border: '1px solid var(--border-subtle)',
+      background: 'transparent', color: 'var(--text-main)',
+      opacity: disabled ? 0.4 : 1,
+    }) as const;
+  const primaryBtn = (busyNow: boolean) =>
+    ({
+      padding: '4px 12px', 'font-size': '12px', cursor: 'pointer', 'font-weight': '600',
+      'border-radius': '6px', border: '1px solid var(--accent-color)',
+      background: 'var(--accent-color)', color: '#fff',
+      opacity: busyNow ? 0.6 : 1,
+    }) as const;
+
   return (
-    <div
-      style={{
-        display: 'flex',
-        'flex-direction': 'column',
-        height: '100vh',
-        background: 'var(--bg-solid)',
-        color: 'var(--text-main)',
-        'font-family': 'var(--font-family)',
-      }}
+    // 定尺寸窗：窗口命令（撤销/清空/完成）进基窗标题栏，绘图工具留在内容区工具行，
+    // 底部操作提示变状态栏；画布区的滚动是自己的，不经过基窗内容区
+    <PopupFrame
+      fill
+      title="截图标注"
+      actions={
+        <>
+          <button onClick={undo} disabled={annotations().length === 0} style={ghostBtn(annotations().length === 0)}>
+            ↶ 撤销
+          </button>
+          <button onClick={clearAll} disabled={annotations().length === 0} style={ghostBtn(annotations().length === 0)}>
+            清空
+          </button>
+          <button
+            onClick={() => void exportComposite()}
+            disabled={busy()}
+            style={primaryBtn(busy())}
+          >
+            {busy() ? '导出中…' : '✓ 完成并复制'}
+          </button>
+        </>
+      }
+      onClose={() => void closeSelf()}
+      footer={
+        <span
+          style={{
+            flex: '1', 'font-size': '11px', color: 'var(--text-muted)',
+            overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap',
+          }}
+        >
+          在图上按住拖拽即可标注 · 步骤号按阅读顺序自动编号 · 马赛克导出时会真正像素化 · Ctrl+Z 撤销
+        </span>
+      }
     >
-      {/* 工具栏 */}
       <div
         style={{
           display: 'flex',
-          'align-items': 'center',
-          gap: '6px',
-          padding: '8px 10px',
-          'border-bottom': `1px solid var(--border-subtle)`,
-          'flex-wrap': 'wrap',
+          'flex-direction': 'column',
+          flex: '1',
+          'min-height': '0',
+          background: 'var(--bg-solid)',
+          color: 'var(--text-main)',
+          'font-family': 'var(--font-family)',
         }}
       >
-        <For each={TOOLS}>
-          {(t) => (
-            <button
-              title={t.hint}
-              onClick={() => setTool(t.id)}
-              style={{
-                padding: '4px 10px',
-                'font-size': '12px',
-                cursor: 'pointer',
-                'border-radius': '6px',
-                border: `1px solid ${tool() === t.id ? 'var(--accent-color)' : 'var(--border-subtle)'}`,
-                background: tool() === t.id ? 'var(--accent-light)' : 'transparent',
-                color: 'var(--text-main)',
-              }}
-            >
-              {t.icon} {t.label}
-            </button>
-          )}
-        </For>
-
-        <span style={{ width: '8px' }} />
-
-        {/* 色板 */}
-        <For each={PALETTE}>
-          {(c) => (
-            <button
-              title={c}
-              onClick={() => setColor(c)}
-              style={{
-                width: '18px',
-                height: '18px',
-                'border-radius': '50%',
-                cursor: 'pointer',
-                background: c,
-                border: color() === c ? '2px solid var(--text-main)' : '1px solid var(--border-subtle)',
-              }}
-            />
-          )}
-        </For>
-
-        <span style={{ flex: '1' }} />
-
-        <button
-          onClick={undo}
-          disabled={annotations().length === 0}
+        {/* 工具行：绘图工具与色板（窗口命令在基窗标题栏） */}
+        <div
           style={{
-            padding: '4px 10px', 'font-size': '12px', cursor: 'pointer',
-            'border-radius': '6px', border: '1px solid var(--border-subtle)',
-            background: 'transparent', color: 'var(--text-main)',
-            opacity: annotations().length === 0 ? 0.4 : 1,
+            display: 'flex',
+            'align-items': 'center',
+            gap: '6px',
+            padding: '8px 10px',
+            'border-bottom': `1px solid var(--border-subtle)`,
+            'flex-wrap': 'wrap',
+            flex: 'none',
           }}
         >
-          ↶ 撤销
-        </button>
-        <button
-          onClick={clearAll}
-          disabled={annotations().length === 0}
-          style={{
-            padding: '4px 10px', 'font-size': '12px', cursor: 'pointer',
-            'border-radius': '6px', border: '1px solid var(--border-subtle)',
-            background: 'transparent', color: 'var(--text-main)',
-            opacity: annotations().length === 0 ? 0.4 : 1,
-          }}
-        >
-          清空
-        </button>
-        <button
-          onClick={() => void exportComposite()}
-          disabled={busy()}
-          style={{
-            padding: '4px 12px', 'font-size': '12px', cursor: 'pointer', 'font-weight': '600',
-            'border-radius': '6px', border: '1px solid var(--accent-color)',
-            background: 'var(--accent-color)', color: '#fff',
-            opacity: busy() ? 0.6 : 1,
-          }}
-        >
-          {busy() ? '导出中…' : '✓ 完成并复制'}
-        </button>
-      </div>
+          <For each={TOOLS}>
+            {(t) => (
+              <button
+                title={t.hint}
+                onClick={() => setTool(t.id)}
+                style={{
+                  padding: '4px 10px',
+                  'font-size': '12px',
+                  cursor: 'pointer',
+                  'border-radius': '6px',
+                  border: `1px solid ${tool() === t.id ? 'var(--accent-color)' : 'var(--border-subtle)'}`,
+                  background: tool() === t.id ? 'var(--accent-light)' : 'transparent',
+                  color: 'var(--text-main)',
+                }}
+              >
+                {t.icon} {t.label}
+              </button>
+            )}
+          </For>
+
+          <span style={{ width: '8px' }} />
+
+          {/* 色板 */}
+          <For each={PALETTE}>
+            {(c) => (
+              <button
+                title={c}
+                onClick={() => setColor(c)}
+                style={{
+                  width: '18px',
+                  height: '18px',
+                  'border-radius': '50%',
+                  cursor: 'pointer',
+                  background: c,
+                  border: color() === c ? '2px solid var(--text-main)' : '1px solid var(--border-subtle)',
+                }}
+              />
+            )}
+          </For>
+        </div>
 
       {/* 画布区 */}
       <div style={{ flex: '1', position: 'relative', overflow: 'auto', background: 'var(--bg-launcher, #222)' }}>
@@ -552,17 +571,7 @@ function drawBase(): void {
         </Show>
       </div>
 
-      {/* 底部提示 */}
-      <div
-        style={{
-          padding: '6px 12px',
-          'border-top': `1px solid var(--border-subtle)`,
-          'font-size': '11px',
-          color: 'var(--text-muted)',
-        }}
-      >
-        在图上按住拖拽即可标注 · 步骤号按阅读顺序自动编号 · 马赛克导出时会真正像素化 · Ctrl+Z 撤销
-      </div>
     </div>
+  </PopupFrame>
   );
 }

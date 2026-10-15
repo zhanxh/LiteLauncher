@@ -1,4 +1,5 @@
 /* 应用设置面板（独立窗口，view=settings）
+   窗口外壳（标题栏/状态栏/滚动区）由 @ll/ui 的基窗 PopupFrame 提供（fill 定尺寸窗），
    颜色全部取自 launcher.css 的全局主题变量，跟随亮/暗皮肤切换 */
 
 body.settings-mode {
@@ -9,28 +10,12 @@ body.settings-mode {
 }
 
 .settings-app {
-  position: absolute;
-  inset: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-solid);
   color: var(--text-main);
   font-family: var(--font-family);
-  overflow-y: auto;
-  padding: 18px 22px 20px;
+  padding: 16px 18px 18px;
   box-sizing: border-box;
-}
-
-.settings-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
-}
-
-.settings-header h1 {
-  font-size: 20px;
-  margin: 0;
 }
 
 .settings-app .ll-btn {
@@ -178,12 +163,15 @@ body.settings-mode {
   color: var(--text-secondary);
 }
 
+/* 状态栏里的产品签名（.ll-popup-foot 提供行布局与分隔线） */
 .settings-footer {
-  margin-top: auto;
-  padding-top: 12px;
+  flex: 1;
   text-align: center;
   font-size: 11px;
   color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ─── Python 环境区 ─── */

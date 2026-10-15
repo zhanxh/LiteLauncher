@@ -367,39 +367,21 @@ html, body, #root {
    独立 Markdown 编辑器窗口样式
    ========================================================================== */
 
+/* 笔记编辑器内容根：窗口外壳（标题栏/状态栏）由基窗 PopupFrame 提供（fill 定尺寸窗），
+   这里只负责工作区铺满与配色 */
 .editor-window-root {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  width: 100vw;
+  flex: 1;
+  min-height: 0;
   background-color: var(--editor-bg);
   color: var(--editor-text);
 }
 
-.editor-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 18px;
-  background-color: var(--editor-header-bg);
-  border-bottom: 1px solid var(--border-subtle);
-  flex-shrink: 0;
-}
-
-.editor-title-group {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.editor-icon {
-  font-size: 18px;
-}
-
-.editor-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-main);
+/* 保存状态徽章在基窗状态栏里居中 */
+.editor-foot {
+  flex: 1;
+  text-align: center;
 }
 
 .editor-save-badge {
@@ -416,12 +398,6 @@ html, body, #root {
 .editor-save-badge.unsaved {
   background: rgba(245, 158, 11, 0.15);
   color: #fbbf24;
-}
-
-.editor-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
 }
 
 .editor-tab-switch {
@@ -503,23 +479,6 @@ html, body, #root {
   user-select: text !important;
   -webkit-user-select: text !important;
   cursor: text !important;
-}
-
-.editor-close-btn {
-  background: rgba(239, 68, 68, 0.15);
-  color: #f87171;
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  border-radius: 6px;
-  padding: 6px 14px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.editor-close-btn:hover {
-  background: rgba(239, 68, 68, 0.35);
-  color: #ffffff;
 }
 
 .editor-pane::-webkit-scrollbar {
