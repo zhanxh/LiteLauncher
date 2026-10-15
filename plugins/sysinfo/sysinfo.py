@@ -17,6 +17,7 @@ import ctypes
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,9 @@ import time
 PROTOCOL = "LLP/1"
 next_svc_id = 1
 pending = {}  # id -> 等待中的响应占位（本插件串行处理，直接同步等待）
+
+# 从 sidecar 沿 ppid 往上找主程序时最多爬的层数（中间可能隔一层启动壳）
+MAX_CLIMB = 8
 
 
 def _force_utf8_stdio():
@@ -108,6 +112,239 @@ def _mem_windows():
     return total, used, avail, g
 
 
+def _fmt_mb(kb):
+    return f"{kb / 1024:.1f} MB"
+
+
+# ── 进程内存（主程序 + 子进程）─────────────────────────────────
+# 只依赖标准库：Linux 读 /proc，Windows 用 Toolhelp32 快照拿进程树 +
+# psapi GetProcessMemoryInfo 拿工作集；其余平台如实降级。
+
+
+def _procs_linux():
+    """全量进程表：pid -> {name, ppid, rss_kb, script}。权限不够/竞态消失的进程跳过。
+
+    name 优先取 cmdline 的 argv[0] 基名——comm 被内核截到 15 字符
+    （WebKitWebProcess → WebKitWebProces），显示会缺胳膊少腿。
+    """
+    procs = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/status", encoding="utf-8", errors="replace") as f:
+                status = f.read()
+            comm = re.search(r"^Name:\s+(.+)$", status, re.M)
+            ppid = re.search(r"^PPid:\s+(\d+)$", status, re.M)
+            rss = re.search(r"^VmRSS:\s+(\d+)\s+kB", status, re.M)
+            if not (comm and ppid and rss):
+                continue
+            argv0 = script = ""
+            try:
+                with open(f"/proc/{entry}/cmdline", "rb") as f:
+                    toks = [t.decode("utf-8", "replace") for t in f.read().split(b"\0") if t]
+                if toks:
+                    argv0 = toks[0].rsplit("/", 1)[-1]
+                    # python sidecar 的脚本名在最后一个参数上（pomo.py / sysinfo.py）
+                    script = toks[-1].rsplit("/", 1)[-1] if "python" in toks[0].lower() else ""
+            except OSError:
+                pass
+            procs[int(entry)] = {
+                "name": argv0 or comm.group(1),
+                "ppid": int(ppid.group(1)),
+                "rss_kb": int(rss.group(1)),
+                "script": script,
+            }
+        except (OSError, ValueError):
+            continue
+    return procs
+
+
+def _procs_windows():
+    """Toolhelp32 快照：pid -> {name, ppid, rss_kb=None}；RSS 由 GetProcessMemoryInfo 补。"""
+    kernel32 = ctypes.windll.kernel32
+    TH32CS_SNAPPROCESS = 0x2
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", ctypes.c_ulong),
+            ("cntUsage", ctypes.c_ulong),
+            ("th32ProcessID", ctypes.c_ulong),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", ctypes.c_ulong),
+            ("cntThreads", ctypes.c_ulong),
+            ("th32ParentProcessID", ctypes.c_ulong),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", ctypes.c_ulong),
+            ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snap == -1:
+        return {}
+    procs = {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            procs[entry.th32ProcessID] = {
+                "name": entry.szExeFile,
+                "ppid": entry.th32ParentProcessID,
+                "rss_kb": None,
+            }
+            ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snap)
+    return procs
+
+
+def _rss_windows(pid):
+    """工作集（KB）；打不开的进程（权限/已退出）返回 None，由调用方跳过。"""
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+    class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("cb", ctypes.c_ulong),
+            ("PageFaultCount", ctypes.c_ulong),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return None
+    try:
+        pmc = PROCESS_MEMORY_COUNTERS()
+        pmc.cb = ctypes.sizeof(pmc)
+        if ctypes.windll.psapi.GetProcessMemoryInfo(h, ctypes.byref(pmc), ctypes.sizeof(pmc)):
+            return pmc.WorkingSetSize // 1024
+        return None
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def _find_main_pid(procs):
+    """主程序 = sidecar 沿 ppid 链向上第一个名字带 LiteLauncher 的祖先；
+    链上找不到（被改名/隔了启动壳）退回全表唯一匹配。"""
+    cur = os.getpid()
+    for _ in range(MAX_CLIMB):
+        info = procs.get(cur)
+        if not info or not info["ppid"]:
+            break
+        cur = info["ppid"]
+        info = procs.get(cur)
+        if info and "litelauncher" in info["name"].lower():
+            return cur
+    cands = [p for p, i in procs.items()
+             if "litelauncher" in i["name"].lower() and p != os.getpid()]
+    return cands[0] if len(cands) == 1 else None
+
+
+def _group_children(children):
+    """子进程按名称聚合；python sidecar 补脚本名（Windows 拿不到 cmdline 就只报 exe）。"""
+    groups = {}
+    for pid, info in children.items():
+        name = info["name"]
+        hint = info.get("script") or ""
+        key = f"{name} · {hint}" if hint else name
+        g = groups.setdefault(key, {"key": key, "count": 0, "rss_kb": 0, "pids": []})
+        g["count"] += 1
+        g["rss_kb"] += info["rss_kb"] or 0
+        g["pids"].append(pid)
+    return sorted(groups.values(), key=lambda g: -g["rss_kb"])
+
+
+def _proc_memory_report(procs=None):
+    """主程序 + 直接子进程的内存占用（KB）。失败返回带 reason 的 dict（如实降级）。"""
+    if procs is None:
+        if os.name == "nt":
+            procs = _procs_windows()
+        elif os.path.isdir("/proc"):
+            procs = _procs_linux()
+        else:
+            return {"reason": f"{platform.system()} 暂不支持（仅 Linux /proc 与 Windows）"}
+
+    main_pid = _find_main_pid(procs)
+    if main_pid is None or main_pid not in procs:
+        return {"reason": "未在进程表中找到 LiteLauncher 主程序"}
+
+    main_info = procs[main_pid]
+    if os.name == "nt":
+        main_rss = _rss_windows(main_pid)
+        children = {p: dict(i) for p, i in procs.items()
+                    if i["ppid"] == main_pid and p != os.getpid()}
+        for pid in list(children):
+            children[pid]["rss_kb"] = _rss_windows(pid)
+        if main_rss is None:
+            return {"reason": f"无法读取主程序内存（pid {main_pid}）"}
+        main_info = {**main_info, "rss_kb": main_rss}
+        children = {p: i for p, i in children.items() if i["rss_kb"] is not None}
+    else:
+        children = {p: dict(i) for p, i in procs.items()
+                    if i["ppid"] == main_pid and p != os.getpid()}
+
+    groups = _group_children(children)
+    return {
+        "main": {"pid": main_pid, "name": main_info["name"], "rss_kb": main_info["rss_kb"]},
+        "groups": groups,
+        "child_count": sum(g["count"] for g in groups),
+        "child_total_kb": sum(g["rss_kb"] for g in groups),
+    }
+
+
+def _proc_memory_items():
+    """主程序/子进程内存条目；采集失败时给一条带原因的降级条目，不让用户猜。"""
+    try:
+        report = _proc_memory_report()
+    except Exception as exc:  # noqa: BLE001
+        report = {"reason": f"采集失败: {exc}"}
+    if "reason" in report:
+        return [{"id": "proc-mem", "title": f"进程内存: {report['reason']}",
+                 "icon": "🫥", "description": "主程序与子进程内存占用暂不可用",
+                 "metadata": {"detail": report["reason"]}}]
+
+    main = report["main"]
+    detail_lines = [f"主程序 {main['name']} (pid {main['pid']}): {_fmt_mb(main['rss_kb'])}"]
+    items = [{
+        "id": "proc-main",
+        "title": f"主程序内存: {_fmt_mb(main['rss_kb'])} · {main['name']} (pid {main['pid']})",
+        "icon": "🚀",
+        "description": f"子进程 {report['child_count']} 个，共 {_fmt_mb(report['child_total_kb'])}（含 webview/插件 sidecar）",
+        "metadata": {"detail": "\n".join(detail_lines)},
+    }]
+    for g in report["groups"][:6]:
+        low = g["key"].lower()
+        icon = "🐍" if "python" in low else ("🌐" if "webkit" in low or "webview" in low else "⚙️")
+        multi = f" ×{g['count']}" if g["count"] > 1 else ""
+        items.append({
+            "id": f"proc-child-{g['pids'][0]}",
+            "title": f"子进程 {g['key']}{multi} · {_fmt_mb(g['rss_kb'])}",
+            "icon": icon,
+            "description": f"pid {'/'.join(map(str, sorted(g['pids'])))}",
+            "metadata": {"detail": f"{g['key']}{multi}: {_fmt_mb(g['rss_kb'])}（pid {', '.join(map(str, sorted(g['pids'])))}）"},
+        })
+    total = main["rss_kb"] + report["child_total_kb"]
+    detail_lines.append(f"子进程合计（{report['child_count']} 个）: {_fmt_mb(report['child_total_kb'])}")
+    detail_lines.append(f"合计: {_fmt_mb(total)}")
+    items[0]["metadata"]["detail"] = "\n".join(detail_lines)
+    items.append({
+        "id": "proc-total",
+        "title": f"进程内存合计: {_fmt_mb(total)}",
+        "icon": "🧮",
+        "description": f"主程序 {_fmt_mb(main['rss_kb'])} + 子进程 {_fmt_mb(report['child_total_kb'])}（{report['child_count']} 个）",
+        "metadata": {"detail": "\n".join(detail_lines)},
+    })
+    return items
+
+
 def collect_items():
     """采集系统信息条目（Linux/Windows，其余平台仅返回内核与运行时条目）"""
     items = []
@@ -149,6 +386,9 @@ def collect_items():
             items.append({"id": "mem", "title": f"内存: {mem[1]} 总量 / {mem[2]} 已用",
                           "icon": "🧠", "description": f"可用 {mem[6]}",
                           "metadata": {"detail": f"total={mem[1]} used={mem[2]} avail={mem[6]}"}})
+
+    # 主程序与子进程的内存占用：紧挨系统内存条目，主题相邻
+    items.extend(_proc_memory_items())
 
     try:
         disk_path = "C:\\" if is_win else "/"
