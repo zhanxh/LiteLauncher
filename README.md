@@ -194,7 +194,7 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 
 > **全局热键协议**：manifest 以 `shortcut:<accel>` 逐条声明（无通配），宿主登记并**仲裁冲突**（同一加速键先到先得），触发时广播 `plugin-shortcut` 事件，插件用 `ctx.shortcuts.on(accel, cb)` 接收——插件拿不到原始按键流。`on()` 默认只在**主窗口**生效（每次窗口加载都会跑一遍全部插件的 `setup`，不区分就会重复触发）；取色台这类需要在视图窗口内响应热键的场景显式传 `{ scope: 'any' }`。
 
-**外部插件（LLP/1，Python sidecar）· 12 个**
+**外部插件（LLP/1，Python sidecar）· 13 个**
 
 *算法密集或依赖 Python 标准库的仍走 LLP*：
 
@@ -211,7 +211,22 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 | `/cheat` | 命令速查 | 内置 git/docker/k8s 等常用命令，可增删 |
 | `/time` | 世界时钟 | 主要城市时间与时差 |
 | `/pomo` | 番茄钟 | `/pomo start 25 写代码`，专注↔短休按 **5:1** 交替；到点发系统通知并自动接下一段，`/pomo auto off` 改为每段结束等人工点挂件的 ▶；`/pomo pin` 可贴到壁纸层 |
-| `/sysinfo` | 系统信息 | 平台/CPU/内存/磁盘探测 |
+| `/sysinfo` | 系统信息 | 平台/CPU/内存/磁盘探测 + **主程序与子进程内存占用**（webview、插件 sidecar 按名称聚合） |
+| `/find` | 文件搜索 | 全盘文件按名称毫秒级搜索，`ext:rs` / `size:>500mb` / `dm:today` 字段语法，`desc size` 排序；回车打开，目录自动记入 recent。**Windows 走 Everything，Linux 走 plocate（安装说明见下）** |
+
+> **🔴 Linux 用 `/find` 前必须装 plocate 索引**，否则基本不可用：索引库覆盖全盘（除 /tmp、/proc 等挂载点），查询毫秒级；
+> 未装索引时插件降级为 fd/find 实时遍历——只搜用户目录、每查一次全扫一遍，大目录会超过插件调用的 5 秒上限。
+>
+> ```bash
+> # Debian / Ubuntu（Ubuntu 22.04+ 装完自带每日自动建库的定时任务）
+> sudo apt install plocate && sudo updatedb
+>
+> # Fedora / RHEL
+> sudo dnf install plocate && sudo updatedb
+> ```
+>
+> `updatedb` 首次建库约一两分钟；新建/改名的文件要等下次索引刷新才可见（定时任务默认每天跑，可手动 `sudo updatedb` 立即刷新）。
+> 装 `fd-find`（命令 `fd`/`fdfind`）能改善无索引时的降级体验，但实时遍历比不了索引。`/find where` 可查看当前后端与索引状态。
 
 > 所有"回车复制"依赖壳层的通用 `AfterSelect.copy` 能力（工具类插件的标准交互），落点为**宿主原生剪贴板**（`clipboard_write`），而非 webview 的 `navigator.clipboard`——后者在窗口即将隐藏时会被浏览器策略拒绝。
 

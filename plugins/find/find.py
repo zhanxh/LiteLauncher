@@ -113,9 +113,11 @@ def unavailable_hint():
         return ("本插件依赖 Everything 的索引。请先安装并运行 Everything"
                 "（https://www.voidtools.com），再把 SDK 的 Everything64.dll "
                 "放到插件的 bin/ 目录。")
-    return ("本插件依赖系统文件索引。请安装 plocate（apt install plocate / "
-            "dnf install plocate）并执行一次 sudo updatedb 生成索引库；"
-            "没有索引时会自动降级为 fd / find 遍历（较慢）。")
+    return ("本插件依赖 plocate 全盘索引（查询毫秒级）。安装并建库：\n"
+            "  Debian/Ubuntu: sudo apt install plocate && sudo updatedb\n"
+            "  Fedora/RHEL:   sudo dnf install plocate && sudo updatedb\n"
+            "没有索引时会降级为 fd / find 遍历——只搜用户目录、每查一次全扫一遍，"
+            "大目录会超过 5 秒调用上限，基本不可用。装好后可用 /find where 查看状态。")
 
 
 CONTROL_WORDS = {"desc", "asc", "limit", "recent", "open", "dir", "where"}
