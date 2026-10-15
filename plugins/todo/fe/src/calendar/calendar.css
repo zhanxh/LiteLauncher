@@ -30,9 +30,9 @@ body.calendar-mode {
   flex: none;
 }
 
-/* 类名不能叫 .cal-nav / .cal-title：todoapp.css 里那两个是日期选择器的
-   28×28 按钮样式，同一份 FE bundle 会一起注入，会把这里的导航容器压成 28px，
-   按钮热区缩到字形宽度，点击全部落在父 div 上。 */
+/* 这里曾踩过一次：类名与 todoapp.css 的 .cal-nav/.cal-title 撞车，同一份 FE bundle
+   一起注入后导航容器被压成 28px，点击全落在父 div 上。那两个类已随旧日期选择器删除，
+   但约束不变——新组件一律带自己的前缀（日期时间选择器用 dtf-）。 */
 .cal-head-nav {
   display: flex;
   align-items: center;
@@ -459,6 +459,13 @@ body.calendar-mode {
   color: var(--text-muted);
 }
 
+.cal-field-hint {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 .cal-textarea {
   resize: vertical;
   font-family: inherit;
@@ -542,6 +549,44 @@ body.calendar-mode {
 .cal-modal .btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* ── 只读详情（提醒卡片「查看详情」的独立窗口）─────────── */
+body.detail-mode {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-solid);
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+/* 详情是整窗而不是页面里的浮层，那层 45% 黑只会让窗口边缘发灰。
+   进到编辑态时 EventModal 自带的遮罩仍然生效——那时它确实是浮层。
+   这里也得自己声明 color：日历窗口里那层 .cal-app 声明了它，本窗口没有这层祖先，
+   没显式配色的标题会继承到 html 上那个不随主题变的浅色。 */
+.cal-detail-root {
+  background: transparent;
+  color: var(--text-main);
+}
+
+.cal-detail-title {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-bottom: 12px;
+  word-break: break-all;
+}
+
+.cal-detail-value {
+  font-size: 13px;
+  color: var(--text-main);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cal-detail-desc {
+  white-space: pre-wrap;
+  color: var(--text-secondary);
 }
 
 /* ── 底栏 ─────────────────────────────────────────────── */

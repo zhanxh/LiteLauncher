@@ -3,7 +3,7 @@
  */
 import { pluginRegistry, registerView } from "@ll/sdk";
 import { todoAlias, todoPlugin } from "./todoPlugin";
-import { CalendarView, TodoAppView, ReminderView } from "./views";
+import { CalendarView, DetailView, ReminderView, TodoAppView } from "./views";
 
 export function setup(): void {
   // 同一个 id 注册两个触发词：/cal 是主名，/todo 是留给老用法的隐藏别名
@@ -12,4 +12,5 @@ export function setup(): void {
   registerView("calendar", CalendarView);
   registerView("todoapp", TodoAppView);
   registerView("reminder", ReminderView);
+  registerView("detail", DetailView);
 }

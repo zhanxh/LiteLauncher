@@ -2022,6 +2022,156 @@ function testCalendarDayMathModule() {
   return failures;
 }
 
+/** 纯函数模块：钉钉式日期时间选择器（15 分钟档位 · 过期禁用 · 值组合） */
+function testDateTimeFieldModule() {
+  const failures = [];
+  const file = path.join(pluginsDir, 'todo', 'fe', 'src', 'calendar', 'dtfield.ts');
+  let m;
+  try {
+    m = loadPluginModule(file);
+  } catch (err) {
+    return [`${file} 加载失败: ${err.message}`];
+  }
+
+  const TODAY = '2026-10-15';
+  const at = (h, mi) => new Date(2026, 9, 15, h, mi); // 与 TODAY 同一天
+  const idx = (label) => m.TIME_SLOTS.find((s) => s.label === label)?.index ?? -1;
+
+  try {
+    // 1) 档位表：96 档、15 分钟一步、00:00 起 23:45 止（一天不多不少正好覆盖完）
+    assert(m.TIME_SLOTS.length === 96, `档位应为 96 个，实得 ${m.TIME_SLOTS.length}`);
+    assert(m.TIME_SLOTS[0].label === '00:00', `首档应为 00:00，实得 ${m.TIME_SLOTS[0].label}`);
+    assert(m.TIME_SLOTS[95].label === '23:45', `末档应为 23:45，实得 ${m.TIME_SLOTS[95].label}`);
+    assert(
+      m.TIME_SLOTS.every((s, i) => s.index === i && /^\d{2}:\d{2}$/.test(s.label) && s.hh * 60 + s.mm === i * 15),
+      '档位下标或标签不连续',
+    );
+
+    // 2) 过期只影响"今天"这一格；整点不宽限也不提前
+    assert(m.isSlotDisabled(m.TIME_SLOTS[idx('14:00')], TODAY, at(14, 7)) === true, '14:07 时 14:00 应已过期');
+    assert(m.isSlotDisabled(m.TIME_SLOTS[idx('14:15')], TODAY, at(14, 7)) === false, '14:15 应可选');
+    assert(m.isSlotDisabled(m.TIME_SLOTS[idx('14:00')], TODAY, at(14, 0)) === false, '14:00 整点应仍可选');
+    assert(m.isSlotDisabled(m.TIME_SLOTS[idx('00:00')], '2026-10-20', at(14, 7)) === false, '未来日期不该禁用任何档');
+    assert(m.isSlotDisabled(m.TIME_SLOTS[idx('23:45')], '2026-10-01', at(14, 7)) === false, '过去的日期要能改，不该禁用');
+    assert(m.isSlotDisabled(m.TIME_SLOTS[idx('00:00')], '', at(14, 7)) === false, '还没选日期时不该禁用');
+
+    // 3) 打开列表滚到哪：从第一个可选档开始；已选值仍可选就以它为准
+    assert(idx('14:15') === 57, `夹具本身错了：14:15 应为第 57 档，实得 ${idx('14:15')}`);
+    assert(m.firstSelectableIndex(TODAY, at(14, 7)) === 57, `首个可选档错: ${m.firstSelectableIndex(TODAY, at(14, 7))}`);
+    assert(m.firstSelectableIndex(TODAY, at(23, 50)) === 95, '一天过完应退回最后一档');
+    assert(m.firstSelectableIndex('2026-10-20', at(14, 7)) === 0, '非今天应从 00:00 起');
+    assert(m.scrollTargetIndex('18:00', TODAY, at(14, 7)) === idx('18:00'), '已选未来档应定位到已选');
+    assert(m.scrollTargetIndex('09:00', TODAY, at(14, 7)) === 57, '已选过期档应退回首个可选');
+    assert(m.scrollTargetIndex('', TODAY, at(14, 7)) === 57, '无值应落在首个可选');
+    assert(m.scrollTargetIndex('09:00', '2026-10-20', at(14, 7)) === idx('09:00'), '未来日期不受时钟影响');
+
+    // 4) 值组合：规范值恒为 "YYYY-MM-DD HH:MM"，两半各自可改
+    assert(m.dateOf('2026-10-15 13:00') === '2026-10-15', 'dateOf 取错日期半');
+    assert(m.timeOf('2026-10-15 13:00') === '13:00', 'timeOf 取错时间半');
+    assert(m.dateOf('') === '' && m.timeOf('') === '', '空值两半都该是空');
+    assert(m.pickDate('2026-10-15 13:00', '2026-11-02') === '2026-11-02 13:00', '换日期应保留时间半');
+    assert(m.pickDate('', '2026-11-02') === '2026-11-02 09:00', '空值补默认时间');
+    assert(m.pickDate('2026-10-15', '2026-11-02') === '2026-11-02 09:00', '只有日期时按无时间处理');
+    assert(m.pickTime('2026-10-15 13:00', '2026-11-02', '12:00') === '2026-10-15 12:00', '换时间应保留日期半');
+    assert(m.pickTime('', '2026-11-02', '12:00') === '2026-11-02 12:00', '日期空时落到 fallbackDate');
+    // 后端按串比较，光有日期没有时间的值会排到当天所有日程之前
+    assert(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(m.pickDate('', '2026-11-02')), '组合结果必须是完整时间串');
+
+    // 5) 月历浮层：翻页跨年、标题去前导零
+    assert(JSON.stringify(m.shiftMonth(2026, 11, 1)) === '{"year":2027,"month":0}', '12 月往后应进次年 1 月');
+    assert(JSON.stringify(m.shiftMonth(2027, 0, -1)) === '{"year":2026,"month":11}', '1 月往前应退上年 12 月');
+    assert(JSON.stringify(m.shiftMonth(2026, 9, -11)) === '{"year":2025,"month":10}', '跨年多月往前退错');
+    assert(m.monthTitle('2026-10-15', '') === '2026年10月15日', `标题错: ${m.monthTitle('2026-10-15', '')}`);
+    assert(m.monthTitle('', '2026-10-05') === '2026年10月5日', `无值应退回今天且去前导零: ${m.monthTitle('', '2026-10-05')}`);
+    assert(
+      JSON.stringify(m.monthOfDate('2026-10-15', '2027-01-01')) === '{"year":2026,"month":9}',
+      '浮层应停在值所在月（month 为 0-11）',
+    );
+    assert(
+      JSON.stringify(m.monthOfDate('', '2027-01-01')) === '{"year":2027,"month":0}',
+      '无值应停在兜底日期所在月',
+    );
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
+/** 纯函数模块：提醒卡片的文案（常驻卡片只算一次措辞 · 区间四形状 · 脏参降级） */
+function testReminderFormatModule() {
+  const failures = [];
+  const file = path.join(pluginsDir, 'todo', 'fe', 'src', 'remindfmt.ts');
+  let m;
+  try {
+    m = loadPluginModule(file);
+  } catch (err) {
+    return [`${file} 加载失败: ${err.message}`];
+  }
+
+  const NOW = new Date(2026, 9, 15, 15, 40); // 2026-10-15 周四
+  const p = (over) => ({ id: '', event: '', content: '', minutes: 0, start: '', end: '', allDay: false, cal: '', ...over });
+
+  try {
+    // 1) URL 参数：齐参照收，脏参降级成空串而不是抛错
+    const ok = m.parseReminder('?id=a1&event=e1&content=%E5%91%A8%E4%BC%9A&minutes=5&start=2026-10-15%2016%3A00&end=2026-10-15%2016%3A30&all_day=0&cal=%E5%B7%A5%E4%BD%9C');
+    assert(ok.content === '周会' && ok.cal === '工作', `正文/日历名没解码: ${JSON.stringify(ok)}`);
+    assert(ok.start === '2026-10-15 16:00' && ok.end === '2026-10-15 16:30', `区间解错: ${ok.start} ~ ${ok.end}`);
+    assert(ok.minutes === 5 && ok.allDay === false && ok.event === 'e1', '标量参数解错');
+    const bad = m.parseReminder('?minutes=abc&start=15/10&end=2026-13-99%2000:00&all_day=1');
+    assert(bad.minutes === 0 && bad.start === '' && bad.end === '', `脏参没被降级: ${JSON.stringify(bad)}`);
+    assert(bad.allDay === true, 'all_day=1 应认');
+
+    // 2) 星期与短日期
+    assert(m.weekdayOf('2026-10-15') === '周四', `2026-10-15 应是周四，实得${m.weekdayOf('2026-10-15')}`);
+    assert(m.weekdayOf('2026-10-18') === '周日', '周日要落在"周日"');
+    assert(m.weekdayOf('') === '周一', '脏日期要退回兜底而不是 undefined');
+    assert(m.shortDate('2026-10-05') === '10/5', `前导零没去掉: ${m.shortDate('2026-10-05')}`);
+
+    // 3) 强调行：全天没有时刻，拿 00:00 算会一路"已开始"
+    assert(m.leadLabel(p({ allDay: true, start: '2026-10-15 00:00' }), NOW) === '今天', '全天应显示"今天"');
+    assert(m.leadLabel(p({ start: '2026-10-15 15:45' }), NOW) === '5 分钟后', `5 分钟档错: ${m.leadLabel(p({ start: '2026-10-15 15:45' }), NOW)}`);
+    assert(m.leadLabel(p({ start: '2026-10-15 17:40' }), NOW) === '2 小时后', '两小时以上换成小时');
+    assert(m.leadLabel(p({ start: '2026-10-15 15:39' }), NOW) === '现在开始', '已过开始时间说"现在开始"');
+    assert(m.leadLabel(p({ minutes: 10 }), NOW) === '提前 10 分钟', '无开始时间时退回提醒提前量');
+
+    // 4) 区间行的四种形状
+    assert(
+      m.spanLabel(p({ start: '2026-10-15 16:00', end: '2026-10-15 16:30' }), NOW) === '10/15 周四 16:00 - 16:30',
+      `同日形状错: ${m.spanLabel(p({ start: '2026-10-15 16:00', end: '2026-10-15 16:30' }), NOW)}`,
+    );
+    assert(
+      m.spanLabel(p({ start: '2026-10-15 16:00', end: '2026-10-16 09:30' }), NOW) === '10/15 周四 16:00 - 10/16 周五 09:30',
+      '跨日形状错',
+    );
+    assert(m.spanLabel(p({ start: '2026-10-15 16:00' }), NOW) === '10/15 周四 16:00 起', '缺结束应写"起"');
+    assert(m.spanLabel(p({ start: '2026-10-15 00:00', allDay: true }), NOW) === '10/15 周四 全天', '全天形状错');
+    assert(
+      m.spanLabel(p({ start: '2026-10-15 00:00', end: '2026-10-17 00:00', allDay: true }), NOW) === '10/15 周四 - 10/17 周六 全天',
+      '跨天全天形状错',
+    );
+    // 旧纯待办没有日期，不能显示成 NaN/NaN，得落在今天这一格
+    assert(m.spanLabel(p({}), NOW) === '10/15 周四 00:00 起', `无日期应落在今天: ${m.spanLabel(p({}), NOW)}`);
+
+    // 5) 「查看详情」只带定位需要的参数
+    const dp = m.detailParams(p({ event: 'e1', start: '2026-10-15 16:00', end: '2026-10-15 16:30', content: '周会' }));
+    assert(dp.event === 'e1' && dp.start && dp.end, `详情参数缺项: ${JSON.stringify(dp)}`);
+    assert(dp.content === undefined && dp.all_day === undefined, '正文不该进 URL，all_day=0 也不用带');
+    assert(m.detailParams(p({ event: 'e1', allDay: true })).all_day === '1', '全天要带得动');
+
+    // 6) 只读详情里从规则/提醒串还原成人话（措辞必须和编辑器一致）
+    assert(m.repeatLabel('') === '不重复', '空规则应说"不重复"');
+    assert(m.repeatLabel('every:1day') === '每天', `单个周期不该写成"每 1 天": ${m.repeatLabel('every:1day')}`);
+    assert(m.repeatLabel('every:2week') === '每 2 周', `多周期错: ${m.repeatLabel('every:2week')}`);
+    assert(m.repeatLabel('every:1month') === '每个月', '月单位沿用编辑器的说法');
+    assert(m.repeatLabel('weekly') === 'weekly', '历史手工串原样显示，别当空');
+    assert(m.alarmLabel([]) === '无', '没提醒要说"无"');
+    assert(m.alarmLabel([1440, 10, 0]) === '提前 1 天、提前 10 分钟、准时', `多档提醒拼接错: ${m.alarmLabel([1440, 10, 0])}`);
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
 /** 纯函数模块：周/日时间轴的区间切分、重叠分道与拖拽吸附 */
 function testCalendarTimelineModule() {
   const failures = [];
@@ -2290,6 +2440,26 @@ async function main() {
     failed += 1;
     console.log('\n  ✗ 纯函数：/cal 时间轴');
     for (const f of tlFailures) console.log(`      - ${f}`);
+  }
+
+  // 纯函数模块：日期时间选择器（15 分钟档位 · 过期禁用 · 值组合）
+  const dtfFailures = testDateTimeFieldModule();
+  if (dtfFailures.length === 0) {
+    console.log('\n  ✓ 纯函数：/cal 日期时间选择（96 档 15 分钟 · 过期只限今天 · 滚到首个可选 · 两半各自可改）');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ 纯函数：/cal 日期时间选择');
+    for (const f of dtfFailures) console.log(`      - ${f}`);
+  }
+
+  // 纯函数模块：提醒卡片文案（常驻措辞 · 区间四形状 · 脏参降级）
+  const rfFailures = testReminderFormatModule();
+  if (rfFailures.length === 0) {
+    console.log('\n  ✓ 纯函数：/cal 提醒卡片文案（今天/几分钟后 · 同日跨日全天 · URL 脏参降级）');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ 纯函数：/cal 提醒卡片文案');
+    for (const f of rfFailures) console.log(`      - ${f}`);
   }
 
   // 纯函数模块：/cal 指令语法（日期与区间的先后 · 默认提醒 · flag 取值）

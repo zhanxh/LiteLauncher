@@ -3,8 +3,8 @@
 //! 吸收原 todo.rs（CRUD + 重复规则 + 时间规范化）与 reminder.rs（调度扫描 + 弹窗/通知）
 //! 的全部逻辑，改经 PluginContext 门控句柄访问宿主能力：
 //! - db → todos（日程项）/ calendars（分类日历）/ event_alarms（多条提醒）/ alarm_fires（触发记账）
-//! - windows → manifest 声明的 calendar（日历主窗）/ todoapp（旧管理面板）/ reminder（提醒弹窗）
-//! - notify → 系统通知；settings → popup_auto_close_secs（宿主自动加 todo. 前缀）
+//! - windows → manifest 声明的 calendar（日历主窗）/ todoapp（旧管理面板）/ reminder（提醒卡片）/ detail（日程详情）
+//! - notify → 系统通知；settings → default_duration_min（宿主自动加 todo. 前缀）
 //!
 //! 与核心库的历史约定：`YYYY-MM-DD HH:MM` 本地裸时间串不变；v2 新增列由 `init()`
 //! 探列后增量补齐，旧待办数据无损升级（无提醒的旧待办 → 全天事项）。
@@ -21,11 +21,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub use recur::{canonical_repeat_rule, parse_repeat_rule};
-
-const POPUP_DURATION_KEY: &str = "popup_auto_close_secs";
-const POPUP_DURATION_DEFAULT: u64 = 12;
-const POPUP_DURATION_MIN: u64 = 5;
-const POPUP_DURATION_MAX: u64 = 300;
 
 const SCHEDULER_TICK_SECS: u64 = 20;
 
@@ -695,39 +690,27 @@ impl TodoPlugin {
         })
     }
 
-    fn get_popup_duration(&self) -> Result<JsonValue, PluginError> {
-        self.with_ctx(|ctx| Ok(json!(popup_duration(ctx))))
-    }
-
-    fn set_popup_duration(&self, params: &JsonValue) -> Result<JsonValue, PluginError> {
-        let seconds = params
-            .get("seconds")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| PluginError::bad_params("缺少参数 seconds"))?;
-        if !(POPUP_DURATION_MIN..=POPUP_DURATION_MAX).contains(&seconds) {
-            return Err(PluginError::bad_params(format!(
-                "时长需在 {}-{} 秒之间",
-                POPUP_DURATION_MIN, POPUP_DURATION_MAX
-            )));
-        }
-        self.with_ctx(|ctx| {
-            ctx.settings.set(POPUP_DURATION_KEY, &seconds.to_string())?;
-            Ok(JsonValue::Null)
-        })
-    }
-
     fn test_popup(&self) -> Result<JsonValue, PluginError> {
         self.with_ctx(|ctx| {
-            let dur = popup_duration(ctx);
+            // 参数与真提醒同形，否则"测试弹窗"验到的样式和实际弹出来的不是一回事。
+            // id 带时间戳：视图是 on_existing=replace，撞了同一个标签只会关掉旧窗不重开。
+            let now = Local::now();
+            let start = now.naive_local() + Duration::minutes(5);
+            let end = start + Duration::minutes(30);
             Self::need_windows(ctx)?.open(
                 "reminder",
                 &[
-                    ("id".to_string(), "test-popup".to_string()),
+                    ("id".to_string(), format!("test-{}", now.timestamp_millis())),
+                    ("event".to_string(), String::new()),
                     (
                         "content".to_string(),
-                        format!("这是一条测试提醒，弹窗将在 {} 秒后自动关闭", dur),
+                        "这是一条测试提醒，不会自动消失，点「我知道了」才关".to_string(),
                     ),
-                    ("dur".to_string(), dur.to_string()),
+                    ("minutes".to_string(), "5".to_string()),
+                    ("start".to_string(), start.format("%Y-%m-%d %H:%M").to_string()),
+                    ("end".to_string(), end.format("%Y-%m-%d %H:%M").to_string()),
+                    ("all_day".to_string(), "0".to_string()),
+                    ("cal".to_string(), "测试日历".to_string()),
                 ],
             )?;
             Ok(JsonValue::Null)
@@ -811,8 +794,6 @@ impl PluginBackend for TodoPlugin {
             "delete" => self.delete(&params),
             "update" => self.update(&params),
             "open_manager" => self.open_manager(&params),
-            "get_popup_duration" => self.get_popup_duration(),
-            "set_popup_duration" => self.set_popup_duration(&params),
             "test_popup" => self.test_popup(),
             _ => Err(PluginError::unknown_method(method)),
         }
@@ -1476,14 +1457,6 @@ fn is_hex_color(raw: &str) -> bool {
 
 // ───────────────────────────── 调度扫描 ─────────────────────────────
 
-fn popup_duration(ctx: &PluginContext) -> u64 {
-    ctx.settings
-        .get(POPUP_DURATION_KEY)
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(POPUP_DURATION_DEFAULT)
-        .clamp(POPUP_DURATION_MIN, POPUP_DURATION_MAX)
-}
-
 /// 只给开始时间时的默认时长
 fn default_duration(ctx: &PluginContext) -> i64 {
     ctx.settings
@@ -1513,7 +1486,6 @@ pub fn fire_due(ctx: &PluginContext) -> Result<usize, PluginError> {
         .ok_or_else(|| PluginError::permission_denied("db"))?;
 
     let now = Local::now().naive_local();
-    let popup_dur = popup_duration(ctx);
     purge_old_fires(ctx, db)?;
 
     let from = now - Duration::hours(LOOKBACK_HOURS);
@@ -1531,6 +1503,19 @@ pub fn fire_due(ctx: &PluginContext) -> Result<usize, PluginError> {
             row.get("minutes_before").and_then(|v| v.as_i64()),
         ) {
             alarm_ids.insert((event_id.to_string(), minutes), alarm_id.to_string());
+        }
+    }
+
+    // calendar_id → 名字。collect_instances 不 join calendars（它只认得 id），
+    // 卡片上那句"哪个日历"只能在这里自己补一份，整轮扫描一次查询。
+    let mut cal_names: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for row in db.query("SELECT id, name FROM calendars", &[])? {
+        if let (Some(id), Some(name)) = (
+            row.get("id").and_then(|v| v.as_str()),
+            row.get("name").and_then(|v| v.as_str()),
+        ) {
+            cal_names.insert(id.to_string(), name.to_string());
         }
     }
 
@@ -1594,8 +1579,21 @@ pub fn fire_due(ctx: &PluginContext) -> Result<usize, PluginError> {
                 continue;
             }
 
-            // 桌面右下角弹窗：id 取"事件 × 实例 × 提前量"，各占一个窗
+            // 桌面右下角弹窗：id 取"事件 × 实例 × 提前量"，各占一个窗。
+            // 卡片常驻，所以把渲染要的东西一次给全——URL 是开窗唯一的通道。
             if let Some(windows) = &ctx.windows {
+                let span = |k: &str| {
+                    inst.get(k)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                let cal_name = inst
+                    .get("calendar_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|id| cal_names.get(id))
+                    .cloned()
+                    .unwrap_or_default();
                 let _ = windows.open(
                     "reminder",
                     &[
@@ -1603,8 +1601,13 @@ pub fn fire_due(ctx: &PluginContext) -> Result<usize, PluginError> {
                             "id".to_string(),
                             reminder_slot_id(event_id, occ_key, minutes),
                         ),
+                        ("event".to_string(), event_id.to_string()),
                         ("content".to_string(), content.to_string()),
-                        ("dur".to_string(), popup_dur.to_string()),
+                        ("minutes".to_string(), minutes.to_string()),
+                        ("start".to_string(), span("start")),
+                        ("end".to_string(), span("end")),
+                        ("all_day".to_string(), if all_day { "1" } else { "0" }.to_string()),
+                        ("cal".to_string(), cal_name),
                     ],
                 );
             }

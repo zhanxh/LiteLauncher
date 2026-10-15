@@ -1,4 +1,4 @@
-/* 待办提醒右下角弹窗（独立小窗口内容视图）
+/* 日程提醒右下角常驻卡片（独立小窗口内容视图，窗口尺寸见 manifest.views["reminder"]）
    注意：本文件随主 bundle 全局加载，body 重置必须限定在 .reminder-mode 下，
    避免污染主窗口与编辑器窗口 */
 
@@ -9,25 +9,22 @@ body.reminder-mode {
   overflow: hidden;
 }
 
-.reminder-toast {
+.reminder-card {
   box-sizing: border-box;
   width: 100vw;
   height: 100vh;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 8px;
-  padding: 14px 18px 18px;
+  gap: 6px;
+  padding: 12px 14px 12px;
   border-radius: 12px;
   background: var(--editor-bg);
   border: 1px solid var(--border-subtle);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--pop-shadow);
   color: var(--text-main);
   font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  cursor: pointer;
   user-select: none;
   animation: reminder-slide-in 0.28s cubic-bezier(0.21, 1.02, 0.73, 1);
-  position: relative;
   overflow: hidden;
 }
 
@@ -42,33 +39,55 @@ body.reminder-mode {
   }
 }
 
-.reminder-toast-header {
+.rm-head {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: none;
 }
 
-.reminder-toast-icon {
-  font-size: 18px;
-}
-
-.reminder-toast-title {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  color: #ffb454;
-}
-
-.reminder-toast-time {
-  margin-left: auto;
+.rm-kicker {
   font-size: 12px;
+  letter-spacing: 0.4px;
   color: var(--text-muted);
 }
 
-.reminder-toast-body {
+.rm-x {
+  margin-left: auto;
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.rm-x:hover {
+  background: var(--item-bg-hover);
+  color: var(--text-main);
+}
+
+.rm-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* 唯一的强调色：钉钉那句"N 分钟后"是橙色，信息层级上它确实先于标题被读到。
+   tokens.css 里没有暖色变量，为这一处引入成套的亮/暗值不划算。 */
+.rm-lead {
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffb454;
+}
+
+.rm-title {
   font-size: 15px;
-  line-height: 1.5;
-  max-height: 52px;
+  line-height: 1.4;
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -77,32 +96,63 @@ body.reminder-mode {
   word-break: break-all;
 }
 
-.reminder-toast-footer {
+.rm-row {
   display: flex;
-  justify-content: flex-start;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
 }
 
-.reminder-toast-hint {
-  font-size: 11px;
-  color: var(--text-muted);
+.rm-ico {
+  font-size: 12px;
+  flex: none;
 }
 
-.reminder-toast-progress {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  height: 3px;
-  width: 100%;
-  background: linear-gradient(90deg, #ffb454, #ff7a59);
-  transform-origin: left;
-  animation: reminder-progress 12s linear forwards;
+.rm-span {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-@keyframes reminder-progress {
-  from {
-    transform: scaleX(1);
-  }
-  to {
-    transform: scaleX(0);
-  }
+.rm-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-text);
+  flex: none;
+}
+
+.rm-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: none;
+}
+
+.rm-btn {
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--text-main);
+  background: var(--keyhint-bg);
+  border: 1px solid var(--keyhint-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.rm-btn:hover {
+  background: var(--item-bg-hover);
+}
+
+.rm-btn--primary {
+  color: var(--accent-fg);
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+}
+
+.rm-btn--primary:hover {
+  background: var(--accent-hover);
 }

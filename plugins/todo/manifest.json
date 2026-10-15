@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "api_version": "^1",
   "trigger": "/cal",
-  "permissions": ["db", "windows", "notifications", "settings"],
+  "permissions": ["db", "windows", "notifications", "settings", "events"],
   "views": [
     {
       "id": "calendar",
@@ -36,7 +36,7 @@
       "id": "reminder",
       "title": "LiteLauncher 待办提醒",
       "width": 360.0,
-      "height": 148.0,
+      "height": 182.0,
       "resizable": false,
       "decorated": false,
       "always_on_top": true,
@@ -45,20 +45,24 @@
       "position": "bottom-right",
       "stacked": true,
       "unique_by": "id",
-      "on_existing": "replace",
-      "fallback_close_param": "dur",
-      "fallback_close_grace_secs": 8
+      "on_existing": "replace"
+    },
+    {
+      "id": "detail",
+      "title": "LiteLauncher - 日程详情",
+      "width": 488.0,
+      "height": 660.0,
+      "min_width": 420.0,
+      "min_height": 480.0,
+      "resizable": true,
+      "decorated": true,
+      "focusable": true,
+      "position": "center",
+      "unique_by": "event",
+      "on_existing": "focus"
     }
   ],
   "settings": [
-    {
-      "key": "popup_auto_close_secs",
-      "label": "提醒弹窗显示时长（秒）",
-      "kind": "number",
-      "min": 5,
-      "max": 300,
-      "default": 12
-    },
     {
       "key": "default_duration_min",
       "label": "日程默认时长（分钟）",

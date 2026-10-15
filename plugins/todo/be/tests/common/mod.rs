@@ -6,7 +6,8 @@
 #![allow(dead_code)]
 
 use ll_plugin_api::{
-    DbApi, EventApi, LogApi, PluginBackend, PluginContext, PluginError, SettingsApi,
+    DbApi, DesktopAttachResult, DesktopAttachStatus, EventApi, LogApi, PluginBackend,
+    PluginContext, PluginError, SettingsApi, WindowApi,
 };
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
@@ -136,6 +137,44 @@ impl EventApi for TestEvent {
     }
 }
 
+/// 弹窗参数按调用顺序记录：`(view_id, params)`
+pub type OpenedWindows = Arc<Mutex<Vec<(String, Vec<(String, String)>)>>>;
+
+/// 只记录、不真开窗。提醒卡片是独立窗口，URL 参数就是它的全部数据源，
+/// 而 `ctx_with` 的 `windows: None` 让弹窗分支一行都没被断言过。
+#[derive(Default)]
+pub struct TestWindows {
+    opened: OpenedWindows,
+}
+
+impl TestWindows {
+    pub fn new() -> (Self, OpenedWindows) {
+        let sink: OpenedWindows = Arc::new(Mutex::new(Vec::new()));
+        (Self { opened: Arc::clone(&sink) }, sink)
+    }
+}
+
+impl WindowApi for TestWindows {
+    fn open(&self, view_id: &str, params: &[(String, String)]) -> Result<(), PluginError> {
+        self.opened
+            .lock()
+            .unwrap()
+            .push((view_id.to_string(), params.to_vec()));
+        Ok(())
+    }
+    fn attach_desktop(&self, _label: &str) -> Result<DesktopAttachResult, PluginError> {
+        Ok(DesktopAttachResult {
+            status: DesktopAttachStatus::Unsupported {
+                reason: "测试环境没有桌面层".to_string(),
+            },
+            on_wallpaper: false,
+        })
+    }
+    fn desktop_supported(&self) -> bool {
+        false
+    }
+}
+
 /// v1 时代的 todos 表（宿主 migration.rs 搬来的老库就是这个形状）
 pub const V1_DDL: &str = "
     CREATE TABLE todos (
@@ -145,9 +184,18 @@ pub const V1_DDL: &str = "
     )";
 
 pub fn ctx_with(shared: Shared) -> PluginContext {
+    ctx_built(shared, None)
+}
+
+/// 带记录型弹窗后端的 ctx：用来断言提醒卡片拿到哪些参数
+pub fn ctx_with_windows(shared: Shared, windows: Arc<dyn WindowApi>) -> PluginContext {
+    ctx_built(shared, Some(windows))
+}
+
+fn ctx_built(shared: Shared, windows: Option<Arc<dyn WindowApi>>) -> PluginContext {
     PluginContext {
         db: Some(Arc::new(TestDb(shared))),
-        windows: None,
+        windows,
         notify: None,
         process: None,
         secrets: None,

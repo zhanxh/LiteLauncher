@@ -1,7 +1,7 @@
 import { Component, createSignal, For, onMount, onCleanup, Show } from 'solid-js';
 import { getPluginContext } from '@ll/sdk';
 import { repeatLabel } from './todoPlugin';
-import { DateTimePicker } from './DateTimePicker';
+import { DateTimeField } from './calendar/DateTimeField';
 import { RepeatPicker } from './RepeatPicker';
 import './todoapp.css';
 
@@ -23,7 +23,7 @@ function isTauri(): boolean {
 /**
  * 待办管理面板（/todo app 打开的独立窗口）
  * 未完成/已完成分区展示；支持编辑、完成切换、删除、快速添加；
- * 设置区可配置提醒弹窗显示时长并试弹预览
+ * 设置区可试弹一张提醒预览卡（卡片常驻，不自动消失）
  */
 export const TodoManager: Component = () => {
   const [todos, setTodos] = createSignal<TodoItem[]>([]);
@@ -42,7 +42,6 @@ export const TodoManager: Component = () => {
 
   // 设置
   const [showSettings, setShowSettings] = createSignal(false);
-  const [durInput, setDurInput] = createSignal('12');
 
   const flash = (msg: string) => {
     setStatusText(msg);
@@ -63,11 +62,6 @@ export const TodoManager: Component = () => {
     // 限定作用域：仅本面板窗口重置 body 高度/背景（css 规则随主 bundle 全局加载）
     document.body.classList.add('todoapp-mode');
     void refresh();
-    if (isTauri()) {
-      ctx.call<number>('get_popup_duration')
-        .then((d) => setDurInput(String(d)))
-        .catch(() => {});
-    }
   });
 
   onCleanup(() => document.body.classList.remove('todoapp-mode'));
@@ -149,20 +143,6 @@ export const TodoManager: Component = () => {
     }
   };
 
-  const saveDuration = async () => {
-    const secs = parseInt(durInput(), 10);
-    if (Number.isNaN(secs)) {
-      flash('请输入有效数字');
-      return;
-    }
-    try {
-      await ctx.call('set_popup_duration', { seconds: secs });
-      flash(`已保存：弹窗显示 ${secs} 秒`);
-    } catch (err: any) {
-      flash(`保存失败: ${err?.message || err}`);
-    }
-  };
-
   const testPopup = async () => {
     try {
       await ctx.call('test_popup');
@@ -220,7 +200,13 @@ export const TodoManager: Component = () => {
             placeholder="待办内容"
             onInput={(e) => setEditContent(e.currentTarget.value)}
           />
-          <DateTimePicker value={editRemind()} onChange={setEditRemind} />
+          <DateTimeField
+            value={editRemind()}
+            datePlaceholder="提醒日期"
+            timePlaceholder="提醒时间"
+            allowClear
+            onChange={setEditRemind}
+          />
           <RepeatPicker value={editRepeat()} onChange={setEditRepeat} />
           <div class="todo-edit-actions">
             <button class="btn primary" onClick={() => void saveEdit()}>保存</button>
@@ -250,23 +236,14 @@ export const TodoManager: Component = () => {
       <Show when={showSettings()}>
         <section class="todoapp-settings">
           <div class="setting-row">
-            <label for="popup-dur">弹窗提醒显示时长</label>
+            <label for="popup-test">提醒弹窗</label>
             <div class="setting-controls">
-              <input
-                id="popup-dur"
-                class="ti small"
-                type="number"
-                min="5"
-                max="300"
-                value={durInput()}
-                onInput={(e) => setDurInput(e.currentTarget.value)}
-              />
-              <span class="unit">秒</span>
-              <button class="btn primary small" onClick={() => void saveDuration()}>保存</button>
-              <button class="btn ghost small" onClick={() => void testPopup()}>测试弹窗</button>
+              <button id="popup-test" class="btn ghost small" onClick={() => void testPopup()}>
+                测试弹窗
+              </button>
             </div>
           </div>
-          <p class="setting-hint">到点提醒时右下角弹窗的停留时长（5-300 秒），超时自动消失。</p>
+          <p class="setting-hint">到点提醒时右下角弹出卡片，常驻不自动消失，点「我知道了」或 ✕ 才关。</p>
         </section>
       </Show>
 
@@ -278,7 +255,13 @@ export const TodoManager: Component = () => {
           onInput={(e) => setNewContent(e.currentTarget.value)}
           onKeyDown={(e) => e.key === 'Enter' && void quickAdd()}
         />
-        <DateTimePicker value={newRemind()} onChange={setNewRemind} placeholder="点击选择提醒时间（可空，默认无提醒）" />
+        <DateTimeField
+          value={newRemind()}
+          datePlaceholder="日期（可空）"
+          timePlaceholder="时间"
+          allowClear
+          onChange={setNewRemind}
+        />
         <RepeatPicker value={newRepeat()} onChange={setNewRepeat} />
         <div class="todo-edit-actions">
           <button class="btn primary" onClick={() => void quickAdd()}>添加</button>

@@ -10,9 +10,10 @@
 mod common;
 
 use chrono::{Duration, Local};
-use common::{count, ctx_with, upgraded, Shared};
+use common::{count, ctx_with, ctx_with_windows, upgraded, Shared, TestWindows};
 use ll_plugin_api::PluginBackend;
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// n 分钟前的本地时刻串（与存储约定同：`YYYY-MM-DD HH:MM`）
@@ -135,4 +136,90 @@ fn editing_alarms_rearms_the_event() {
         .unwrap();
     assert_eq!(fires(&shared), 0, "重建提醒要清掉旧触发记录");
     assert_eq!(fire(&shared), 1, "新提醒应照常触发");
+}
+
+/// 卡片是独立窗口，URL 参数就是它的全部数据源——少一个字段就只能画一张空卡
+#[test]
+fn popup_params_carry_the_whole_card() {
+    let (plugin, shared) = upgraded();
+    // 一次取时刻、两个断言都从它推：`ago`/`ahead` 各读一次 now()，跨分钟边界会让
+    // 期望的 end（后端按 start_at + 默认时长存）比实参差一分钟
+    let base = Local::now();
+    let at = |mins: i64| (base + Duration::minutes(mins)).format("%Y-%m-%d %H:%M").to_string();
+
+    let cal = plugin
+        .call("save_calendar", json!({"name": "工作", "color": "#4c8dff"}))
+        .unwrap();
+    let saved = plugin
+        .call(
+            "save",
+            json!({
+                "content": "团队周会",
+                "start_at": at(-2),
+                "calendar_id": cal["id"],
+                "alarms": [5],
+            }),
+        )
+        .unwrap();
+
+    let (windows, opened) = TestWindows::new();
+    let fired =
+        ll_plugin_todo::fire_due(&ctx_with_windows(Arc::clone(&shared), Arc::new(windows)))
+            .expect("fire_due 失败");
+    assert_eq!(fired, 1);
+
+    let popup = opened
+        .lock()
+        .unwrap()
+        .pop()
+        .expect("到点的提醒该开一张卡片");
+    assert_eq!(popup.0, "reminder");
+    let params: HashMap<String, String> = popup.1.into_iter().collect();
+    let want = |k: &str, v: &str| {
+        assert_eq!(params.get(k).map(String::as_str), Some(v), "参数 {k}");
+    };
+    want("content", "团队周会");
+    want("event", saved["id"].as_str().unwrap());
+    want("minutes", "5");
+    want("cal", "工作");
+    // 区间取实例的，不是日程锚点的：重复事项弹的是"这一次"
+    want("start", &at(-2));
+    want("end", &at(58));
+    want("all_day", "0");
+    // id 是 unique_by：同一事件 × 同一次 × 同一档重跑不能开出第二张
+    let slot = params.get("id").expect("卡片要有实例键");
+    assert!(
+        slot.starts_with(saved["id"].as_str().unwrap()) && slot.ends_with("-5min"),
+        "{slot}"
+    );
+}
+
+/// 多提醒 × 重复实例：开几个窗就得记几条账，两边数目对不上就是漏弹或重复弹
+#[test]
+fn one_popup_per_fired_alarm() {
+    let (plugin, shared) = upgraded();
+    plugin
+        .call(
+            "save",
+            json!({
+                "content": "晨读",
+                "start_at": ago(1442),
+                "repeat_rule": "every:1day",
+                "alarms": [30, 0],
+            }),
+        )
+        .unwrap();
+
+    let (windows, opened) = TestWindows::new();
+    let fired =
+        ll_plugin_todo::fire_due(&ctx_with_windows(Arc::clone(&shared), Arc::new(windows)))
+            .expect("fire_due 失败");
+    assert_eq!(opened.lock().unwrap().len(), fired, "每个到点提醒各开一张卡片");
+
+    let again = ll_plugin_todo::fire_due(&ctx_with_windows(
+        Arc::clone(&shared),
+        Arc::new(TestWindows::default()),
+    ))
+    .expect("重跑失败");
+    assert_eq!(again, 0, "已记账的不再弹");
 }

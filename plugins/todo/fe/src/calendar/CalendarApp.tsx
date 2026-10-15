@@ -5,7 +5,8 @@
  * 分类筛选放前端而不是每次重查，是因为勾选要同时看多个分类，
  * 后端 query_range 的 calendar_id 只支持单值。
  */
-import { Component, For, Show, createEffect, createMemo, createSignal } from 'solid-js';
+import { Component, For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
+import { listen } from '@tauri-apps/api/event';
 import { getPluginContext, isHostAvailable } from '@ll/sdk';
 import { daysInMonth, firstWeekday, dateKey, todayKey } from './grid';
 import { CalInstance, parseLocal } from './daymath';
@@ -156,14 +157,35 @@ export const CalendarApp: Component = () => {
     void loadCalendars();
   });
 
-  // Esc 关掉编辑器；浮层是唯一需要键盘退出的层，不做焦点陷阱
+  // Esc 关掉编辑器；日期/时间浮层开着时先让给浮层，否则一次 Esc 两层一起没
   createEffect(() => {
     if (!seed()) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSeed(null);
+      if (e.key === 'Escape' && !document.querySelector('.dtf-pop')) setSeed(null);
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // 捕获阶段：Kobalte 在 document 上处理 Esc 并同步卸载浮层，冒泡阶段再查
+    // DOM 永远查不到，一次 Esc 就把浮层和编辑器一起关了
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
+
+  /**
+   * 详情窗（提醒卡片「查看详情」）保存后要能看见新值：本窗口的重取只挂在自己
+   * 保存/切月的路径上，不监听就得手动翻个月份才刷新。
+   */
+  createEffect(() => {
+    if (!isHostAvailable()) return;
+    let unlisten: (() => void) | undefined;
+    void listen<{ pluginId: string; event: string }>('plugin-event', (e) => {
+      const p = e.payload;
+      if (p.pluginId === 'todo' && p.event === 'cal-changed') void load();
+    })
+      .then((un) => {
+        unlisten = un;
+      })
+      // 没有 events 权限时退化成"要手动切月份才更新"，不影响数据正确性
+      .catch(() => undefined);
+    onCleanup(() => unlisten?.());
   });
 
   const shift = (delta: number) => {
