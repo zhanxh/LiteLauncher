@@ -210,7 +210,7 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 | `/memo` | 备忘速记 | 速记与检索 |
 | `/cheat` | 命令速查 | 内置 git/docker/k8s 等常用命令，可增删 |
 | `/time` | 世界时钟 | 主要城市时间与时差 |
-| `/pomo` | 番茄钟 | `/pomo start 25 写代码`，专注↔短休按 **5:1** 交替；到点发系统通知并自动接下一段，`/pomo auto off` 改为每段结束等人工点挂件的 ▶；`/pomo pin` 可贴到壁纸层 |
+| `/pomo` | 番茄钟 | `/pomo start 25 写代码`，专注↔短休按 **5:1** 交替；到点发系统通知并自动接下一段，`/pomo auto off` 改为每段结束等人工点挂件的 ▶；挂件被关掉后 `/pomo start`（不带参数）或 `/pomo widget` 可不重置计时地找回；`/pomo pin` 可贴到壁纸层 |
 | `/sysinfo` | 系统信息 | 平台/CPU/内存/磁盘探测 + **主程序与子进程内存占用**（webview、插件 sidecar 按名称聚合） |
 | `/find` | 文件搜索 | 全盘文件按名称毫秒级搜索，`ext:rs` / `size:>500mb` / `dm:today` 字段语法，`desc size` 排序；回车打开，目录自动记入 recent。**Windows 走 Everything，Linux 走 plocate（安装说明见下）** |
 

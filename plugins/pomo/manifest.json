@@ -1,10 +1,10 @@
 {
   "id": "pomo",
   "name": "番茄钟",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "api_version": "^1",
   "trigger": "/pomo",
-  "description": "番茄钟：/pomo start 25 写代码 开始计时并自动在桌面显示倒计时挂件，专注与短休按 5:1 交替，到点发系统通知；/pomo pause 暂停 / resume 继续 / next 开始下一段 / auto on|off 到点是否自动衔接 / stop 停止；/pomo pin 把挂件贴到桌面壁纸层（Wayland 下自动降级为置顶浮窗）。",
+  "description": "番茄钟：/pomo start 25 写代码 开始计时并自动在桌面显示倒计时挂件，专注与短休按 5:1 交替，到点发系统通知；/pomo pause 暂停 / resume 继续 / next 开始下一段 / auto on|off 到点是否自动衔接 / stop 停止；挂件被关掉后 /pomo start（不带参数）或 /pomo widget 可不重置计时地找回；/pomo pin 把挂件贴到桌面壁纸层（Wayland 下自动降级为置顶浮窗）。",
   "permissions": [
     "notifications",
     "settings",
@@ -20,12 +20,13 @@
       "min_height": 88.0,
       "resizable": false,
       "decorated": false,
+      "shadow": false,
       "always_on_top": true,
       "skip_taskbar": true,
       "focusable": false,
       "position": "top-right",
       "on_existing": "focus",
-      "version": "0.2.1"
+      "version": "0.2.2"
     }
   ],
   "backend": {
@@ -48,6 +49,6 @@
       "widget",
       "where"
     ],
-    "hint": "start [分钟] [标签] 开始并显示桌面挂件；专注/短休按 5:1 交替；auto on|off 到点是否自动衔接；悬停挂件可暂停/下一段/停止"
+    "hint": "start [分钟] [标签] 开始并显示桌面挂件；计时中 /pomo start（不带参数）只找回挂件不重置；专注/短休按 5:1 交替；auto on|off 到点是否自动衔接；悬停挂件可暂停/下一段/停止"
   }
 }

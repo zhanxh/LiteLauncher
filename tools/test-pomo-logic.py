@@ -87,6 +87,7 @@ class _NoSpawn(object):
 class SegmentMachineTest(unittest.TestCase):
     def setUp(self):
         self.kv = {}
+        self.svc_calls = []
         self.notices = []
         self.clock = _Clock()
         del _THREADS[:]
@@ -113,6 +114,8 @@ class SegmentMachineTest(unittest.TestCase):
 
     # ── 假宿主 ────────────────────────────────────────────────
     def _svc(self, method, params=None, timeout=10.0):
+        # 记录所有 svc 调用：「找回挂件」类行为要断言确实发出了 window.open
+        self.svc_calls.append(method)
         if method == "svc.settings.get":
             return self.kv.get((params or {}).get("key"))
         return None
@@ -397,6 +400,86 @@ class SegmentMachineTest(unittest.TestCase):
             P._state.update({"running": False, "target": 0.0})
         P._restore_from_settings()
         self.assertIn("snap", self.kv)
+
+    # ── 找回挂件（正在计时时的 start 不许重置）─────────────────
+    def _window_opened(self):
+        return any(m == "svc.window.open" for m in self.svc_calls)
+
+    def test_bare_start_while_running_only_reopens_widget(self):
+        """计时中不带参数的 start = 找回挂件，绝不重置。
+
+        用户关掉挂件（只关窗不停表）后最自然的动作就是再敲一次 /pomo start；
+        如果这会开一轮新的，等于"想找回窗口却把正在跑的倒计时弄丢了"。
+        """
+        self._start(25, "写代码")
+        target = self._state()["target"]
+        rounds = self._state()["rounds"]
+        del self.svc_calls[:]
+        res = P.on_execute({"subcommand": "start", "args": []})
+        self.assertTrue(res["success"])
+        s = self._state()
+        self.assertEqual(s["target"], target, "正在计时时不带参数 start 绝不能重置 target")
+        self.assertEqual(s["rounds"], rounds)
+        self.assertEqual(s["label"], "写代码")
+        self.assertTrue(self._window_opened(), "start 必须把挂件重新显示出来")
+        self.assertIn("仍在进行", res["message"])
+
+    def test_bare_start_while_paused_reopens_and_keeps_remain(self):
+        self._start(25, "写代码")
+        self.assertTrue(P._pause())
+        del self.svc_calls[:]
+        res = P.on_execute({"subcommand": "start", "args": []})
+        self.assertTrue(res["success"])
+        s = self._state()
+        self.assertTrue(s["paused"], "暂停态不能被找回挂件的 start 清掉")
+        self.assertEqual(s["paused_remain"], 25 * 60)
+        self.assertTrue(self._window_opened())
+        self.assertIn("已暂停", res["message"])
+
+    def test_bare_start_while_holding_reopens(self):
+        self._start(5, "写代码")
+        P._set_auto(False)
+        P._on_phase_end(P.PHASE_FOCUS)
+        del self.svc_calls[:]
+        res = P.on_execute({"subcommand": "start", "args": []})
+        self.assertTrue(res["success"])
+        self.assertTrue(self._state()["hold"], "hold 态不能被找回挂件的 start 清掉")
+        self.assertTrue(self._window_opened())
+
+    def test_bare_start_when_idle_starts_normally(self):
+        """空闲时 /pomo start 不带参数仍是开新番茄钟（默认 25 分钟）。"""
+        res = P.on_execute({"subcommand": "start", "args": []})
+        self.assertTrue(res["success"])
+        s = self._state()
+        self.assertTrue(s["running"])
+        self.assertEqual(s["focus_minutes"], P.DEFAULT_MIN)
+
+    def test_start_with_args_still_resets(self):
+        """带参数的 start 语义不变：明确要开新的。"""
+        self._start(25, "写代码")
+        old_target = self._state()["target"]
+        res = P.on_execute({"subcommand": "start", "args": ["10", "开会"]})
+        self.assertTrue(res["success"])
+        s = self._state()
+        self.assertEqual(s["focus_minutes"], 10)
+        self.assertEqual(s["focus_label"], "开会")
+        self.assertNotEqual(s["target"], old_target, "带参数的 start 必须重开计时")
+
+    def test_status_items_offer_widget_reopen_in_every_live_state(self):
+        self._start(5, "写代码")
+        self.assertIn("pomo:widget", self._ids(), "计时中也要有找回挂件的入口")
+        self.assertTrue(P._pause())
+        self.assertIn("pomo:widget", self._ids())
+        self.assertTrue(P._resume())
+        P._set_auto(False)
+        P._on_phase_end(P.PHASE_FOCUS)
+        self.assertIn("pomo:widget", self._ids(), "hold 态也要有找回挂件的入口")
+
+    def test_select_widget_item_reopens(self):
+        self._start(5, "写代码")
+        del self.svc_calls[:]
+        P.on_select({"id": "pomo:widget"})
+        self.assertTrue(self._window_opened(), "点「显示桌面挂件」必须重新开窗")
 
 
 if __name__ == "__main__":

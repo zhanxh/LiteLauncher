@@ -209,6 +209,17 @@ def item(iid, title, desc="", badge="", icon="🧩", **meta):
             "badge": badge, "icon": icon, "metadata": meta}
 
 
+def _widget_item():
+    """「显示桌面挂件」条目：任何进行中的状态（计时/暂停/hold）都可能需要找回挂件。
+
+    用户关掉挂件（只关窗不停表）后，面板上若没有这个入口，唯一能找回的命令是
+    /pomo widget —— 而它藏在帮助文本里，真机用户根本发现不了。
+    """
+    return item("pomo:widget", "显示桌面挂件",
+                "挂件被关掉后用它找回，计时不受影响；也可输入 /pomo widget",
+                badge="挂件", icon="🪟")
+
+
 def full_text(p):
     sub = (p.get("subcommand") or "").strip()
     args = p.get("args") or []
@@ -465,6 +476,15 @@ def _cn(phase):
     return "短休" if phase == PHASE_BREAK else "专注"
 
 
+def _session_state_text(s):
+    """当前会话的一句话概要（不涉及挂件），给「找回挂件」类消息复用。"""
+    if s["paused"]:
+        return f"已暂停 · 剩余 {_fmt(s['paused_remain'])}"
+    if s["hold"]:
+        return f"已完成 {s['rounds']} 轮 · 等下一段"
+    return f"剩余 {_fmt(s['target'] - time.time())}"
+
+
 def _status_items():
     s = _ui_snap()
     auto_cn = "开" if s["auto"] else "关"
@@ -481,6 +501,7 @@ def _status_items():
                  value=f"暂停中· {_cn(s['phase'])} · {s['label'] or '专注'}", label="已暂停"),
             item("pomo:resume", "继续计时", "输入 /pomo resume", badge="继续", icon="▶️"),
             item_auto,
+            _widget_item(),
             item("pomo:stop", "停止计时", "输入 /pomo stop", badge="停止", icon="⏹️"),
         ]
 
@@ -494,6 +515,7 @@ def _status_items():
                  value=f"{s['rounds']} 轮 · 待开始{nxt_cn}", label="待开始"),
             item("pomo:next", f"开始{nxt_cn}", "输入 /pomo next", badge="下一段", icon="▶️"),
             item_auto,
+            _widget_item(),
             item("pomo:stop", "停止计时", "输入 /pomo stop", badge="停止", icon="⏹️"),
         ]
 
@@ -520,6 +542,7 @@ def _status_items():
              f"本段（{_cn(s['phase'])}）预计结束", badge="结束于", icon="🕒"),
         item("pomo:pause", "暂停计时", "输入 /pomo pause", badge="暂停", icon="⏸️"),
         item_auto,
+        _widget_item(),
         item("pomo:stop", "停止计时", "输入 /pomo stop", badge="停止", icon="⏹️"),
     ]
 
@@ -653,6 +676,20 @@ def on_execute(p):
     args = [str(a) for a in (p.get("args") or [])]
 
     if sub == "start":
+        # ⚠️ 不带参数的 start 在会话进行中（计时/暂停/hold）= 只把挂件找回来，**绝不重置**。
+        # 用户关掉挂件后最自然的动作就是再敲一次 /pomo start；旧表现会静默开一轮新的，
+        # 等于"想找回窗口却把正在跑的倒计时弄丢了"。带参数（/pomo start 30 标签）
+        # 才是明确要开新的。
+        if not args:
+            s = _ui_snap()
+            if s["running"] or s["paused"] or s["hold"]:
+                ok, msg = _open_widget(pin=False)
+                head = f"计时仍在进行（{_session_state_text(s)}）"
+                if ok:
+                    return {"success": True,
+                            "message": f"{head}，挂件已重新显示；要开新的请先 /pomo stop"}
+                return {"success": False, "message": f"{head}，但挂件显示失败：{msg}"
+                                                    "（计时未受影响）"}
         minutes = DEFAULT_MIN
         label_args = list(args)
         if label_args:
@@ -743,7 +780,8 @@ def on_execute(p):
 
     return {"success": False,
             "message": "未知子命令。可用：start [分钟] [标签] / stop / pause / resume / "
-                       "next（开始下一段）/ auto on|off（到点是否自动接下一段）/ pin / widget"}
+                       "next（开始下一段）/ auto on|off（到点是否自动接下一段）/ "
+                       "pin / widget（找回桌面挂件；计时中 /pomo start 不带参数同样只找回挂件）"}
 
 
 def on_select(p):
@@ -763,6 +801,9 @@ def on_select(p):
                            "args": ["off" if _ui_snap()["auto"] else "on"]})
     if iid == "pomo:pin":
         return on_execute({"subcommand": "pin", "args": []})
+    if iid == "pomo:widget":
+        # 面板上的「显示桌面挂件」：与 /pomo widget 同一条路
+        return on_execute({"subcommand": "widget", "args": []})
     if iid == "pomo:remain":
         # 点剩余时间 → 显示详细剩余（保持面板项有反馈，不做死条目）
         s = _ui_snap()
