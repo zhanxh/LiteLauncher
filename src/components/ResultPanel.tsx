@@ -6,6 +6,8 @@ interface ResultPanelProps {
   selectedIndex: number;
   emptyText?: string;
   onSelectItem: (item: PanelItem) => void;
+  /** 鼠标悬停某条时同步键盘选中项——否则 Enter 执行的不是眼前那条 */
+  onHoverIndex?: (index: number) => void;
 }
 
 /** 判定"还有更多"的容差（px）：差这么几个像素不算溢出，避免亚像素抖动导致提示闪烁 */
@@ -61,6 +63,15 @@ export const ResultPanel: Component<ResultPanelProps> = (props) => {
     onCleanup(() => cancelAnimationFrame(raf));
   });
 
+  createEffect(() => {
+    // 选中项变化时确保它落在视口内：长列表（/app、/find、/note 搜索）
+    // 用键盘选到面板下方时，没有这一步选中项会滚出可视区，
+    // 用户按 Enter 时根本看不到自己选的是哪一条。
+    void props.selectedIndex;
+    const active = scroller?.querySelector<HTMLElement>('.panel-item.active');
+    active?.scrollIntoView({ block: 'nearest' });
+  });
+
   return (
     <div class="panel-wrapper">
       <div class="panel-container" ref={scroller} onScroll={measure}>
@@ -77,6 +88,7 @@ export const ResultPanel: Component<ResultPanelProps> = (props) => {
               <div
                 class={`panel-item ${index() === props.selectedIndex ? 'active' : ''}`}
                 onClick={() => props.onSelectItem(item)}
+                onMouseEnter={() => props.onHoverIndex?.(index())}
               >
                 <div class="item-icon">{item.icon || '📌'}</div>
                 <div class="item-content">
@@ -86,9 +98,9 @@ export const ResultPanel: Component<ResultPanelProps> = (props) => {
                       <span class="item-badge">{item.badge}</span>
                     </Show>
                   </div>
-                  <Show when={item.description}>
-                    <div class="item-description">{item.description}</div>
-                  </Show>
+                <Show when={item.description}>
+                  <div class={`item-description${item.description?.includes('\n') ? ' multiline' : ''}`}>{item.description}</div>
+                </Show>
                 </div>
               </div>
             )}

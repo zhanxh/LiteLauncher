@@ -76,6 +76,10 @@ export const App: Component = () => {
     }, 2200);
   };
 
+  // 空态条高度：搜索栏 68 + 一条居中空态文案。此前 query 无结果时窗口撑到 160
+  // 而面板因外层条件不渲染，用户看到的是一条空白——空态文案永远到不了屏上。
+  const EMPTY_PANEL_HEIGHT = 132;
+
   // 智能调节窗口物理高度，高度未发生实质变化时不重复触发 IPC，避免 DWM 重复刷新
   let currentWindowHeight = 70;
   const updateWindowHeight = async (targetHeight: number) => {
@@ -97,6 +101,13 @@ export const App: Component = () => {
     } catch (err) {
       console.warn('隐藏窗口失败:', err);
     }
+  };
+
+  // 关闭前给 Toast 留出可读时间：复制/执行成功后若与 hideWindow 同帧执行，
+  // 窗口瞬间消失，用户根本看不到"已复制"的确认——反馈闭环在这里断掉。
+  const hideWindowDelayed = (delayMs = 400) => {
+    if (!isTauriEnvironment()) return;
+    setTimeout(() => void hideWindow(), delayMs);
   };
 
   // 记录指令使用历史
@@ -232,14 +243,17 @@ export const App: Component = () => {
           setPanelItems(data.items);
           setEmptyText(data.emptyText || '未检索到内容');
           setSelectedIndex(0);
-          updateWindowHeight(data.items.length > 0 ? 420 : 160);
+          updateWindowHeight(data.items.length > 0 ? 420 : EMPTY_PANEL_HEIGHT);
         };
 
         // 插件声明了防抖就等它；没声明则保持逐键立即（纯计算插件零延迟）
         const debounce = plugin.queryDebounceMs ?? 0;
         if (pluginQueryTimer !== null) clearTimeout(pluginQueryTimer);
         if (debounce > 0) {
-          pluginQueryTimer = setTimeout(() => void applyQuery(), debounce);
+          pluginQueryTimer = setTimeout(() => {
+            pluginQueryTimer = null;
+            void applyQuery();
+          }, debounce);
         } else {
           void applyQuery();
         }
@@ -275,6 +289,7 @@ export const App: Component = () => {
           updateWindowHeight(260);
         } else {
           setPanelItems([]);
+          setEmptyText('');
           updateWindowHeight(70);
         }
       });
@@ -297,6 +312,7 @@ export const App: Component = () => {
       clearTimeout(searchTimer);
     }
     searchTimer = setTimeout(() => {
+      searchTimer = null;
       const queries = searchRegistry.getAll().map((provider) =>
         provider
           .search(raw)
@@ -321,7 +337,13 @@ export const App: Component = () => {
         const combined = [...providerItems, ...pluginCandidateItems];
         setPanelItems(combined);
         setSelectedIndex(0);
-        updateWindowHeight(Math.min(70 + combined.length * 62, 420));
+        if (combined.length > 0) {
+          updateWindowHeight(Math.min(70 + combined.length * 62, 420));
+        } else {
+          // 无结果也不能缩回一条光杆：给一句明确的空态，而不是沉默
+          setEmptyText('未检索到相关内容');
+          updateWindowHeight(EMPTY_PANEL_HEIGHT);
+        }
       });
     }, 50);
   });
@@ -367,7 +389,7 @@ export const App: Component = () => {
           showToast(res.message);
           setInputValue('');
           updateWindowHeight(70);
-          hideWindow();
+          hideWindowDelayed();
         } else {
           showToast(`❌ ${res.message}`);
         }
@@ -377,7 +399,7 @@ export const App: Component = () => {
       return;
     }
 
-    // 3. 面板列表项执行（cli/web 兜底 provider 恒有产出，无需额外 fallback）
+    // 3. 面板列表项执行
     const items = panelItems();
     if (items.length > 0) {
       const current = items[selectedIndex()];
@@ -385,6 +407,11 @@ export const App: Component = () => {
         await handleSelectItem(current);
         return;
       }
+    }
+    // 3.1 空面板兜底：没有可执行条目时给一句反馈，否则按回车像卡死一样
+    // 毫无反应。聚合搜索在途（searchTimer 非空）时静默，避免误报。
+    if (items.length === 0 && searchTimer === null) {
+      showToast('没有可执行的条目');
     }
   };
 
@@ -415,7 +442,7 @@ export const App: Component = () => {
         }
         if (after.close) {
           updateWindowHeight(70);
-          hideWindow();
+          hideWindowDelayed();
         }
       }
       return;
@@ -436,7 +463,7 @@ export const App: Component = () => {
       }
       if (after.close) {
         updateWindowHeight(70);
-        hideWindow();
+        hideWindowDelayed();
         return;
       }
       if (after.refresh && result.plugin.query) {
@@ -493,13 +520,14 @@ export const App: Component = () => {
         />
       )}
 
-      {/* Query 模式或候选指令下的结果面板 */}
-      {panelItems().length > 0 && (
+      {/* Query 模式或候选指令下的结果面板（含空态条） */}
+      {(panelItems().length > 0 || emptyText()) && (
         <ResultPanel
           items={panelItems()}
           selectedIndex={selectedIndex()}
           emptyText={emptyText()}
           onSelectItem={handleSelectItem}
+          onHoverIndex={setSelectedIndex}
         />
       )}
 
