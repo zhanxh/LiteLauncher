@@ -11,6 +11,7 @@ import time
 PLUGIN = "bookmark"
 _seq = [1]
 KEY = "items"
+UNDO_KEY = "undo"
 
 
 def _emit(obj):
@@ -77,6 +78,22 @@ def save(items):
     svc("svc.settings.set", {"key": KEY, "value": json.dumps(items, ensure_ascii=False)})
 
 
+def load_undo():
+    """最近一次删除的存档，供 /bookmark undo 恢复。sidecar 可能重启，故持久化。"""
+    raw = svc("svc.settings.get", {"key": UNDO_KEY})
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def save_undo(entry):
+    svc("svc.settings.set", {"key": UNDO_KEY, "value": json.dumps(entry, ensure_ascii=False)})
+
+
 def on_search(p):
     keyword = (p.get("keyword") or "").strip().lower()
     rows = load()
@@ -121,8 +138,20 @@ def on_execute(p):
         if 0 <= idx < len(rows):
             gone = rows.pop(idx)
             save(rows)
-            return {"success": True, "message": f"已删除：{gone.get('title', '')}"}
+            save_undo({"item": gone, "at": int(time.time())})
+            return {"success": True,
+                    "message": f"已删除：{gone.get('title', '')}（/bookmark undo 可撤销）"}
         return {"success": False, "message": "序号超出范围"}
+
+    if sub == "undo":
+        entry = load_undo()
+        if not entry or not isinstance(entry.get("item"), dict):
+            return {"success": False, "message": "没有可撤销的删除"}
+        rows.append(entry["item"])
+        save(rows)
+        save_undo(None)
+        return {"success": True,
+                "message": f"已恢复：{entry['item'].get('title', '')}（恢复到列表末尾）"}
 
     return {"success": False, "message": f"未知子命令：{sub}"}
 
