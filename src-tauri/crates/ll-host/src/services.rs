@@ -232,7 +232,9 @@ const POPUP_REVEAL_GRACE_MS: u64 = 1200;
 /// 拿不到时退回视图声明高度——auto_height 下声明值只是初值，但总比算出 0
 /// 让两个窗口完全重叠要好。
 fn logical_height(window: &WebviewWindow, fallback: f64) -> f64 {
-    match (window.outer_size(), window.scale_factor()) {
+    // 与 apply_content_size 同一语义：尺寸必须问客户区（inner_size），
+    // 外框在 Windows 带投影的无边框窗上还含一圈隐形 insets
+    match (window.inner_size(), window.scale_factor()) {
         (Ok(size), Ok(scale)) if scale > 0.01 => size.height as f64 / scale,
         _ => fallback,
     }
@@ -416,7 +418,7 @@ fn reassert_position(app: AppHandle, label: String, x: f64, y: f64, w: f64, h: f
                 Ok(s) if s > 0.01 => s,
                 _ => return,
             };
-            let Ok(size) = window.outer_size() else { return };
+            let Ok(size) = window.inner_size() else { return };
             let live_w = size.width as f64 / scale;
             let live_h = size.height as f64 / scale;
             // 尺寸还没落地 = 回放还没发生，现在补位置等于白发；已经落地且与请求一致，
@@ -463,6 +465,13 @@ fn baseline_rect(
 /// 读当前矩形用物理像素、写回用逻辑像素，这套换算是插件侧最容易错的地方
 /// （pomo 挂件过去自己做了 `scaleFactor()` + `outerPosition()` 的除法）。
 /// 收进宿主后插件只需要说"内容多高"。
+///
+/// ⚠️ **尺寸必须读 `inner_size()`（客户区），绝不能读 `outer_size()`（外框）**：
+/// Windows 上带投影的无边框窗口（tao 的 MARKER_UNDECORATED_SHADOW）外框比客户区
+/// 大出一圈隐形 insets（左右下约 8px、上 1px @100% 缩放，DWM 画阴影用）。
+/// `set_size` 写的本来就是客户区，若把外框尺寸当"当前内容尺寸"读回来再写下去，
+/// 客户区每次都会被撑大那圈 insets——pomo 挂件「每划过一次长高一截、划几次就
+/// 要关几次」正是这个正反馈。读写必须同一套几何语义。
 fn apply_content_size(
     app: &AppHandle,
     label: &str,
@@ -482,8 +491,10 @@ fn apply_content_size(
     let pos = window
         .outer_position()
         .map_err(|e| PluginError::window(format!("读取窗口位置失败: {e}")))?;
+    // 客户区尺寸：与 set_size 的写入语义一致（见函数头注释）。位置仍用外框坐标，
+    // 它只做锚定基准，隐形 insets 只带来恒定小偏移，不会像尺寸那样被逐次反馈放大。
     let size = window
-        .outer_size()
+        .inner_size()
         .map_err(|e| PluginError::window(format!("读取窗口尺寸失败: {e}")))?;
     let live = (
         pos.x as f64 / scale,
@@ -641,6 +652,11 @@ fn open_on_main(
         .inner_size(spec.width, spec.height)
         .resizable(resizable)
         .decorations(spec.decorated)
+        // Win11 给"带投影的无边框窗口"画一圈白色系统边框 + 非客户区 insets
+        //（桌面挂件上就是白边）。声明 shadow:false 的视图（如 pomo 挂件）彻底
+        // 去掉非客户区：窗口矩形 = 客户区，白边与几何歧义一起消失，代价是
+        // 没有系统投影与系统圆角。未声明时保持 Tauri 默认（true）。
+        .shadow(spec.shadow.unwrap_or(true))
         .always_on_top(spec.always_on_top)
         .skip_taskbar(spec.skip_taskbar)
         .focused(spec.focusable);

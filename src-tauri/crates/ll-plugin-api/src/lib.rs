@@ -421,6 +421,15 @@ pub struct ViewSpec {
     pub resizable: bool,
     #[serde(default = "default_true")]
     pub decorated: bool,
+    /// 无边框窗口是否保留系统投影（Windows 上即 tao 的 MARKER_UNDECORATED_SHADOW）。
+    ///
+    /// Win11 给"带投影的无边框窗口"外圈保留一圈非客户区 insets（DWM 画阴影/边框用），
+    /// 并画 1px 浅色系统边框——桌面常驻挂件上就是用户看到的「白色边框」，
+    /// 且外框尺寸 ≠ 客户区尺寸。`false` 彻底去掉非客户区（窗口矩形 = 客户区），
+    /// 白边与几何歧义一起消失；代价是没有系统投影与系统圆角（窗口为直角）。
+    /// 装饰窗上无效果；未声明时取 true 保持既有外观。
+    #[serde(default)]
+    pub shadow: Option<bool>,
     /// 窗口高度由内容决定（弹出式基窗）。
     ///
     /// 声明它等于把三件事交给宿主：建窗时强制 `resizable(false)`（用户拖框会和
