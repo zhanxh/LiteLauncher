@@ -1,4 +1,5 @@
 pub mod db;
+pub mod ll_plugin_assets;
 pub mod migration;
 pub mod history;
 pub mod python_env;
@@ -6,10 +7,6 @@ pub mod settings;
 
 use db::DbState;
 use ll_host::{HostState, PluginDbRegistry};
-use ll_plugin_apps::AppsPlugin;
-use ll_plugin_notes::NotesPlugin;
-use ll_plugin_ai::AiPlugin;
-use ll_plugin_todo::TodoPlugin;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -143,12 +140,19 @@ fn clipboard_read(app: AppHandle) -> Result<Option<String>, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // M2：资产根目录（extplugins → 便携 → 开发期仓库），协议闭包持有（与外部插件扫描同源）
+    let ll_asset_roots = ll_plugin_assets::asset_roots();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         // 原生剪贴板：插件走 svc.clipboard.*，壳层走 clipboard_write/read
         .plugin(tauri_plugin_clipboard_manager::init())
+        // M2：ll-plugin:// 自定义协议——插件自带前端（fe/ 静态资产）的承载通道，
+        // 页面经建窗时注入的 window.__llBridge 调宿主（与 plugin_call 同一权限管线）
+        .register_uri_scheme_protocol("ll-plugin", move |_ctx, request| {
+            ll_plugin_assets::serve_plugin_asset(&ll_asset_roots, request.uri().to_string().as_str())
+        })
         .setup(|app| {
             // 1. 初始化核心 SQLite 数据库（command_history + app_settings）
             let db_conn = match db::init_db() {
@@ -175,16 +179,15 @@ pub fn run() {
                 migration::run_legacy_migration(&core, &db_registry);
             }
 
-            // 1.7 初始化插件宿主：注册内置插件并按 manifest 权限构造门控上下文
+            // 1.7 初始化插件宿主：M5 起**不注册任何内置插件**——todo/apps/ai/notes
+            // 全部是 native 动态库（plugins/<id>/<id>.dll），由 1.8 的扫描器统一加载，
+            // 与第三方插件同一条路径、同一张 registry、同一套 manifest 权限门控。
             app.manage(HostState::default());
             let host = app.state::<HostState>();
             host.set_db_registry(Arc::clone(&db_registry));
             host.set_core_db(Arc::clone(&db_conn));
             host.set_app(app.handle().clone());
-            host.register(Arc::new(TodoPlugin::new()));
-            host.register(Arc::new(AppsPlugin::new()));
-            host.register(Arc::new(NotesPlugin::new()));
-            host.register(Arc::new(AiPlugin::new()));
+
             let plugin_log: ll_host::LogFn = Arc::new(|plugin_id, msg| {
                 log_lifecycle(&format!("[plugin:{}] {}", plugin_id, msg));
             });

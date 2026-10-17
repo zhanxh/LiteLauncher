@@ -1,24 +1,51 @@
 {
   "id": "notes",
   "name": "Markdown 笔记",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "api_version": "^1",
   "trigger": "/note",
-  "permissions": ["db", "fs", "windows"],
+  "description": "笔记管理：/note 检索本地 Markdown；/note new [标题] 新建笔记；/note app 打开笔记本管理面板（目录树 + 编辑预览）",
+  "permissions": [
+    "db",
+    "fs",
+    "windows",
+    "process",
+    "clipboard:write"
+  ],
+  "backend": {
+    "kind": "native",
+    "entry": [
+      "notes.dll"
+    ],
+    "integrity": "sha256:ee352f991d4fa235b060cacdde312955a386e9c81aceefb410147e96ecd3404a"
+  },
   "views": [
     {
       "id": "editor",
       "title": "LiteLauncher",
       "title_param": "title",
-      "width": 860.0,
-      "height": 640.0,
-      "min_width": 600.0,
-      "min_height": 400.0,
+      "width": 860,
+      "height": 640,
+      "min_width": 600,
+      "min_height": 400,
       "resizable": true,
       "decorated": false,
       "focusable": true,
       "position": "center",
       "unique_by": "path",
+      "on_existing": "focus"
+    },
+    {
+      "id": "manager",
+      "title": "LiteLauncher - 笔记",
+      "width": 1180,
+      "height": 760,
+      "min_width": 760,
+      "min_height": 520,
+      "resizable": true,
+      "decorated": false,
+      "focusable": true,
+      "position": "center",
       "on_existing": "focus"
     }
   ]

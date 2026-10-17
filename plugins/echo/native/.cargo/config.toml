@@ -1,0 +1,9 @@
+# Windows MSVC：静态链接 CRT——目标机免装 VC Redist，
+# 也避免插件与宿主跨 CRT 边界传递堆内存（方案 §4.3）
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# 产物钉回本工程目录：仓库根的 .cargo/config.toml 会把 target-dir
+# 指到 src-tauri/target，独立插件不应受宿主构建布局影响（本文件更靠近插件，优先级更高）
+[build]
+target-dir = "target"

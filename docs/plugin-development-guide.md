@@ -1,20 +1,28 @@
 # LiteLauncher 插件开发指南（LPS-1）
 
-> 适用版本：M5 架构（插件独立编译）｜配套设计文档：[plugin-architecture-design.md](./plugin-architecture-design.md)
+> 适用版本：M5 架构（插件独立编译、目录扫描加载）｜配套设计文档：[plugin-architecture-design.md](./plugin-architecture-design.md)
+>
+> **状态（2026-10）**：插件分四种形态 `native`（推荐）/ `llp` / `none` / `builtin`（遗留）。
+> 全部由宿主**扫描 `plugins/` 目录**注册，**新增插件不改主程序任何源码**；
+> 官方插件（`/cal` `/app` `/ai` `/note`）也都是 `native`，主程序不链接任何插件 crate。
+> native 的 ABI、流式 HTTP、构建与分发见 [native-plugin-guide.md](./native-plugin-guide.md)。
 > 三个可参考的完整实现：`plugins/todo`（最全：后台调度/弹窗/设置）、`plugins/apps`（受控进程/搜索提供者）、`plugins/notes`（文件系统/编辑器窗口）。
 
 ---
 
 ## 1. 总览
 
-一个插件 = **一个目录三层结构**，前后端各自独立编译：
+一个插件 = **一个目录 + manifest 单一声明源**；native 后端、业务 crate、前端包各自独立编译：
 
 ```
 plugins/<id>/
 ├─ manifest.json          # 声明式单一源：触发词、权限、窗口视图、设置项
-├─ be/                    # 后端：独立 Rust crate（名字 ll-plugin-<id>）
-│  ├─ Cargo.toml
-│  └─ src/lib.rs          # 实现 ll_plugin_api::PluginBackend
+├─ native/                # 【推荐】native 后端：独立 cargo 工程（cdylib），产物 <id>.dll
+│  ├─ Cargo.toml          #   [workspace] 空表 + panic=unwind + 静态 CRT
+│  └─ src/lib.rs          #   ll_plugin_load + vtable.call（可选用 ll-native-shell 适配器）
+├─ be/                    # 业务逻辑 crate（ll-plugin-<id>）：native/ 以 path 依赖引用
+│  ├─ Cargo.toml          #   只允许依赖 ll-plugin-api + 通用库
+│  └─ src/lib.rs          #   实现 ll_plugin_api::PluginBackend
 └─ fe/                    # 前端：独立 TS 包（名字 @ll/plugin-<id>）
    ├─ package.json        # 带 "llplugin": true 标记
    └─ src/index.ts        # export function setup(): void
@@ -22,44 +30,54 @@ plugins/<id>/
 
 数据隔离是**物理级**的：每个插件拥有独立 SQLite 文件（`plugins/<id>/<id>.db`，位于系统数据目录下），插件拿不到别的插件的数据，也拿不到数据库文件路径。
 
-**当前形态的边界**（诚实声明）：
-- 插件后端与宿主**编译期内置**——新增插件需要重新构建主程序；外部进程插件（独立分发安装）是二期 LLP 目标；
-- 所有持久化必须经后端 crate（`ctx.db`）。纯前端插件（`backend: none` + 宿主内置 `svc:*` 方法）是规划中的简化形态，暂未实现——无持久化需求的纯 UI 插件可以只写 fe，但**不建议**，因为 fe-only 无法声明 manifest 权限，且未来接入 `svc:*` 时要返工。
+**当前形态（M5，2026-10）**：
+- **加载**：四种形态一律目录扫描注册（llp/native/none 拷目录即装；builtin 仅剩代码路径）——新增插件不需要改 `src-tauri`；
+- **能力边界**：`native` 与宿主**同进程**（μs 级调用，无崩溃隔离）；需要超时/隔离选 `llp`；纯计算小工具选 `none`（`svc:*` 由宿主直接应答，不需要后端）；
+- **信任模型**：native 插件拥有进程全部权限，标准化接口是**集成契约**而非沙箱——破坏性代码请自觉放进 `llp`；
+- **持久化**：必须经 `ctx.db`（每插件独立 SQLite，文件路径不出宿主）。
 
 ---
 
-## 2. 快速开始：10 步接入清单
+## 2. 快速开始：三条接入路径
 
-以创建 `plugins/bookmark` 为例（改动面用 ⭐ 标注的都是宿主侧文件，这正是"壳层零改动"的少数例外——注册点收敛在两处声明文件里）：
+> 三种路径任选，**都不需要改宿主源码**：manifest 是唯一声明源，目录扫描负责注册。
+
+### A. native（Rust 后端，官方插件同款）
 
 ```bash
-# 1. 建目录
-mkdir -p plugins/bookmark/be/src plugins/bookmark/fe/src
-
-# 2. manifest.json（见 §3）
-# 3. be/Cargo.toml + be/src/lib.rs（见 §4）
-# 4. fe/package.json + fe/src/*（见 §5）
-
-# 5. 接线（宿主侧，共三处声明）
-#    a. 根 Cargo.toml → [workspace].members 加 "plugins/bookmark/be"
-#    b. src-tauri/Cargo.toml → [dependencies] 加 ll-plugin-bookmark = { path = "../plugins/bookmark/be" }
-#    c. src-tauri/src/lib.rs → host.register(Arc::new(BookmarkPlugin::new()));
-
-# 6. 前端生成注册（扫描 plugins/*/fe，产出 src/plugins.generated.ts）
-npm run gen
-
-# 7. 若插件开独立窗口：src-tauri/capabilities/default.json 的 windows 加 "bookmark-*"
-
-# 8. 验证
-cargo build -p ll-plugin-bookmark      # 插件独立编译
-cargo test --workspace                 # 全部单测
-npm run build && ./build.sh            # 全量构建
-
-# 9. 启动应用，设置面板 → 插件：应看到 bookmark 已启用
-# 10. 命令行输入 /bookmark（触发词）验证指令链路
+npm run plugin:create -- my-tools    # 生成 manifest + cargo 工程 + fe 骨架 + build.cmd
+cd plugins/my-tools/native
+cargo build --release                # 产物自动复制为 plugins/my-tools/my-tools.dll
 ```
 
-就这么多——壳层 `App.tsx`、解析器、宿主 `ll-host`、其他插件**一行都不用动**。
+业务写在 `native/src/lib.rs` 的 `dispatch()` 里（脚手架已标 TODO）；想把逻辑拆成可复用 crate（官方插件都是这么做的），
+就把实现放进 `be/`，用 `ll-native-shell` 把 `LlHostApi` 适配成 `PluginContext`（见 §11.8）。
+
+### B. llp（任意语言 sidecar，天然隔离）
+
+```bash
+mkdir -p plugins/sysinfo
+# manifest.json: { "backend": { "kind": "llp", "entry": ["python", "sysinfo.py"] } }
+# 写脚本即可；首次调用才 spawn，5s 超时
+```
+
+### C. none（纯前端，零后端）
+
+```bash
+mkdir -p plugins/qr/fe/src
+# manifest.json: { "backend": { "kind": "none" } } + fe/package.json（"llplugin": true）
+```
+
+### 通用收尾
+
+```bash
+npm run gen      # 扫描 plugins/*/fe → src/plugins.generated.ts（fe 包静态编入主包）
+npm run build    # 类型检查 + 打包
+build.cmd        # 全量：前端 + 全部 native 插件 + 主程序 + 部署到 release/
+```
+
+独立窗口：在 `manifest.views` 声明即可（native 插件可加 `"frontend": "assets"` 自带前端，
+见 native 指南 §6）；窗口标签 `"<id>-*"` 已被 capability 通配覆盖，无需改 capabilities。
 
 ---
 
@@ -82,6 +100,7 @@ npm run build && ./build.sh            # 全量构建
       "width": 580.0, "height": 680.0,
       "min_width": 480.0, "min_height": 520.0,   // 可省，但**必须成对**：宿主只在两者同时声明时才下发下限
       "resizable": true, "decorated": true,
+      "shadow": true,                   // 浮层小窗（贴边挂件/提醒卡/详情弹窗）必须 false：Win11 白边，见 §5.7
       "max_height": 720.0,              // 可省，仅 auto_height 用：内容增长的硬上限
       "auto_height": false,             // true: 高度由内容决定（弹出式基窗，见 §5.6），强制 resizable:false
       "always_on_top": false, "skip_taskbar": false,
@@ -113,6 +132,20 @@ npm run build && ./build.sh            # 全量构建
 `ctx.log`（生命周期日志）与 `ctx` 上未列出的能力**无需权限**，始终可用。
 
 ---
+
+### 3.1 `backend` 段：四种形态的唯一区别
+
+```jsonc
+"backend": { "kind": "native", "entry": ["bookmark.dll"], "integrity": "sha256:<64 hex>" }  // 推荐
+"backend": { "kind": "llp",    "entry": ["python", "main.py"] }                             // sidecar
+"backend": { "kind": "none" }                                                               // 纯前端
+"backend": { "kind": "builtin" }                                                            // 遗留，已零使用
+```
+
+- `entry` 是**字符串数组**：native 填动态库文件名（相对插件目录；Linux 为 `lib<id>.so`），llp 填可执行 + 参数；
+- `integrity`（native 必填）：`sha256:<64 hex>`，宿主**加载前强制校验**。重编后必须重算——
+  `build.cmd` / `build.sh` 会自动回填（等价于 `node tools/update-plugin-integrity.mjs`）；
+- 最小可运行样例：`plugins/echo`（native + 自带 fe）；脚手架：`npm run plugin:create -- <id>`。
 
 ## 4. 后端开发（be crate）
 
@@ -553,6 +586,39 @@ pomo 挂件（悬停展开条，自己排骨架）、`shot/select`（全屏透�
 
 ---
 
+### 5.7 无边框窗口的白边与尺寸：浮层视图必须 `shadow: false`（真机事故规范）
+
+**现象**：`decorated: false` 的窗口在 Win11 上四周有一圈白色边框，Win10 没有；
+带悬停伸缩的挂件还会「鼠标每划过一次就长高一截，划过几次就得点几次关闭」。
+
+**根因**（两个，都出在「带投影的无边框窗口」上，即 shadow 取默认 true）：
+
+1. **白边**：tao 为实现投影给无边框窗口保留一圈**非客户区** insets
+   （100% 缩放下左右下约 8px、顶部 1px），DWM 在这里画阴影和一圈 1px 浅色系统边框。
+   `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE` 只能去掉那根 1px 细线，去不掉这圈底色。
+   `shadow: false` 让窗口矩形 = 客户区，非客户区整个消失，白边才真正没了。
+2. **越用越高**：外框（outer）= 客户区（inner）+ 这圈 insets。宿主
+   `apply_content_size` 一旦把**外框尺寸**当「当前内容尺寸」读回来再写下去，
+   客户区每次基准重置都会被撑大一圈 insets（外框→客户区→更大的外框的正反馈）。
+   宿主已统一为读写都用 `inner_size`（客户区）；**插件侧不要绕过
+   `ctx.windows.setContentSize` 自己读 `outerPosition()/outerSize()` 做几何换算**——
+   那会把这套事故在插件层重演一遍。
+
+**规则**（新增视图时逐条对照）：
+
+- `decorated: false` 且属于**浮层形态**——贴边挂件（pomo）、提醒卡与详情弹窗
+  （auto_height 基窗）、取色台这类小窗——**必须声明 `"shadow": false`**。
+  代价：没有系统投影与系统圆角（直角面板，底色与内容融为一块），这是接受的取舍。
+- `decorated: false` 的**主窗形态**（center + `resizable: true` 的大窗：日程、待办管理、
+  AI 对话、笔记等）保持默认（true）：边框和投影是这类窗口与桌面区分的正常外观。
+- `position: fullscreen` 的遮罩层（shot/select）不涉及：窗口本身就是全屏透明底。
+- 改了 shadow 记得同步 bump 插件版本，否则已安装用户不会拿到新 manifest。
+
+**事故记录**（2026-10-16/17 已修复，别改回去）：pomo 挂件（白边 + 悬停逐次长高、
+要关多次才关掉）、日程提醒 / 日程详情 / 编辑日程（白边）。
+
+---
+
 ## 6. 约束与规则（为什么这样设计）
 
 | 规则 | 理由 |
@@ -565,6 +631,7 @@ pomo 挂件（悬停展开条，自己排骨架）、`shot/select`（全屏透�
 | 前端注册用生成文件 `plugins.generated.ts` | 壳层对插件零感知，插件可独立增删 |
 | 窗口标签 `<id>-<view>[-<unique值>]`，capabilities 需加 `<id>-*` | webview 权限按窗口标签匹配，漏加 = 插件窗口里 invoke 全被拒。**新增视图（尤其是基窗类弹窗）时最容易犯**：症状是"点了没反应"，`npm run plugin:test:fe` 的「弹出式基窗」一组按声明标签逐条比对白名单 |
 | 密钥/敏感值不进 env、不落插件库 | 走 SecretStore（三期），设置中心提供核心托管的录入页 |
+| 浮层视图（`decorated:false` 小窗）必须 `shadow:false`；窗口几何只认客户区 | Win11 给带投影的无边框窗画一圈白色系统边框（§5.7）；把外框尺寸当内容尺寸回写会让窗口逐次变大（pomo 悬停长高、关多次才关掉的事故） |
 
 ---
 
@@ -596,14 +663,15 @@ pomo 挂件（悬停展开条，自己排骨架）、`shot/select`（全屏透�
 
 ## 8. 插件形态总览
 
-四种形态，共用同一注册表、同一 `plugin_call` 通道、同一份 `svc.*` 能力。**壳层对它们零特判**——`ctx.call()` 只认方法名，不感知后端形态。
+四种形态（外加遗留 builtin），共用同一注册表、同一 `plugin_call` 通道、同一份 `svc.*` 能力。**壳层对它们零特判**——`ctx.call()` 只认方法名，不感知后端形态。
 
 | 形态 | `backend.kind` | 代码位置 | 运行时依赖 | 需要重编译主程序 | 指南 |
 |---|---|---|---|---|---|
-| 编译期插件 | `builtin`（默认） | `plugins/<id>/{be,fe}` | 无 | ✅ 需要 | §2–§5 |
+| **native（推荐）** | `native` | `plugins/<id>/{manifest.json, native/, be/, fe/}` + `<id>.dll` | 无（同进程） | ❌ 拷目录即装 | [native-plugin-guide.md](./native-plugin-guide.md) |
 | 外部插件（LLP/1） | `llp` | `plugins/<id>/{manifest.json, 脚本}` | 任意语言运行时 | ❌ 拷目录即装 | §9 |
-| **纯前端插件** | `none` | `plugins/<id>/{manifest.json, fe/}` | **无** | ❌ | **§11** |
-| 编译期 + 前端零代码 | `llp` 但 fe 省略 | 同 LLP | 任意语言运行时 | ❌ | §9（宿主按 `command` 生成通用指令插件） |
+| 纯前端插件 | `none` | `plugins/<id>/{manifest.json, fe/}` | **无** | ❌ | **§11** |
+| 通用指令插件 | `llp` / `native` 但 fe 省略 | 同左 | 同左 | ❌ | 宿主按 `command` 生成通用指令插件 |
+| ~~编译期插件~~（遗留） | `builtin` | `plugins/<id>/{be,fe}` | 无 | ✅ 需要 | §2–§5（M5 起仓库内已无使用者） |
 
 - **跨插件事件总线 / 插件全局热键 / AI（SecretStore + HTTP 白名单代理）**：见设计文档 §4.5 服务目录与 §6；HTTP/事件/密钥的既有实现见 §10。
 
@@ -611,7 +679,7 @@ pomo 挂件（悬停展开条，自己排骨架）、`shot/select`（全屏透�
 
 ## 9. 外部插件（LLP/1，M6）：独立部署 + 动态加载
 
-内置插件随宿主编译发布；**外部插件是独立分发的可执行 sidecar**，拷入目录即安装，宿主启动时动态加载，无需重编主程序。
+LLP 是**独立分发的可执行 sidecar**（与 native 并列的外部形态）：拷入目录即安装，宿主启动时按需 spawn，天然带 5s 超时与进程隔离。
 
 ### 9.1 形态与安装
 
@@ -911,3 +979,10 @@ npm run plugin:test:fe     # Node 内直跑插件逻辑（转译 TS + 桩化壳�
 4. `npm run gen && npx tsc --noEmit && npm run plugin:test:fe`。
 
 **边界判断**：算法密集、依赖 Python 标准库（`hashlib`/`ipaddress`）、或依赖系统命令的实现，**留在 LLP 更省事**——例如 `/hash`（WebCrypto 无 MD5）、`/cidr`、`/cron`。
+
+### 11.8 native 动态库形态（DLL/SO）
+
+高性能第三方插件的第四种形态：后端编译为独立动态库，宿主扫描 `plugins/` 目录 dlopen 加载，
+自带前端经 `ll-plugin://` 协议提供。ABI 规则、能力表、构建与分发详见
+**[native-plugin-guide.md](./native-plugin-guide.md)**（含 `npm run plugin:create` 脚手架与
+notes 的零改动迁移样板）。

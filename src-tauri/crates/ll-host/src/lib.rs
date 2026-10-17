@@ -9,6 +9,7 @@
 pub mod commands;
 pub mod desktop;
 pub mod llp;
+pub mod native;
 pub mod python;
 pub mod services;
 
@@ -337,8 +338,9 @@ pub(crate) fn build_context_from_parts(
 ///
 /// 触发场景：随前端包一并编译进来的纯前端插件（kind=none）不在插件目录里，
 /// 宿主扫描不到、却仍会被前端 `ctx.call('svc.*')` 命中。这些能力即便放开也无法越权——
-/// settings/secret 一律按 `pluginId.` 前缀隔离，clipboard/log/notify/events 不触达用户数据。
-/// 反向地，db / process / net 一律不授予，避免"无 manifest 即无门控"的漏洞。
+/// settings/secret 一律按 `pluginId.` 前缀隔离；notify/events 不触达用户数据。
+/// 反向地，db / process / net / **clipboard（读=用户隐私）** 一律不授予，
+/// 避免"无 manifest 即无门控"的漏洞。
 fn shell_safe_manifest(plugin_id: &str) -> PluginManifest {
     PluginManifest {
         id: plugin_id.to_string(),
@@ -349,8 +351,6 @@ fn shell_safe_manifest(plugin_id: &str) -> PluginManifest {
         description: String::new(),
         permissions: [
             "settings",
-            "clipboard:write",
-            "clipboard:read",
             "notifications",
             "events",
         ]

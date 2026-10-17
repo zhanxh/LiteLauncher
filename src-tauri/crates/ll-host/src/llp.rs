@@ -345,7 +345,7 @@ impl PluginBackend for SvcBackend {
 }
 
 impl HostState {
-    /// 扫描外部插件目录列表，把 kind=llp 的注册进宿主（M6/M7 门控模型与内置一致）。
+    /// 扫描外部插件目录列表，把 kind=llp/none/native 的注册进宿主（M6/M7 门控模型与内置一致）。
     ///
     /// 支持两级部署（`dirs` 按优先级排序，**先到先得**——调用方应把高优先级放前面）：
     /// 1. 用户安装目录 extplugins/（同名覆盖随程序分发的版本）
@@ -388,8 +388,10 @@ impl HostState {
                         continue;
                     }
                 };
-                let is_svc_only = manifest.backend.kind == "none";
-                if manifest.backend.kind != "llp" && !is_svc_only {
+                let kind = manifest.backend.kind.as_str();
+                let is_svc_only = kind == "none";
+                let is_native = kind == "native";
+                if kind != "llp" && !is_svc_only && !is_native {
                     continue; // builtin 形态的 manifest 不属于外部插件目录
                 }
                 // 同 id 去重：高优先级来源先注册，低优先级静默跳过
@@ -414,18 +416,24 @@ impl HostState {
                     Arc::clone(&log),
                 );
                 (log)(&manifest.id, &format!("来源: {}", source_label));
-                if is_svc_only {
+                match kind {
                     // 纯前端插件（kind=none）：无 sidecar，逻辑在前端包里，后端只应答 svc.*
-                    self.register(Arc::new(SvcBackend::new(manifest, ctx)));
-                } else {
-                    self.register(Arc::new(LlpBackend::new(manifest, plugin_dir, ctx)));
+                    "none" => self.register(Arc::new(SvcBackend::new(manifest, ctx))),
+                    // native 动态库插件（M1）：dlopen + ABI 门控；失败已在 loader 记日志，跳过不阻断扫描
+                    "native" => {
+                        match crate::native::load_native_plugin(&manifest, &plugin_dir, ctx, &log) {
+                            Some(backend) => self.register(Arc::new(backend)),
+                            None => continue,
+                        }
+                    }
+                    _ => self.register(Arc::new(LlpBackend::new(manifest, plugin_dir, ctx))),
                 }
                 count += 1;
             }
         }
 
         if count > 0 {
-            (log)("host", &format!("已注册 {} 个外部插件（LLP）", count));
+            (log)("host", &format!("已注册 {} 个外部插件（LLP/native）", count));
         }
         count
     }

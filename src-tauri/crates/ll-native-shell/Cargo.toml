@@ -1,0 +1,10 @@
+[package]
+name = "ll-native-shell"
+version = "0.1.0"
+edition = "2024"
+description = "LiteLauncher native 插件的宿主上下文适配器：把 LlHostApi（svc.* JSON 通道）适配成 PluginContext，让 builtin 后端逻辑零改动跑在动态库里"
+
+[dependencies]
+ll-plugin-abi = { path = "../ll-plugin-abi" }
+ll-plugin-api = { path = "../ll-plugin-api" }
+serde_json = "1"

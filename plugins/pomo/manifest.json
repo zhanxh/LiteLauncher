@@ -1,7 +1,7 @@
 {
   "id": "pomo",
   "name": "番茄钟",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "api_version": "^1",
   "trigger": "/pomo",
   "description": "番茄钟：/pomo start 25 写代码 开始计时并自动在桌面显示倒计时挂件，专注与短休按 5:1 交替，到点发系统通知；/pomo pause 暂停 / resume 继续 / next 开始下一段 / auto on|off 到点是否自动衔接 / stop 停止；挂件被关掉后 /pomo start（不带参数）或 /pomo widget 可不重置计时地找回；/pomo pin 把挂件贴到桌面壁纸层（Wayland 下自动降级为置顶浮窗）。",
@@ -14,10 +14,10 @@
     {
       "id": "widget",
       "title": "番茄钟",
-      "width": 186.0,
-      "height": 88.0,
-      "min_width": 176.0,
-      "min_height": 88.0,
+      "width": 186,
+      "height": 88,
+      "min_width": 176,
+      "min_height": 88,
       "resizable": false,
       "decorated": false,
       "shadow": false,
@@ -29,13 +29,6 @@
       "version": "0.2.2"
     }
   ],
-  "backend": {
-    "kind": "llp",
-    "entry": [
-      "python3",
-      "pomo.py"
-    ]
-  },
   "command": {
     "icon": "🍅",
     "action_subcommands": [
@@ -50,5 +43,12 @@
       "where"
     ],
     "hint": "start [分钟] [标签] 开始并显示桌面挂件；计时中 /pomo start（不带参数）只找回挂件不重置；专注/短休按 5:1 交替；auto on|off 到点是否自动衔接；悬停挂件可暂停/下一段/停止"
+  },
+  "backend": {
+    "kind": "native",
+    "entry": [
+      "pomo.dll"
+    ],
+    "integrity": "sha256:bbb8d27189b9fdf92130f0ea7b30fff55d06867e90f53bff60640edfb3f9d6ee"
   }
 }

@@ -6,6 +6,8 @@ description = "LiteLauncher 插件宿主：注册表、统一 IPC 通道、门�
 
 [dependencies]
 ll-plugin-api = { path = "../ll-plugin-api" }
+# native 动态库插件（M1）：ABI 类型与版本门控（与插件侧共用的唯一边界 crate）
+ll-plugin-abi = { path = "../ll-plugin-abi" }
 tauri = { version = "2" }
 tauri-plugin-notification = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -20,6 +22,10 @@ dirs = "5"
 raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# native 动态库插件（M1）：dlopen/dlsym 跨平台封装
+libloading = "0.8"
+# native 插件完整性校验（M4）：manifest 声明 sha256 时强制比对
+sha2 = "0.10"
 rusqlite = { version = "0.31", features = ["bundled-full"] }
 ureq = { version = "2", features = ["json"] }
 # 前端 Canvas 合成的图片（截图标注）以 base64 回传：走JSON 字节数组会膨胀成百万级数字

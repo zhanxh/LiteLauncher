@@ -100,13 +100,14 @@ flowchart TD
 
 ## 🧩 插件体系
 
-LiteLauncher 遵循**"一切皆插件"**：功能不硬编码进壳层，一律以插件形态接入。按落地形态分三类，三者共用同一注册表、同一 IPC 通道（`plugin_call`）与同一份能力集合，**壳层对它们零特判**。
+LiteLauncher 遵循**"一切皆插件"**：功能不硬编码进壳层，一律以插件形态接入。按落地形态分四类，共用同一注册表、同一 IPC 通道（`plugin_call`）与同一份能力集合，**壳层对它们零特判**。
 
 | 形态 | `backend.kind` | 代码位置 | 运行时依赖 | 重编译主程序 | 典型场景 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| 编译期插件 | `builtin`（默认） | `plugins/<id>/{be,fe}` | 无 | 需要 | 需自定义窗口 / 高频核心：`todo` `apps` `notes` `ai` |
+| **native 动态库** | `native` | `plugins/<id>/{manifest.json, native/, be/, fe/}` + `<id>.dll` | 无（同进程） | 不需要，拷目录即装 | 官方件与高性能插件：`todo` `apps` `ai` `notes` `pomo` `echo` |
 | 外部插件（LLP/1） | `llp` | `plugins/<id>/{manifest.json, 脚本}` | 任意语言运行时（Python 等） | 不需要，拷目录即装 | 依赖系统命令 / 平台探测：`sysinfo` |
 | **纯前端插件** | `none` | `plugins/<id>/{manifest.json, fe/}` | **无** | 不需要 | 纯计算 / 文本 / 换算类小工具 |
+| ~~编译期插件~~（遗留） | uiltin | plugins/<id>/{be,fe} | 无 | 需要 | M5 起已零使用：仓库内所有官方插件都走 native |
 
 ### ✨ 纯前端插件（`backend.kind = "none"`）
 

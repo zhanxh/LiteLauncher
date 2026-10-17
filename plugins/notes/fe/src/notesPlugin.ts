@@ -29,14 +29,28 @@ export const notesPlugin: CommandPlugin = {
   trigger: '/note',
   name: 'Markdown 笔记',
   description:
-    '笔记管理：/note 检索本地 Markdown；/note new [标题] 新建笔记并打开编辑器',
+    '笔记管理：/note 检索本地 Markdown；/note new [标题] 新建笔记；/note app 打开笔记本管理面板（目录树/编辑预览/搜索）',
   icon: '📝',
+  argsHint: 'new|app|关键词',
+  examples: [
+    '/note —— 检索本地笔记（首项可进管理面板）',
+    '/note app —— 打开笔记本管理面板（目录树 + 编辑预览 + 搜索）',
+    '/note new 需求评审纪要 —— 新建笔记并打开编辑器',
+  ],
 
   isAction(input: ParsedInput): boolean {
-    return input.subcommand === 'new';
+    return input.subcommand === 'new' || input.subcommand === 'app';
   },
 
   getPreview(input: ParsedInput): ActionPreviewCapsule | null {
+    if (input.subcommand === 'app') {
+      return {
+        title: '打开笔记管理面板',
+        detail: '左侧目录树（右键改名/移动/删除/复制/系统打开）｜右侧编辑与预览｜全文搜索',
+        badge: '即时动作',
+        hint: '按 Enter 回车打开管理面板',
+      };
+    }
     if (input.subcommand !== 'new') return null;
     const title = input.args.join(' ').trim() || '未命名笔记';
     return {
@@ -48,6 +62,17 @@ export const notesPlugin: CommandPlugin = {
   },
 
   async execute(input: ParsedInput): Promise<{ success: boolean; message: string }> {
+    if (input.subcommand === 'app') {
+      if (!isTauri()) {
+        return { success: true, message: '[预览模式] 打开笔记管理面板' };
+      }
+      try {
+        await ctx.call('open_manager', {});
+        return { success: true, message: '已打开笔记管理面板' };
+      } catch (err: any) {
+        return { success: false, message: `打开管理面板失败: ${err?.message || err}` };
+      }
+    }
     if (input.subcommand !== 'new') {
       return { success: false, message: `未知子命令: ${input.subcommand}` };
     }
@@ -90,6 +115,16 @@ export const notesPlugin: CommandPlugin = {
             badge: 'Markdown',
             metadata: { path: note.path, title: note.title },
           };
+        });
+
+        // 固定入口：笔记本管理面板（等同 /note app）
+        items.unshift({
+          id: '__note_open_manager__',
+          title: '打开笔记管理面板',
+          description: '目录树管理 · 编辑与预览 · 全文搜索',
+          icon: '📔',
+          badge: '面板',
+          metadata: { openManager: true },
         });
 
         // 有关键词时首项直达"新建"：回车即创建同名笔记并打开编辑器
@@ -138,6 +173,21 @@ export const notesPlugin: CommandPlugin = {
   },
 
   async onSelect(item: PanelItem) {
+    // 固定入口：打开笔记本管理面板
+    if (item.metadata?.openManager) {
+      if (isTauri()) {
+        try {
+          await ctx.call('open_manager', {});
+          return { close: true };
+        } catch (err) {
+          console.error('打开笔记管理面板失败:', err);
+        }
+      } else {
+        console.log('[预览环境] 打开笔记管理面板');
+      }
+      return;
+    }
+
     // 面板"新建"入口：直接创建并打开编辑器
     if (item.metadata?.createNew) {
       const title = String(item.metadata?.title || item.title || '').trim();

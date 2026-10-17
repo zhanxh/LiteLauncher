@@ -1,0 +1,7 @@
+[package]
+name = "ll-plugin-abi"
+version = "0.1.0"
+edition = "2024"
+description = "LiteLauncher 原生动态库插件的稳定 C-ABI（DLL/SO 插件与宿主之间唯一跨边界依赖）"
+
+[dependencies]

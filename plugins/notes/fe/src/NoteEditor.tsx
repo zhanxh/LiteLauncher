@@ -1,6 +1,7 @@
 import { Component, createSignal, onMount, onCleanup } from 'solid-js';
 import { getPluginContext } from '@ll/sdk';
 import { PopupFrame } from '@ll/ui';
+import { renderMarkdownPreview } from './markdown';
 
 interface NoteEditorProps {
   filePath: string;
@@ -11,40 +12,6 @@ const ctx = getPluginContext('notes');
 
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-}
-
-/**
- * 轻量 Markdown 解析预览函数（遵循 KISS 原则，支持常用排版）
- */
-function renderMarkdownPreview(markdown: string): string {
-  let html = markdown
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-
-  // 解析标题
-  html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-  html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-  html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
-
-  // 解析粗体与斜体
-  html = html.replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>');
-  html = html.replace(/\*(.*?)\*/gim, '<em>$1</em>');
-
-  // 解析行内代码
-  html = html.replace(/`([^`]+)`/gim, '<code>$1</code>');
-
-  // 解析引用
-  html = html.replace(/^\> (.*$)/gim, '<blockquote>$1</blockquote>');
-
-  // 解析无序列表
-  html = html.replace(/^\- (.*$)/gim, '<li>$1</li>');
-
-  // 换行替换
-  html = html.replace(/\n\n/gim, '<p></p>');
-  html = html.replace(/\n/gim, '<br/>');
-
-  return html;
 }
 
 /**

@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "native-plugin-assets",
+  "description": "M2：插件自带前端（frontend=assets，ll-plugin:// 页面）的最小窗口能力。业务调用一律走 llBridge → plugin_call 应用命令（不在 ACL 体系内）。刻意不授予 destroy/hide/show/set-focus：窗口 label 是命令参数，这些权限会让任意资产页操作任意窗口（destroy 甚至能绕过 CloseRequested 直接毁掉主窗口）；只保留自关闭与拖拽/量高所需的读尺寸。",
+  "windows": ["*"],
+  "remote": {
+    "urls": ["http://ll-plugin.localhost", "http://ll-plugin.localhost/*", "https://ll-plugin.localhost", "https://ll-plugin.localhost/*"]
+  },
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "core:window:allow-outer-position",
+    "core:window:allow-outer-size"
+  ]
+}

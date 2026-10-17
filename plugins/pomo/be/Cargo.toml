@@ -1,0 +1,11 @@
+[package]
+name = "ll-plugin-pomo"
+version = "0.4.0"
+edition = "2024"
+description = "LiteLauncher /pomo 番茄钟后端（M5 从 llp/Python 迁入）：分段计时状态机 + 桌面挂件状态持久化"
+
+[dependencies]
+# 只允许依赖契约 crate 与通用库（仓库门禁）：不得依赖 ll-host / tauri
+ll-plugin-api = { path = "../../../src-tauri/crates/ll-plugin-api" }
+chrono = "0.4"
+serde_json = "1"

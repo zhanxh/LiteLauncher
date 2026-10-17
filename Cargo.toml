@@ -3,12 +3,21 @@ resolver = "2"
 members = [
     "src-tauri",
     "src-tauri/crates/ll-plugin-api",
+    "src-tauri/crates/ll-plugin-abi",
     "src-tauri/crates/ll-host",
-    "plugins/todo/be",
-    "plugins/apps/be",
-    "plugins/notes/be",
-    "plugins/ai/be",
+    "src-tauri/crates/ll-native-shell",
 ]
+
+exclude = [
+    "plugins/apps/be",
+    "plugins/todo/be",
+    "plugins/ai/be",
+    "plugins/notes/be",
+    "plugins/pomo/be",
+]
+
+# 插件不再编进主程序（M5 全量剥离）：plugins/*/be 由各自 plugins/*/native 工程以 path 依赖引用；
+# exclude 保证它们不属于本 workspace、但 `cd plugins/<id>/be && cargo test` 仍可独立运行（否则单测被静默跳过）。
 
 # 依赖规则（CI/grep 门禁）：
 # 1. plugins/*/be 只允许依赖 ll-plugin-api 与通用基础库（serde/chrono/uuid/dirs），

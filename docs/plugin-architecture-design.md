@@ -103,7 +103,7 @@
   "apiVersion": "^1.0",              // LPS 大版本兼容范围
   "trigger": "/todo",
   "permissions": ["db", "notifications", "windows", "settings"],
-  // "backend": { "kind": "builtin" }              一期：编译期内置 crate
+  // "backend": { "kind": "native" }               现况：动态库（builtin 已零使用，见 §11.8 / design M5）
   // "backend": { "kind": "process", "protocol": "LLP/1", "entry": "sidecar" }  二期
   "views": [
     { "id": "manager", "title": "待办管理", "size": [760, 560] },
@@ -524,7 +524,7 @@ AI 不需要内核改动，这正是本架构的验收场景。设计两个挂�
 - **R1 按键扇出预算**：SearchProvider 聚合层强制 50ms debounce + 陈旧结果取消（泛化现 App.tsx staleness check）+ provider 并行执行（Promise.allSettled）+ 每轮超时预算，超时 provider 本轮丢弃并降权。
 - **R2 并行懒初始化**：插件 init 并行执行；DbHandle 懒打开（首次访问才建连接），启动路径增量压回噪声级。
 - **R3 大负载通道**：单次调用负载 > 64KB 的场景（如笔记全文）走 `plugin_event` 流式或分块，避免 Value 双重搬运放大。
-- **R4 外部插件不进关键路径**：核心三插件永久编译期内置；LLP 插件懒启动（首次调用才 spawn），流式走事件通道；冷启动/常驻内存成本（~50–300ms / 30–100MB）由该形态自担。
+- **R4 外部插件不进关键路径**：核心插件（todo/apps/ai/notes）M5 起改为 native 动态库，仍在进程内、不进 LLP 关键路径；LLP 插件懒启动（首次调用才 spawn），流式走事件通道；冷启动/常驻内存成本（~50–300ms / 30–100MB）由该形态自担。
 - **R5 基准护栏**：CI 加两组对照——`plugin_call` vs 直连命令微基准（ overhead < 5% ）；击键到面板渲染 p95 不劣于改造前（录制基准基线）。
 
 ### 12.3 二期 LLP 的真实代价（接受并隔离）

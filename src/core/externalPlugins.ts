@@ -1,9 +1,9 @@
 /**
- * 外部插件（LLP）的前端注册：宿主扫描 extplugins 后，前端据 plugin_list 的
- * backend.kind === "llp" + command 声明，生成通用 CommandPlugin 并注册。
+ * 外部插件（LLP / native）的前端注册：宿主扫描 extplugins 后，前端据 plugin_list 的
+ * backend.kind === "llp" | "native" + command 声明，生成通用 CommandPlugin 并注册。
  *
- * 外部插件没有自定义前端（MVP）：search/execute/select 全部走统一通道
- * 转发到 sidecar，返回值即 PanelData / ActionResult / AfterSelect——
+ * 两类插件共用同一套通用面板契约（MVP）：search/execute/select 全部走统一通道
+ * 转发到后端（sidecar 或动态库 vtable），返回值即 PanelData / ActionResult / AfterSelect——
  * 与内置插件完全同构，壳层无任何特判。
  */
 import { invoke } from '@tauri-apps/api/core';
@@ -129,7 +129,7 @@ export async function registerExternalPlugins(): Promise<number> {
     const list = await invoke<ExternalPluginInfo[]>('plugin_list');
     let count = 0;
     for (const info of list) {
-      if (info.backend?.kind !== 'llp' || !info.command) continue;
+      if ((info.backend?.kind !== 'llp' && info.backend?.kind !== 'native') || !info.command) continue;
       pluginRegistry.register(makeExternalPlugin(info));
       count += 1;
     }

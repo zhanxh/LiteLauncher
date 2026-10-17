@@ -555,6 +555,41 @@ fn apply_content_size(
     })
 }
 
+/// M2：资产视图（frontend = "assets"）的 llBridge 注入脚本。
+/// 桥是宿主 IPC 的薄封装——所有调用仍走 `plugin_call` 应用命令，
+/// 权限由 manifest 声明在宿主侧门控，页面没有第二条信任路径。
+/// 插件页面用它拿到的能力面与前端 SDK 的 PluginContext 一致（call/settings/notify/log）。
+fn assets_bridge_script(plugin_id: &str) -> String {
+    let id_json = serde_json::json!(plugin_id).to_string(); // 带引号的合法 JS 字符串字面量
+    r#"(function () {
+  if (window.__llBridge) return;
+  var internals = window.__TAURI_INTERNALS__;
+  function invoke(cmd, args) {
+    if (!internals || !internals.invoke) {
+      return Promise.reject(new Error("llBridge: Tauri IPC 未注入（窗口能力缺失？）"));
+    }
+    return internals.invoke(cmd, args);
+  }
+  var bridge = {
+    version: 1,
+    pluginId: __LL_PLUGIN_ID__,
+    // 与前端 SDK 的 ctx.call 同构：业务方法 + svc.* 均走宿主 plugin_call 通道
+    call: function (method, params) {
+      return invoke("plugin_call", { pluginId: bridge.pluginId, method: method, params: params || {} });
+    },
+    settings: {
+      get: function (key) { return bridge.call("svc.settings.get", { key: key }); },
+      set: function (key, value) { return bridge.call("svc.settings.set", { key: key, value: String(value) }); }
+    },
+    notify: function (title, body) { return bridge.call("svc.notify.send", { title: title, body: body || "" }); },
+    log: function (level, message) { bridge.call("svc.log.write", { level: level, message: message }); }
+  };
+  window.__llBridge = bridge;
+})();
+"#
+    .replace("__LL_PLUGIN_ID__", &id_json)
+}
+
 /// 主线程上执行的实际建窗逻辑
 fn open_on_main(
     app: &AppHandle,
@@ -585,8 +620,15 @@ fn open_on_main(
         };
     }
 
-    // URL：index.html?view=<viewId>&<params...>（与前端视图路由约定一致）
-    let mut url = format!("index.html?view={}", spec.id);
+    // URL：内置 SPA = index.html?view=<viewId>&<params...>（与前端视图路由约定一致）；
+    // assets 视图（native 插件自带前端，M2）= ll-plugin://localhost/<pluginId>/index.html?...
+    // （wry 在 Windows 上把该 URL 重写为 http://ll-plugin.localhost/<path>，handler 侧会还原）
+    let use_assets = spec.frontend.as_deref() == Some("assets");
+    let mut url = if use_assets {
+        format!("ll-plugin://localhost/{}/index.html?view={}", plugin_id, spec.id)
+    } else {
+        format!("index.html?view={}", spec.id)
+    };
     for (k, v) in params {
         url.push_str(&format!("&{}={}", k, percent_encode(v)));
     }
@@ -647,7 +689,19 @@ fn open_on_main(
     } else {
         spec.resizable
     };
-    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
+    let mut builder = if use_assets {
+        // 第三方资产页面：自定义协议导航（Windows 上 WebView2 以 http://ll-plugin.localhost 承载）
+        let parsed = tauri::Url::parse(&url)
+            .map_err(|e| format!("资产视图 URL 解析失败（{url}）: {e}"))?;
+        WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed))
+    } else {
+        WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
+    };
+    if use_assets {
+        // 注入 llBridge：薄封装宿主 IPC，全部调用走 plugin_call 应用命令（同一权限管线）
+        builder = builder.initialization_script(&assets_bridge_script(plugin_id));
+    }
+    builder = builder
         .title(window_title.as_str())
         .inner_size(spec.width, spec.height)
         .resizable(resizable)
@@ -878,6 +932,58 @@ impl ProcessApi for HostProcessApi {
             validate_path_target(clean)?;
         }
         spawn_app(clean).map_err(|e| PluginError::internal(format!("启动程序失败: {}", e)))?;
+        Ok(())
+    }
+
+    /// 在系统文件管理器中定位并选中文件/文件夹（不经过 shell，无注入面）
+    fn reveal(&self, path: &str) -> Result<(), PluginError> {
+        let clean = path.trim();
+        if clean.is_empty() {
+            return Err(PluginError::bad_params("路径不能为空"));
+        }
+        let target = std::path::Path::new(clean);
+        if !target.exists() {
+            return Err(PluginError::bad_params("路径不存在，无法在系统中显示"));
+        }
+        reveal_in_file_manager(target)
+            .map_err(|e| PluginError::internal(format!("在系统中显示失败: {}", e)))?;
+        Ok(())
+    }
+}
+
+/// 按平台把路径交绦系统文件管理器定位（Windows 选中，macOS Finder 揭示，Linux 打开父目录）。
+/// 只关心 spawn 是否成功：explorer /select 即使成功也常返回非零退出码，不等待不检查。
+fn reveal_in_file_manager(target: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        // explorer /select,path：定位并高亮目标；整参传递不走 cmd，无需引号包裹
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", target.display()))
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-R", &target.display().to_string()])
+            .spawn()?;
+        Ok(())
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // 通用 Linux 无统一“定位选中”协议：退而打开父目录
+        let dir = target
+            .parent()
+            .filter(|p| p.is_dir())
+            .unwrap_or(target);
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()?;
         Ok(())
     }
 }
@@ -2294,6 +2400,15 @@ pub fn dispatch_svc(
             process.launch(&target)?;
             Ok(JsonValue::Null)
         }
+        "svc.process.reveal" => {
+            let process = ctx
+                .process
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("process"))?;
+            let target = p_str("target").ok_or_else(|| PluginError::bad_params("缺少 target"))?;
+            process.reveal(&target)?;
+            Ok(JsonValue::Null)
+        }
 
         // ── 设置 KV（宿主强制 `${pluginId}.` 前缀隔离）──────────────────────
         "svc.settings.get" => {
@@ -2307,6 +2422,38 @@ pub fn dispatch_svc(
             let key = p_str("key").ok_or_else(|| PluginError::bad_params("缺少 key"))?;
             let value = p_str("value").ok_or_else(|| PluginError::bad_params("缺少 value"))?;
             ctx.settings.set(&key, &value)?;
+            Ok(JsonValue::Null)
+        }
+        // ── 插件私密存储（`secret.<pluginId>.<key>`；与 settings 各自命名空间）──
+        // native 插件没有 ctx 句柄，只能走这条通道；权限 = manifest 的 `secrets`。
+        "svc.secret.get" => {
+            let secrets = ctx
+                .secrets
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("secrets"))?;
+            let key = p_str("key").ok_or_else(|| PluginError::bad_params("缺少 key"))?;
+            Ok(match secrets.get(&key) {
+                Some(v) => json!(v),
+                None => JsonValue::Null,
+            })
+        }
+        "svc.secret.set" => {
+            let secrets = ctx
+                .secrets
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("secrets"))?;
+            let key = p_str("key").ok_or_else(|| PluginError::bad_params("缺少 key"))?;
+            let value = p_str("value").ok_or_else(|| PluginError::bad_params("缺少 value"))?;
+            secrets.set(&key, &value)?;
+            Ok(JsonValue::Null)
+        }
+        "svc.secret.delete" => {
+            let secrets = ctx
+                .secrets
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("secrets"))?;
+            let key = p_str("key").ok_or_else(|| PluginError::bad_params("缺少 key"))?;
+            secrets.delete(&key)?;
             Ok(JsonValue::Null)
         }
 

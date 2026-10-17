@@ -5,8 +5,9 @@ description = "A Tauri App"
 authors = ["you"]
 edition = "2024"
 
-# 本包是仓库根 workspace 的成员（见 ../Cargo.toml），插件为独立 crate：
-#   plugins/{todo,apps,notes}/be —— 仅依赖 ll-plugin-api，可独立编译
+# 本包是仓库根 workspace 的成员（见 ../Cargo.toml）。
+# M5 起主程序**不链接任何插件**：todo/apps/ai/notes 全部以 native dll 加载，
+# 内置插件仅剩宿主核心服务（Tauri 窗口、SQLite 注册表、svc 分发器）。
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -28,10 +29,6 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 ll-plugin-api = { path = "crates/ll-plugin-api" }
 ll-host = { path = "crates/ll-host" }
-ll-plugin-todo = { path = "../plugins/todo/be" }
-ll-plugin-apps = { path = "../plugins/apps/be" }
-ll-plugin-notes = { path = "../plugins/notes/be" }
-ll-plugin-ai = { path = "../plugins/ai/be" }
 tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"

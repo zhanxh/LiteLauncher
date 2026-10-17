@@ -1,0 +1,23 @@
+[package]
+name = "ll-plugin-echo"
+version = "0.1.0"
+edition = "2024"
+description = "LiteLauncher native 插件示例（M1）：echo——宿主扫描 plugins 目录 dlopen 加载"
+
+# 空 workspace 表：把本工程从宿主 workspace 中剥离。
+# 这是 native 插件的硬性要求——宿主根 Cargo.toml 是 panic="abort"，
+# 插件必须自管 profile（panic=unwind），否则任何插件 panic 都会杀死主程序。
+[workspace]
+
+[lib]
+name = "echo"
+crate-type = ["cdylib"]
+
+[dependencies]
+# 唯一允许的宿主侧依赖：稳定 C-ABI（禁止依赖 ll-host / tauri / 其他插件）
+ll-plugin-abi = { path = "../../../src-tauri/crates/ll-plugin-abi" }
+serde_json = "1"
+
+[profile.release]
+panic = "unwind"
+strip = true

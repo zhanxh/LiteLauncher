@@ -2540,11 +2540,14 @@ dependencies = [
  "dirs 5.0.1",
  "gtk",
  "image",
+ "libloading 0.8.9",
+ "ll-plugin-abi",
  "ll-plugin-api",
  "raw-window-handle",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-global-shortcut",
@@ -2556,14 +2559,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "ll-plugin-ai"
+name = "ll-native-shell"
 version = "0.1.0"
 dependencies = [
+ "ll-plugin-abi",
  "ll-plugin-api",
- "serde",
  "serde_json",
- "uuid",
 ]
+
+[[package]]
+name = "ll-plugin-abi"
+version = "0.1.0"
 
 [[package]]
 name = "ll-plugin-api"
@@ -2571,40 +2577,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "ll-plugin-apps"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "ll-plugin-api",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "ll-plugin-notes"
-version = "0.1.0"
-dependencies = [
- "dirs 5.0.1",
- "ll-plugin-api",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "ll-plugin-todo"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs 5.0.1",
- "ll-plugin-api",
- "rusqlite",
- "serde",
- "serde_json",
- "uuid",
 ]
 
 [[package]]
@@ -4521,11 +4493,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "ll-host",
- "ll-plugin-ai",
  "ll-plugin-api",
- "ll-plugin-apps",
- "ll-plugin-notes",
- "ll-plugin-todo",
  "rusqlite",
  "serde",
  "serde_json",

@@ -1,0 +1,781 @@
+/* ==========================================================================
+   笔记本管理面板（NotesManager，/note app 打开的大窗口应用）
+   外壳三段式由基窗 PopupFrame 提供，这里只负责左树 + 右工作区布局。
+   配色全部复用主题变量（launcher.css / theme.ts），跟随明暗主题。
+   ========================================================================== */
+
+.nmanager-root {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  background-color: var(--editor-bg);
+  color: var(--editor-text);
+  user-select: none;
+}
+
+/* 面板整体禁选中（树行点击手感），但编辑/预览/弹窗内容必须可选中可复制 */
+.nmanager-root textarea,
+.nmanager-root input,
+.nmanager-root .markdown-rendered-content,
+.nmanager-root .nsearch-line-text,
+.nmanager-root .nmodal {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ── 左栏：目录树 ─────────────────────────────────────────────────────── */
+
+.ntree-side {
+  width: 248px;
+  min-width: 190px;
+  max-width: 400px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--editor-bg);
+}
+
+/* 标题栏：平时只显示「文件」二字，鼠标划过才浮现工具按钮（图1/图2） */
+.ntree-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ntree-title {
+  font-size: 12.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
+.ntree-tools {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+.ntree-head:hover .ntree-tools {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ntree-tools-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.ntool-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1;
+  padding: 5px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.ntool-btn:hover {
+  background: var(--accent-light);
+  color: var(--text-main);
+}
+
+.ntool-btn.active {
+  background: var(--accent-color);
+  color: #fff;
+}
+
+.ntree-body {
+  flex: 1;
+  overflow: auto;
+  padding: 6px 4px 12px;
+}
+
+/* 树行 */
+.ntree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 27px;
+  padding-right: 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.ntree-row:hover {
+  background: var(--accent-light);
+}
+
+.ntree-row.selected {
+  background: var(--keyhint-bg);
+}
+
+.ntree-row.active {
+  background: var(--accent-color);
+  color: #fff;
+}
+
+.ntree-row.active .ntree-icon,
+.ntree-row.active .ntree-caret {
+  color: #fff;
+}
+
+.ntree-caret {
+  width: 14px;
+  flex-shrink: 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.ntree-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.ntree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ntree-rename {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--accent-color);
+  border-radius: 4px;
+  background: var(--editor-preview-bg);
+  color: var(--text-main);
+  font-size: 12.5px;
+  padding: 2px 6px;
+  outline: none;
+}
+
+/* 树底部提示 */
+.ntree-empty {
+  padding: 18px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ── 右键菜单 ─────────────────────────────────────────────────────────── */
+
+.nmenu {
+  position: fixed;
+  z-index: 400;
+  min-width: 168px;
+  padding: 6px;
+  background: var(--editor-preview-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nmenu-item {
+  border: none;
+  background: transparent;
+  color: var(--text-main);
+  text-align: left;
+  font-size: 12.5px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.nmenu-item:hover {
+  background: var(--accent-light);
+}
+
+.nmenu-item.danger {
+  color: #f87171;
+}
+
+.nmenu-item.danger:hover {
+  background: rgba(248, 113, 113, 0.12);
+}
+
+/* ── 右栏：工作区 ─────────────────────────────────────────────────────── */
+
+.nwork {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 文件标签条（图4：TODO.md ×） */
+.nwork-tabs {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--editor-bg);
+  padding: 0 8px;
+  gap: 4px;
+}
+
+.nwork-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px 0 12px;
+  border-radius: 6px;
+  background: var(--keyhint-bg);
+  font-size: 12.5px;
+  color: var(--text-main);
+  max-width: 260px;
+}
+
+.nwork-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nwork-tab-dirty {
+  color: #fbbf24;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.nwork-tab-close {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.nwork-tab-close:hover {
+  background: var(--accent-hover);
+  color: #fff;
+}
+
+/* 工作区主体：复用全局 .editor-body/.editor-pane/.editor-textarea 与
+   .markdown-rendered-content（launcher.css），这里只补布局容器 */
+.nwork-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.nwork-main {
+  min-width: 0;
+}
+
+/* 空态 */
+.nwork-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.nwork-empty-icon {
+  font-size: 42px;
+  opacity: 0.75;
+}
+
+.nwork-empty .editor-save-btn {
+  margin-top: 4px;
+}
+
+/* ── 目录大纲（图5「目录」面板） ──────────────────────────────────────── */
+
+.nwork-toc {
+  width: 224px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--editor-preview-bg);
+}
+
+.nwork-toc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.nwork-toc-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 4px;
+}
+
+.nwork-toc-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-main);
+  text-align: left;
+  font-size: 12.5px;
+  line-height: 1.4;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.nwork-toc-item:hover {
+  background: var(--accent-light);
+}
+
+.nwork-toc-item-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nwork-toc-lv {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.nwork-toc-empty {
+  padding: 16px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ── 状态栏 ───────────────────────────────────────────────────────────── */
+
+.nfoot {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.nfoot-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nfoot-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 通用弹窗（新建/移动/删除/未保存确认） ────────────────────────────── */
+
+.nmodal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 14vh;
+}
+
+.nmodal {
+  width: 440px;
+  max-width: calc(100vw - 48px);
+  max-height: 76vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--editor-preview-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.nmodal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.nmodal-close {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 16px;
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.nmodal-close:hover {
+  background: var(--accent-hover);
+  color: #fff;
+}
+
+.nmodal-body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.nmodal-text {
+  font-size: 13px;
+  color: var(--text-main);
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.nmodal-text .dim {
+  color: var(--text-muted);
+}
+
+.nfield {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.nfield > span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ninput,
+.nselect {
+  width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--editor-bg);
+  color: var(--text-main);
+  font-size: 13px;
+  padding: 7px 10px;
+  outline: none;
+}
+
+.ninput:focus,
+.nselect:focus {
+  border-color: var(--accent-color);
+}
+
+.nmodal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+
+.nbtn {
+  border: none;
+  border-radius: 6px;
+  font-size: 12.5px;
+  padding: 7px 14px;
+  cursor: pointer;
+  background: var(--keyhint-bg);
+  color: var(--text-main);
+  transition: background-color 0.12s ease;
+}
+
+.nbtn:hover {
+  background: var(--accent-light);
+}
+
+.nbtn.primary {
+  background: var(--accent-color);
+  color: #fff;
+}
+
+.nbtn.primary:hover {
+  background: var(--accent-hover);
+}
+
+.nbtn.danger {
+  background: #dc2626;
+  color: #fff;
+}
+
+.nbtn.danger:hover {
+  background: #b91c1c;
+}
+
+.nbtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.nmodal-error {
+  font-size: 12px;
+  color: #f87171;
+  word-break: break-all;
+}
+
+/* ── 搜索文件弹窗（图3） ──────────────────────────────────────────────── */
+
+.nsearch-mask {
+  padding-top: 9vh;
+}
+
+.nsearch {
+  width: 600px;
+}
+
+.nsearch-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.nsearch-title {
+  flex: 1;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.nsearch-inputrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 4px;
+}
+
+.nsearch-input {
+  flex: 1;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--editor-bg);
+  color: var(--text-main);
+  font-size: 13px;
+  padding: 8px 10px;
+  outline: none;
+}
+
+.nsearch-input:focus {
+  border-color: var(--accent-color);
+}
+
+.nsearch-opts {
+  display: flex;
+  gap: 4px;
+}
+
+.nsearch-opts .opt {
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.nsearch-opts .opt:hover {
+  color: var(--text-main);
+  background: var(--accent-light);
+}
+
+.nsearch-opts .opt.active {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  color: #fff;
+}
+
+.nsearch-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 14px;
+}
+
+.nsearch-field > span {
+  flex-shrink: 0;
+  width: 58px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+.nsearch-field .ninput {
+  padding: 5px 10px;
+  font-size: 12.5px;
+}
+
+.nsearch-results {
+  margin: 10px 14px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  max-height: 52vh;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nsearch-hint {
+  padding: 14px 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.nsearch-error {
+  padding: 10px;
+  font-size: 12.5px;
+  color: #f87171;
+  word-break: break-all;
+}
+
+.nsearch-file {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nsearch-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: var(--keyhint-bg);
+  color: var(--text-main);
+  font-size: 12.5px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.nsearch-file-head:hover {
+  background: var(--accent-light);
+}
+
+.nsearch-file-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nsearch-file-rel {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.nsearch-file-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--accent-light);
+  border-radius: 8px;
+  padding: 1px 7px;
+}
+
+.nsearch-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 3px 9px 3px 22px;
+  border-radius: 5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.nsearch-line:hover {
+  background: var(--accent-light);
+  color: var(--text-main);
+}
+
+.nsearch-line-no {
+  flex-shrink: 0;
+  min-width: 28px;
+  text-align: right;
+  color: var(--text-muted);
+  font-family: Consolas, monospace;
+  font-size: 11px;
+}
+
+.nsearch-line-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nsearch-line-text mark {
+  background: rgba(250, 204, 21, 0.35);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* ── 滚动条统一 ───────────────────────────────────────────────────────── */
+
+.ntree-body::-webkit-scrollbar,
+.nwork-toc-list::-webkit-scrollbar,
+.nsearch-results::-webkit-scrollbar,
+.nmodal-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.ntree-body::-webkit-scrollbar-thumb,
+.nwork-toc-list::-webkit-scrollbar-thumb,
+.nsearch-results::-webkit-scrollbar-thumb,
+.nmodal-body::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}

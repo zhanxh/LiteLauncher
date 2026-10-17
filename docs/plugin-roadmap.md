@@ -16,6 +16,7 @@
 | `ctx.shortcuts` 缺 | ✅ 已实现（`shortcut:<accel>` 逐条白名单，宿主做冲突仲裁） |
 | 屏幕捕获 `ctx.screen` 缺 | ✅ 已实现（`list/capture/pixel/cursor/savePng`） |
 | "纯前端插件尚未实现" | ✅ 已实现（`backend.kind = "none"`，前端经 `svc.*` 调宿主；已有 21 个） |
+| 文档把 `plugins/*/be` 当作"编译期内置" | ✅ **M5（2026-10-17）后已无内置插件**：todo/apps/ai/notes 全部 native 动态库，主程序不链接任何插件 crate |
 | `ctx.fs` / `ctx.dialog` 缺 | ❌ **仍然缺**，但 `/find` 已绕开它：走 Everything SDK（见下） |
 | `ctx.index` 缺 | ❌仍然缺 |
 | `ctx.scheduler` 变通 | ❌ 仍然缺（现靠插件自实现） |
@@ -197,7 +198,7 @@
 **前提：一切皆插件**——功能不得硬编码进壳层/宿主，必须经 `manifest.json` + 注册表接入。这是本项目的不变量，下面的选型只涉及**插件后端的落地形态**。
 
 > **术语对齐（避免歧义）**
-> 本仓库文档中的**"编译期内置插件"特指 `plugins/*/be` 这种随主程序一起编译、由 `src-tauri/src/lib.rs` 注册的 Rust 插件**（见开发指南 §1「插件后端与宿主编译期内置」）。它与**"外部插件（LLP sidecar，独立安装）"**相对。
+> ~~本仓库文档中的"编译期内置插件"特指 `plugins/*/be` 这种随主程序一起编译、由 `src-tauri/src/lib.rs` 注册的 Rust 插件~~ —— **M5 起已无内置插件**：todo/apps/ai/notes 全部迁为 native 动态库，`src-tauri` 不再注册也不链接任何插件；`builtin` 仅保留代码路径供测试。
 > 二者**都是插件**、共用同一套 manifest 标准 / 权限门控 / 注册表 / 前端契约，**唯一区别是"后端是否编译进主程序"**。所以"做插件"与"选 Rust 还是 Python"是两个正交的问题。
 
 ### 6.1 两种形态的工作量与约束

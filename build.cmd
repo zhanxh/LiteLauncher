@@ -80,6 +80,26 @@ if not exist "dist\index.html" (
     exit /b 1
 )
 
+REM -- [1.5/5] native dylib plugins (M1+): standalone cargo projects ----
+REM Each plugins/<id>/native builds with panic=unwind + static CRT (isolated
+REM from the host's panic=abort). Output dll is copied next to the plugin
+REM manifest; the host scanner dlopens it per backend.entry on next start.
+for /d %%D in (plugins\*) do (
+  if exist "%%D\native\Cargo.toml" (
+    echo [1.5/5] Building native plugin: %%~nxD ...
+    pushd "%%D\native"
+    cargo build --release
+    if errorlevel 1 exit /b 1
+    popd
+    copy /Y "%%D\native\target\release\*.dll" "%%D\" >nul
+    if errorlevel 1 exit /b 1
+  )
+)
+REM Backfill backend.integrity: a rebuilt dll has new bytes, and a stale hash
+REM makes the loader reject the plugin at startup (silent failure).
+node tools\update-plugin-integrity.mjs
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
 REM -- [2/5] main program: Tauri release build (built-in plugins)
 REM A running LiteLauncher.exe locks target\release\LiteLauncher.exe (os error 5),
 REM so fail early with a clear message instead of after a full compile.
@@ -119,7 +139,7 @@ if not exist "%BIN%\LiteLauncher.exe" (
 )
 copy /Y "%BIN%\LiteLauncher.exe" "release\LiteLauncher.exe" >nul || exit /b 1
 
-REM -- [4/5] deploy external plugins (backend.kind=llp) --------
+REM -- [4/5] deploy external plugins (llp/native/none) -----------
 set "STEP=[4/5]"
 echo %STEP% Deploying external plugins to release\plugins\...
 node tools\deploy-portable-plugins.mjs || exit /b 1
@@ -127,8 +147,8 @@ node tools\deploy-portable-plugins.mjs || exit /b 1
 REM -- [5/5] done -----------------------------------------------
 set "STEP=[5/5]"
 echo %STEP% Done. Distributable output:
-echo   release\LiteLauncher.exe        main program (built-in todo/apps/notes/ai plugins)
-echo   release\plugins\                external plugins (portable, ship together)
+echo   release\LiteLauncher.exe        main program (built-in: todo/apps/ai)
+echo   release\plugins\                external plugins (llp/native/none, ship together; notes = native)
 exit /b 0
 
 :check
@@ -138,5 +158,23 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 echo [check] Frontend type check...
 call npx tsc --noEmit
 if %ERRORLEVEL% NEQ 0 exit /b 1
+echo [check] Plugin backend unit tests (plugins/*/be)...
+for /d %%D in (plugins\*) do (
+  if exist "%%D\be\Cargo.toml" (
+    pushd "%%D\be"
+    cargo test
+    if errorlevel 1 exit /b 1
+    popd
+  )
+)
+echo [check] Native plugin crates (independent cargo projects)...
+for /d %%D in (plugins\*) do (
+  if exist "%%D\native\Cargo.toml" (
+    pushd "%%D\native"
+    cargo check
+    if errorlevel 1 exit /b 1
+    popd
+  )
+)
 echo [check] gate passed
 exit /b 0

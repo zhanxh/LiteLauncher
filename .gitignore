@@ -8,3 +8,12 @@ __pycache__/
 *.pyc
 screen_debug.png
 .qoder/
+
+# native 插件的独立构建缓存（产物 dll 由构建脚本复制到插件目录）
+plugins/*/native/target/
+
+# 运行时临时目录（memory/ 已入库，tmp/ 不入库）
+.workbuddy/tmp/
+
+# native 插件的构建产物：由 build.cmd 生成并回填 integrity，不入库
+plugins/*/*.dll

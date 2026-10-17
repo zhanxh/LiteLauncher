@@ -25,6 +25,16 @@ pub async fn plugin_call(
     method: String,
     params: Value,
 ) -> Result<Value, String> {
+    // 调用者绑定（M2 security boundary）：资产页/第三方窗口只能以自己的插件身份调用后端，
+    // 防止 ll-plugin:// 页面冒用别的插件 id 读其数据库/设置；主窗口（启动器壳层）为可信 UI，放行。
+    // 窗口标签约定 = "<pluginId>-<viewId>"（见 services::window_label）。
+    let caller = window.label();
+    if caller != "main" && !caller.starts_with(&format!("{plugin_id}-")) {
+        return Err(format!(
+            "调用被拒绝：窗口 {caller} 不能代表插件 {plugin_id} 调用后端"
+        ));
+    }
+
     if method.starts_with("svc.") {
         // 已注册插件仍需尊重启用状态；未注册（纯前端插件）无此概念，直接放行
         {

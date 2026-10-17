@@ -4,15 +4,21 @@
   "version": "0.1.1",
   "api_version": "^1",
   "trigger": "/cal",
-  "permissions": ["db", "windows", "notifications", "settings", "events"],
+  "permissions": [
+    "db",
+    "windows",
+    "notifications",
+    "settings",
+    "events"
+  ],
   "views": [
     {
       "id": "calendar",
       "title": "LiteLauncher - 日程",
-      "width": 960.0,
-      "height": 720.0,
-      "min_width": 720.0,
-      "min_height": 560.0,
+      "width": 960,
+      "height": 720,
+      "min_width": 720,
+      "min_height": 560,
       "resizable": true,
       "decorated": false,
       "focusable": true,
@@ -22,10 +28,10 @@
     {
       "id": "todoapp",
       "title": "LiteLauncher - 待办管理",
-      "width": 580.0,
-      "height": 680.0,
-      "min_width": 480.0,
-      "min_height": 520.0,
+      "width": 580,
+      "height": 680,
+      "min_width": 480,
+      "min_height": 520,
       "resizable": true,
       "decorated": false,
       "focusable": true,
@@ -35,11 +41,11 @@
     {
       "id": "reminder",
       "title": "LiteLauncher 待办提醒",
-      "width": 360.0,
-      "height": 182.0,
-      "min_width": 320.0,
-      "min_height": 120.0,
-      "max_height": 320.0,
+      "width": 360,
+      "height": 182,
+      "min_width": 320,
+      "min_height": 120,
+      "max_height": 320,
       "auto_height": true,
       "resizable": false,
       "decorated": false,
@@ -55,11 +61,11 @@
     {
       "id": "detail",
       "title": "LiteLauncher - 日程详情",
-      "width": 440.0,
-      "height": 420.0,
-      "min_width": 440.0,
-      "min_height": 160.0,
-      "max_height": 720.0,
+      "width": 440,
+      "height": 420,
+      "min_width": 440,
+      "min_height": 160,
+      "max_height": 720,
       "auto_height": true,
       "resizable": false,
       "decorated": false,
@@ -79,5 +85,12 @@
       "max": 1440,
       "default": 60
     }
-  ]
+  ],
+  "backend": {
+    "kind": "native",
+    "entry": [
+      "todo.dll"
+    ],
+    "integrity": "sha256:25caa13be1535eaeafb0d280690ac0804b8a91df8f48f0ff9481ae64765b60a2"
+  }
 }

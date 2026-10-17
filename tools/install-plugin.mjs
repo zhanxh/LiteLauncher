@@ -20,14 +20,23 @@ const portable = process.argv.includes("--portable");
 const installAll = !arg || arg === "--all";
 
 const pluginsRoot = path.resolve("plugins");
-const EXTERNAL_KINDS = new Set(["llp", "none"]);
+const EXTERNAL_KINDS = new Set(["llp", "none", "native"]);
 
 function resolveDest(id) {
   if (portable) {
     // 便携模式：主程序旁 plugins/（本仓库布局为 release/plugins，随 release/ 一起分发）
     return path.resolve("release", "plugins", id);
   }
-  const dataHome = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local/share");
+  // 与宿主 db::extplugins_dir() 对齐（dirs::data_local_dir()/LiteLauncher/extplugins）：
+  // Windows = %LOCALAPPDATA%，macOS = ~/Library/Application Support，Linux = XDG_DATA_HOME 或 ~/.local/share
+  let dataHome;
+  if (process.platform === "win32") {
+    dataHome = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+  } else if (process.platform === "darwin") {
+    dataHome = path.join(os.homedir(), "Library", "Application Support");
+  } else {
+    dataHome = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local/share");
+  }
   return path.join(dataHome, "LiteLauncher", "extplugins", id);
 }
 

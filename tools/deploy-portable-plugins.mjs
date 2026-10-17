@@ -2,6 +2,7 @@
 //   LiteLauncher(.exe) + release/plugins/<id>/
 // 覆盖两种外部形态：
 //   llp  —— 拷贝整个插件目录（manifest + sidecar 脚本）
+//   native —— 拷贝整个插件目录（manifest + 动态库 + 资产），剔除 native/ 源码目录
 //   none —— 纯前端插件：代码已编译进应用包，只部署 manifest.json
 //          （宿主据此注册插件，权限门控与设置面板的启用/禁用都依赖它）
 // 由 build.sh / build.cmd 在构建末尾自动调用，也可手动执行：
@@ -13,7 +14,7 @@ import process from "node:process";
 const root = process.cwd();
 const srcRoot = path.join(root, "plugins");
 const destRoot = path.join(root, "release", "plugins");
-const EXTERNAL_KINDS = new Set(["llp", "none"]);
+const EXTERNAL_KINDS = new Set(["llp", "none", "native"]);
 // Windows 上"删不掉"是常态而非事故：EPERM/EBUSY 都可能来自占用，只读属性也报 EPERM。
 const OCCUPIED = new Set(["EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]);
 
@@ -85,6 +86,16 @@ for (const dirent of readdirSync(srcRoot, { withFileTypes: true })) {
     console.log(`[deploy-plugins] ${manifest.id}@${manifest.version}（纯前端，仅 manifest） → ${path.relative(root, dest)}`);
   } else {
     cpSync(path.join(srcRoot, dirent.name), dest, { recursive: true });
+    if (kind === "native") {
+      // native 插件只分发产物：根级 manifest + 动态库 + fe/ + assets/；
+      // 源码目录（native/ 独立工程、be/ 复用源）一律留在仓库
+      rmSync(path.join(dest, "native"), { recursive: true, force: true });
+      for (const ent of readdirSync(dest, { withFileTypes: true })) {
+        if (ent.isDirectory() && !["fe", "assets"].includes(ent.name)) {
+          rmSync(path.join(dest, ent.name), { recursive: true, force: true });
+        }
+      }
+    }
     console.log(`[deploy-plugins] ${manifest.id}@${manifest.version} → ${path.relative(root, dest)}`);
   }
   deployed += 1;

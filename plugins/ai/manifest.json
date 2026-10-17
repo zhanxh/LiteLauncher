@@ -5,20 +5,33 @@
   "api_version": "^1",
   "trigger": "/ai",
   "description": "AI 对话助手：/ai 提示词 打开对话窗口（默认 DeepSeek，OpenAI 兼容流式；首次使用需在窗口内配置 API Key）",
-  "permissions": ["secrets", "settings", "windows", "net:api.deepseek.com", "net:api.openai.com"],
+  "permissions": [
+    "secrets",
+    "settings",
+    "windows",
+    "net:api.deepseek.com",
+    "net:api.openai.com"
+  ],
   "views": [
     {
       "id": "chat",
       "title": "LiteLauncher - AI 对话",
-      "width": 720.0,
-      "height": 560.0,
-      "min_width": 520.0,
-      "min_height": 420.0,
+      "width": 720,
+      "height": 560,
+      "min_width": 520,
+      "min_height": 420,
       "resizable": true,
       "decorated": false,
       "focusable": true,
       "position": "center",
       "on_existing": "focus"
     }
-  ]
+  ],
+  "backend": {
+    "kind": "native",
+    "entry": [
+      "ai.dll"
+    ],
+    "integrity": "sha256:cf2c2ea293d636a0dd404b3d5d2c6996b650ead67b4164c6a8add238a5410615"
+  }
 }

@@ -84,6 +84,17 @@ if [[ "${1:-}" == "check" ]]; then
     cargo check --workspace
     echo "[check] 前端类型检查..."
     npx tsc --noEmit
+    echo "[check] 插件后端单测（plugins/*/be）..."
+    for be_dir in plugins/*/be; do
+        [[ -f "$be_dir/Cargo.toml" ]] || continue
+        (cd "$be_dir" && cargo test)
+    done
+    echo "[check] native 插件 crate（独立 cargo 工程）..."
+    shopt -s nullglob
+    for native_dir in plugins/*/native; do
+        [[ -f "$native_dir/Cargo.toml" ]] || continue
+        (cd "$native_dir" && cargo check)
+    done
     echo "[check] 门禁通过"
     exit 0
 fi
@@ -105,6 +116,26 @@ fi
 if [[ ! -f dist/index.html ]]; then
     echo "[错误] 前端构建未产出 dist/index.html，vite 步骤可能静默崩溃，请检查上方 npm 输出。"
     exit 1
+fi
+
+# ── [1.5/4] native 动态库插件（M1+）──────────────────────────
+# 每个 plugins/<id>/native 是独立 cargo 工程（panic=unwind + 静态 CRT，与宿主
+# panic=abort 隔离）。编出的 dll/so 复制到 plugins/<id>/ 根——宿主按 manifest
+# 的 backend.entry 从那里 dlopen。产物缺失的插件会被扫描器跳过并记日志。
+shopt -s nullglob
+for native_dir in plugins/*/native; do
+    [[ -f "$native_dir/Cargo.toml" ]] || continue
+    echo "[1.5/4] 构建 native 插件（${native_dir#plugins/}）..."
+    (cd "$native_dir" && cargo build --release)
+    for lib in "$native_dir"/target/release/*.dll "$native_dir"/target/release/*.so; do
+        [[ -e "$lib" ]] && cp -f "$lib" "$native_dir/.."
+    done
+done
+
+# 回填 backend.integrity：重编后的 dll 字节已变，旧 hash 会让宿主拒载（静默失效）
+node tools/update-plugin-integrity.mjs
+if [[ "$(uname -s)" == "Linux" ]]; then
+    echo "[提示] native 插件产物为 .so；当前 manifest 的 entry 按 Windows(.dll) 配置，跨平台发布需按平台调整 entry"
 fi
 
 BIN="src-tauri/target/release/LiteLauncher"
@@ -138,7 +169,7 @@ echo "[4/4] 部署外部插件到 release/plugins/..."
 node tools/deploy-portable-plugins.mjs
 
 echo "构建完成。可分发内容："
-echo "  release/LiteLauncher        主程序（内置 todo/apps/notes/ai 插件）"
+echo "  release/LiteLauncher        主程序（内置：todo/apps/ai；notes 为 native 插件）"
 echo "  release/plugins/            外部插件（便携部署，随程序分发）"
 
 # deb 里只有主程序，外部插件不在包内：装完要把 release/plugins/ 放到

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Echo 面板</title>
+  <style>
+    /* 独立资产页面读不到宿主主题变量，用固定深色（与启动器默认观感一致） */
+    :root { --bg: #16181d; --panel: #1e2128; --line: #2c303a; --text: #e7e9ee; --muted: #8b91a0; --accent: #4f8cff; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font: 13px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif; user-select: none; }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      height: 38px; padding: 0 10px 0 14px; border-bottom: 1px solid var(--line);
+      background: var(--panel); font-size: 12.5px; letter-spacing: .06em; color: var(--muted);
+    }
+    header .x { width: 24px; height: 24px; border: none; background: transparent; color: var(--muted); font-size: 16px; border-radius: 5px; cursor: pointer; }
+    header .x:hover { background: #3a2a2a; color: #ff8080; }
+    main { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+    .row { display: flex; gap: 8px; }
+    input {
+      flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+      color: var(--text); padding: 7px 10px; font-size: 13px; outline: none; user-select: text;
+    }
+    input:focus { border-color: var(--accent); }
+    button {
+      border: none; background: var(--accent); color: #fff; border-radius: 6px;
+      padding: 7px 14px; font-size: 12.5px; cursor: pointer;
+    }
+    button:hover { filter: brightness(1.1); }
+    pre {
+      flex: 1; min-height: 140px; overflow: auto; background: var(--panel); border: 1px solid var(--line);
+      border-radius: 8px; padding: 10px 12px; font-family: Consolas, monospace; font-size: 12px;
+      color: var(--muted); user-select: text; white-space: pre-wrap; word-break: break-all;
+    }
+    .hint { font-size: 11px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <!-- data-tauri-drag-region：无框窗拖拽区（core:window:allow-start-dragging 已授） -->
+  <header data-tauri-drag-region>
+    <span>🔁 ECHO 面板 · plugins/echo/fe</span>
+    <button class="x" id="close" title="关闭">×</button>
+  </header>
+  <main>
+    <div class="row">
+      <input id="say-text" placeholder="要说的话，回车调用 execute(say)" />
+      <button id="say">🔊 say</button>
+    </div>
+    <div class="row">
+      <input id="query" placeholder="检索关键词，回车调用 search" />
+      <button id="search">检索</button>
+    </div>
+    <pre id="out">（等待调用…以下全部经 __llBridge → plugin_call 通道）</pre>
+    <div class="hint">本页面来自 plugins/echo/fe/，由 ll-plugin:// 协议提供；无任何打包与编译。</div>
+  </main>
+
+  <script>
+    "use strict";
+    var out = document.getElementById("out");
+    function show(v) {
+      out.textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2);
+    }
+    function fail(err) {
+      show("✗ " + (err && err.message ? err.message : err));
+    }
+
+    var bridge = window.__llBridge;
+    if (!bridge) {
+      show("✗ __llBridge 未注入——宿主版本过旧（M2 之前）或 capabilities 未覆盖本窗口");
+    }
+
+    function runSay() {
+      if (!bridge) return;
+      var text = document.getElementById("say-text").value.trim() || "（空）";
+      bridge
+        .call("execute", { raw: "say " + text, subcommand: "say", args: [text] })
+        .then(show, fail);
+    }
+    function runSearch() {
+      if (!bridge) return;
+      var kw = document.getElementById("query").value.trim();
+      bridge.call("search", { keyword: kw || null }).then(show, fail);
+    }
+
+    document.getElementById("say").addEventListener("click", runSay);
+    document.getElementById("search").addEventListener("click", runSearch);
+    document.getElementById("say-text").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") runSay();
+    });
+    document.getElementById("query").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") runSearch();
+    });
+    document.getElementById("close").addEventListener("click", function () {
+      // 关自己：core window 插件命令（capabilities 已授 allow-close）
+      var internals = window.__TAURI_INTERNALS__;
+      if (!internals || !internals.invoke) return;
+      var label =
+        internals.metadata && internals.metadata.currentWindow
+          ? internals.metadata.currentWindow.label
+          : null;
+      internals.invoke("plugin:window|close", { label: label });
+    });
+  </script>
+</body>
+</html>

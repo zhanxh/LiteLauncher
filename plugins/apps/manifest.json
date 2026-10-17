@@ -4,5 +4,15 @@
   "version": "0.1.0",
   "api_version": "^1",
   "trigger": "/app",
-  "permissions": ["db", "process"]
+  "permissions": [
+    "db",
+    "process"
+  ],
+  "backend": {
+    "kind": "native",
+    "entry": [
+      "apps.dll"
+    ],
+    "integrity": "sha256:c0e90a490f5da6b5b328e87678e8ba654b156cf09d14cde013f2cc05d7f65c0d"
+  }
 }

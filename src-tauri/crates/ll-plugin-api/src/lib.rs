@@ -119,17 +119,23 @@ pub struct PluginManifest {
 /// 后端形态声明（M6 LLP：宿主按 entry 启动 sidecar 子进程并经 stdio JSON-RPC 分发）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendSpec {
-    /// "builtin"（默认，随宿主编译）| "llp"（外部进程）
+    /// "builtin"（默认，随宿主编译）| "llp"（外部进程）| "native"（动态库，M1）| "none"（纯前端）
     #[serde(default = "default_backend_kind")]
     pub kind: String,
-    /// LLP 启动命令，如 ["python3", "main.py"]（相对插件目录解析）
+    /// LLP 启动命令，如 ["python3", "main.py"]；native 为单个动态库文件名如 ["echo.dll"]
+    /// （相对插件目录解析）
     #[serde(default)]
     pub entry: Vec<String>,
+    /// 完整性校验（M4）：动态库的 sha256，形如 "sha256:<64 位十六进制>"。
+    /// 声明后加载时强制校验，不匹配即拒载；未声明 → 允许加载但记一条提醒日志。
+    /// 计算对象是 entry 指向的动态库文件字节（源码/资产不参与）。
+    #[serde(default)]
+    pub integrity: Option<String>,
 }
 
 impl Default for BackendSpec {
     fn default() -> Self {
-        Self { kind: default_backend_kind(), entry: Vec::new() }
+        Self { kind: default_backend_kind(), entry: Vec::new(), integrity: None }
     }
 }
 
@@ -421,6 +427,13 @@ pub struct ViewSpec {
     pub resizable: bool,
     #[serde(default = "default_true")]
     pub decorated: bool,
+    /// 视图前端来源（M2：native 插件自带前端）。
+    /// 缺省 = 宿主内置 SPA（`index.html?view=...`，插件 fe 包静态编译进应用包）；
+    /// `"assets"` = 插件目录下的 `fe/` 静态资产，经自定义协议
+    /// `ll-plugin://localhost/<pluginId>/index.html?view=...` 加载，
+    /// 建窗时注入 `window.__llBridge`（与 plugin_call 同一条权限管线）。
+    #[serde(default)]
+    pub frontend: Option<String>,
     /// 无边框窗口是否保留系统投影（Windows 上即 tao 的 MARKER_UNDECORATED_SHADOW）。
     ///
     /// Win11 给"带投影的无边框窗口"外圈保留一圈非客户区 insets（DWM 画阴影/边框用），
@@ -583,6 +596,11 @@ pub trait ProcessApi: Send + Sync {
     /// 启动外部程序/文档/URL：宿主按平台策略决定直接 spawn 或交系统打开器，
     /// 并执行注入校验（禁止管道/重定向等 Shell 元字符）。成功即返回，不等待子进程。
     fn launch(&self, target: &str) -> Result<(), PluginError>;
+
+    /// 在系统文件管理器中显示目标（定位并选中文件/文件夹）：
+    /// Windows `explorer /select`、macOS `open -R`、Linux 打开父目录。
+    /// 目标必须已存在；成功即返回，不等待子进程。
+    fn reveal(&self, path: &str) -> Result<(), PluginError>;
 }
 
 /// 密钥库（M7）：核心托管的秘密存储（`secret.<pluginId>.<key>` 命名空间），

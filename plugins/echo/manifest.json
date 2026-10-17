@@ -1,0 +1,42 @@
+{
+  "id": "echo",
+  "name": "Echo 示例",
+  "version": "0.2.0",
+  "api_version": "^1",
+  "trigger": "/echo",
+  "description": "native 动态库插件示例：/echo 关键词 回显；/echo say 文本；/echo panel 打开自带前端面板（M2 资产窗口演示）",
+  "permissions": [
+    "windows"
+  ],
+  "backend": {
+    "kind": "native",
+    "entry": [
+      "echo.dll"
+    ],
+    "integrity": "sha256:37f7b9d74bbb8d786e5353e0b94289d927ab195015f1f96adb7b5a62751c351e"
+  },
+  "views": [
+    {
+      "id": "panel",
+      "title": "Echo 面板",
+      "frontend": "assets",
+      "width": 540,
+      "height": 420,
+      "min_width": 380,
+      "min_height": 300,
+      "resizable": true,
+      "decorated": false,
+      "focusable": true,
+      "position": "center",
+      "on_existing": "focus"
+    }
+  ],
+  "command": {
+    "icon": "🔁",
+    "action_subcommands": [
+      "say",
+      "panel"
+    ],
+    "hint": "按 Enter 执行"
+  }
+}

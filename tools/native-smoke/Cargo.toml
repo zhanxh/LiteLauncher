@@ -1,0 +1,16 @@
+[package]
+name = "native-smoke"
+version = "0.1.0"
+edition = "2024"
+description = "LiteLauncher native 插件冒烟测试器：不启动主程序，直接 dlopen 插件 dll 并调用其 vtable（M3 ll-test-host 的雏形）"
+
+# 独立工具，不进宿主 workspace
+[workspace]
+
+[dependencies]
+ll-plugin-abi = { path = "../../src-tauri/crates/ll-plugin-abi" }
+libloading = "0.8"
+serde_json = "1"
+
+[profile.release]
+strip = true
