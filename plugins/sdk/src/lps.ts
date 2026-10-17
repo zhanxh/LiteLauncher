@@ -118,6 +118,13 @@ export interface CaptureOptions {
    * 用户要的是"立刻粘到聊天窗口/文档"。需 manifest 声明 `clipboard:write`。
    */
   toClipboard?: boolean;
+  /**
+   * 结果里带上 `dataUrl`（`data:image/png;base64,…`）。
+   *
+   * 前端要立刻把图显示出来时必须用它：WebView2 不允许页面 `fetch('file:///…')`
+   * 读本地文件（跨源被拒），自己拼 file URL 只会拿到一片空白。
+   */
+  inline?: boolean;
 }
 
 /** 截屏结果 */
@@ -131,6 +138,8 @@ export interface CaptureResult {
   clipboardImage?: boolean;
   /** 区域框选实际抓到的范围；整屏截图为 undefined */
   region?: CaptureRegion;
+  /** `inline: true` 时的 PNG data URL；未请求则 undefined */
+  dataUrl?: string;
 }
 
 /** 单像素采样；`hex` 为规范大写 `#RRGGBB` */
@@ -174,8 +183,16 @@ export interface PluginScreen {
   cursor(): Promise<{ x: number; y: number }>;
   /** 取色：`x`/`y` 缺省时取当前光标位置；带 `radius` 另返回放大镜方格 */
   pixel(opts?: { x?: number; y?: number; radius?: number }): Promise<PixelResult>;
-  /** 截图并落盘，返回路径与尺寸 */
+  /** 截图并落盘，返回路径与尺寸（`inline: true` 时另带 dataUrl） */
   capture(opts?: CaptureOptions): Promise<CaptureResult>;
+  /**
+   * 读回本插件截图目录里的 PNG，返回 data URL。
+   *
+   * 用途：标注层要把刚截的那张图铺到 Canvas 上。页面自己 `fetch('file:///…')`
+   * 会被 WebView2 当跨源本地资源拒绝，只能由宿主代读。
+   * 只放行**本插件截图目录**下的文件，越界按权限错误拒绝。
+   */
+  readPng(path: string): Promise<string>;
   /**
    * 保存前端合成的 PNG（Canvas.toDataURL 的产物）并可选写入图片剪贴板。
    *
@@ -435,7 +452,24 @@ export function getPluginContext(pluginId: string): PluginContext {
       },
     },
     screen: {
-      list: async () => (await svc<MonitorInfo[] | null>('screen.list', {})) ?? [],
+      list: async () => {
+        const raw = (await svc<Array<Record<string, unknown>> | null>('screen.list', {})) ?? [];
+        // 宿主是 snake_case（`scale_factor`），SDK 对外统一 camelCase。
+        // 漏了这一步 `scaleFactor` 会是 undefined，HiDPI 下选区换算全部按 1 倍算——
+        // 框 100px 结果只截到 80px，用户看到的就是"截的不是我框的那块"。
+        return raw.map(
+          (m): MonitorInfo => ({
+            index: Number(m.index ?? 0),
+            name: String(m.name ?? ''),
+            primary: Boolean(m.primary),
+            x: Number(m.x ?? 0),
+            y: Number(m.y ?? 0),
+            width: Number(m.width ?? 0),
+            height: Number(m.height ?? 0),
+            scaleFactor: Number(m.scale_factor ?? 1) || 1,
+          }),
+        );
+      },
       cursor: async () => {
         const p = await svc<{ x?: number; y?: number } | null>('screen.cursor', {});
         return { x: p?.x ?? 0, y: p?.y ?? 0 };
@@ -459,6 +493,7 @@ export function getPluginContext(pluginId: string): PluginContext {
         if (opts.hideWindows) params.hideWindows = true;
         if (opts.delayMs) params.delayMs = opts.delayMs;
         if (opts.toClipboard) params.toClipboard = true;
+        if (opts.inline) params.inline = true;
         // 区域框选：四个字段齐全才下发，否则宿主侧会静默退化成整屏——
         // 与其截错，不如让调用方察觉参数没配全
         if (opts.region) {
@@ -479,9 +514,24 @@ export function getPluginContext(pluginId: string): PluginContext {
             throw new Error('region 参数不完整或宽高非正：需要 {x, y, width, height}');
           }
         }
-        const res = await svc<CaptureResult | null>('screen.capture', params);
-        if (!res?.path) throw new Error('截图失败：宿主未返回文件路径');
-        return res;
+        const raw = await svc<Record<string, unknown> | null>('screen.capture', params);
+        if (!raw?.path) throw new Error('截图失败：宿主未返回文件路径');
+        // 同上：宿主 snake_case → SDK camelCase（`data_url` 就是遮罩层的底图字节）
+        return {
+          path: String(raw.path),
+          width: Number(raw.width ?? 0),
+          height: Number(raw.height ?? 0),
+          monitor: Number(raw.monitor ?? 0),
+          bytes: Number(raw.bytes ?? 0),
+          clipboardImage: Boolean(raw.clipboard_image),
+          region: raw.region as CaptureRegion | undefined,
+          dataUrl: typeof raw.data_url === 'string' ? raw.data_url : undefined,
+        };
+      },
+      readPng: async (path) => {
+        const res = await svc<{ dataUrl?: string } | null>('screen.readPng', { path });
+        if (!res?.dataUrl) throw new Error('读取截图失败：宿主未返回图片数据');
+        return res.dataUrl;
       },
       savePng: async (dataUrl, opts = {}) => {
         // 空图直接拦下：宿主也会拒，但那时已经付了一次 base64 传输的代价

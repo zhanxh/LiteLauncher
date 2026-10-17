@@ -42,9 +42,9 @@ export function ShotSelect() {
   /** 提示条（快捷键说明），鼠标静止 2s 后淡出 */
   const [hintOn, setHintOn] = createSignal(true);
 
-  /** 遮罩层自身的 CSS 尺寸 = 屏幕物理尺寸 / scaleFactor */
-  let cssW = 0;
-  let cssH = 0;
+  /** 遮罩层自身的 CSS 尺寸 = 屏幕物理尺寸 / scaleFactor（先按视口估，抓屏后校正） */
+  let cssW = window.innerWidth;
+  let cssH = window.innerHeight;
   /** 目标屏在虚拟桌面中的原点（副屏可为负） */
   let originX = 0;
   let originY = 0;
@@ -71,15 +71,11 @@ export function ShotSelect() {
     originY = chosen.y;
     scale = chosen.scaleFactor || 1;
 
-    // 遮罩层窗口已被宿主铺满该屏；CSS 尺寸 = 物理尺寸 / scale
-    const size = await win.outerSize();
-    cssW = size.width;
-    cssH = size.height;
-    // 兜底：拿不到窗口尺寸时按显示器推算
-    if (!cssW || !cssH) {
-      cssW = Math.round(chosen.width / scale);
-      cssH = Math.round(chosen.height / scale);
-    }
+    // 遮罩层窗口已被宿主铺满该屏，视口本身就是该屏的 CSS 尺寸。
+    // 不要读 `outerSize()`：它返回**物理像素**，HiDPI（125%/150%）下会把底图
+    // 放大同样倍数，框选出的坐标也跟着整体偏移。视口宽高才是 CSS 像素的唯一真相。
+    cssW = window.innerWidth || Math.round(chosen.width / scale);
+    cssH = window.innerHeight || Math.round(chosen.height / scale);
   }
 
   /** 光标所在的那块屏 */
@@ -106,31 +102,20 @@ export function ShotSelect() {
    * `hideWindows: true` 让宿主先把**所有** LiteLauncher 窗口（含本遮罩层）隐藏
    * 再抓屏，抓完恢复——否则底图里会出现自己这层遮罩。
    * 注意这里**不要** toClipboard：用户还没框选，不该有任何剪贴板副作用。
+   *
+   * `inline: true` 让宿主把 PNG 以 data URL 顺路带回：WebView2 不允许页面
+   * `fetch('file:///…')` 读本地文件（跨源被拒），自己拼 file URL 的后果就是
+   * "遮罩层一片黑、底图永远出不来"。
    */
   async function grabBackdrop(): Promise<void> {
     const shot: CaptureResult = await ctx.screen.capture({
       monitor,
       hideWindows: true,
       delayMs,
+      inline: true,
     });
-
-    // 走 fetch 把本地 PNG 转成 data URL 供 <img> 展示。
-    // Tauri 的 convertFileSrc 是给本地资源 URL 用的；这里用 fetch 读字节更直白。
-    const bytes = await fetchFileAsDataUrl(shot.path);
-    setBackdrop(bytes);
-  }
-
-  /** 读本地 PNG 文件并转 data URL（避免依赖 convertFileSrc 的 CSP 配置差异） */
-  async function fetchFileAsDataUrl(filePath: string): Promise<string> {
-    const resp = await fetch(`file:///${filePath.replace(/\\/g, '/').replace(/^\/+/, '')}`);
-    const buf = new Uint8Array(await resp.arrayBuffer());
-    // 二进制转 base64：分块避免 apply 的参数上限
-    let bin = '';
-    const chunk = 0x8000;
-    for (let i = 0; i < buf.length; i += chunk) {
-      bin += String.fromCharCode(...buf.subarray(i, i + chunk));
-    }
-    return `data:image/png;base64,${btoa(bin)}`;
+    if (!shot.dataUrl) throw new Error('宿主未回传底图数据（inline 参数丢失？）');
+    setBackdrop(shot.dataUrl);
   }
 
   /** 用户确认：截取选区 */

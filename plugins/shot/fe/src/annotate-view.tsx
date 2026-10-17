@@ -96,7 +96,8 @@ export function ShotAnnotate() {
     }
     void (async () => {
       try {
-        const dataUrl = await fetchFileAsDataUrl(srcPath);
+        // 走宿主读回：页面不许 fetch file:// 本地文件（同 select 视图）
+        const dataUrl = await ctx.screen.readPng(srcPath);
         setImgSrc(dataUrl);
         const img = new Image();
         img.onload = () => {
@@ -109,18 +110,6 @@ export function ShotAnnotate() {
       }
     })();
   });
-
-  /** 读本地文件为 data URL（与 select 视图同一做法，避免 convertFileSrc 的 CSP 差异） */
-  async function fetchFileAsDataUrl(filePath: string): Promise<string> {
-    const resp = await fetch(`file:///${filePath.replace(/\\/g, '/').replace(/^\/+/, '')}`);
-    const buf = new Uint8Array(await resp.arrayBuffer());
-    let bin = '';
-    const chunk = 0x8000;
-    for (let i = 0; i < buf.length; i += chunk) {
-      bin += String.fromCharCode(...buf.subarray(i, i + chunk));
-    }
-    return `data:image/png;base64,${btoa(bin)}`;
-  }
 
 /** 把 srcPath 那张 PNG 铺到 canvas 上作为标注底图 */
 function drawBase(): void {

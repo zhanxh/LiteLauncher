@@ -629,6 +629,12 @@ fn open_on_main(
     } else {
         format!("index.html?view={}", spec.id)
     };
+    // 全屏遮罩类视图（`transparent: true`）还得告诉壳层"别刷不透明底色"：
+    // launcher.css 给 html/body 统一铺了 `--bg-solid`，遮罩层照旧铺底的话，
+    // 用户看到的就是一整块纯色而不是桌面（"截图一片黑"的元凶）。
+    if spec.transparent {
+        url.push_str("&transparent=1");
+    }
     for (k, v) in params {
         url.push_str(&format!("&{}={}", k, percent_encode(v)));
     }
@@ -1578,6 +1584,14 @@ impl HostScreenApi {
             monitor: monitor_index,
             bytes: std::fs::metadata(&req.path).map(|m| m.len()).unwrap_or(0),
             clipboard_image,
+            data_url: if req.inline {
+                // 落盘后读一遍字节再编码，避免为了回传再压一次 PNG
+                let bytes = std::fs::read(&req.path)
+                    .map_err(|e| PluginError::internal(format!("读取截图文件失败: {}", e)))?;
+                Some(png_data_url(&bytes))
+            } else {
+                None
+            },
             region: req.region.map(|r| CapturedRegion {
                 x: r.x,
                 y: r.y,
@@ -1650,6 +1664,14 @@ fn unique_png_path(dir: &std::path::Path) -> std::path::PathBuf {
         seq += 1;
     }
     candidate
+}
+
+/// PNG 字节 → data URL（前端拿到就能直接塞进 `<img src>`）
+fn png_data_url(png: &[u8]) -> String {
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    )
 }
 
 /// base64 →字节（容忍前端可能带上来的 data URL 前缀）
@@ -1794,6 +1816,24 @@ impl ScreenApi for HostScreenApi {
         dir.push(&self.plugin_id);
         dir.push("screenshots");
         dir
+    }
+
+    fn read_png_data_url(&self, path: &str) -> Result<String, PluginError> {
+        let dir = ScreenApi::default_screenshot_dir(self);
+        // 目录可能还不存在（用户从未截过图），canonicalize 失败时退回原路径比较
+        let dir = dir.canonicalize().unwrap_or(dir);
+        let canon = std::path::Path::new(path)
+            .canonicalize()
+            .map_err(|e| PluginError::bad_params(format!("截图文件不可读: {}", e)))?;
+        if !canon.starts_with(&dir) {
+            return Err(PluginError::new(
+                ll_plugin_api::PluginErrorCode::PermissionDenied,
+                "只能读取本插件截图目录下的文件",
+            ));
+        }
+        let bytes = std::fs::read(&canon)
+            .map_err(|e| PluginError::internal(format!("读取截图文件失败: {}", e)))?;
+        Ok(png_data_url(&bytes))
     }
 
     fn save_png(&self, png: &[u8], to_clipboard: bool) -> Result<SavedImage, PluginError> {
@@ -2653,8 +2693,20 @@ pub fn dispatch_svc(
                 delay_ms: p_u32("delayMs").unwrap_or(0),
                 region,
                 to_clipboard: p_bool("toClipboard"),
+                inline: p_bool("inline"),
             };
             to_json(&screen.capture(&req)?)
+        }
+        // 读回本插件截图目录里的 PNG（标注层铺底图用）。
+        // 只放行**本插件截图目录**：这是"回看自己的产物"，不是通用文件读，
+        // 越界一律按权限错误拒绝，绝不给插件开一条读任意本地文件的缝。
+        "svc.screen.readPng" => {
+            let screen = ctx
+                .screen
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("screen"))?;
+            let path = p_str("path").ok_or_else(|| PluginError::bad_params("缺少 path"))?;
+            to_json(&json!({ "dataUrl": screen.read_png_data_url(&path)? }))
         }
         "svc.screen.savePng" => {
             let screen = ctx

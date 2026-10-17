@@ -25,6 +25,15 @@ html, body, #root {
   -ms-overflow-style: none !important;
 }
 
+/* 全屏遮罩视图（宿主给 `transparent: true` 的视图 URL 加了 transparent=1）：
+   这类窗口必须**真的透出桌面**。全局底色是给普通窗口用的，照刷上去就会把
+   区域框选层盖成一整块纯色——底图还没抓好时尤其像死屏。 */
+html.ll-transparent,
+html.ll-transparent body,
+html.ll-transparent #root {
+  background-color: transparent !important;
+}
+
 * {
   scrollbar-width: none !important;
   -ms-overflow-style: none !important;

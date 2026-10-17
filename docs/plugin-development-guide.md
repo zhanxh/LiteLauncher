@@ -611,7 +611,14 @@ pomo 挂件（悬停展开条，自己排骨架）、`shot/select`（全屏透�
   代价：没有系统投影与系统圆角（直角面板，底色与内容融为一块），这是接受的取舍。
 - `decorated: false` 的**主窗形态**（center + `resizable: true` 的大窗：日程、待办管理、
   AI 对话、笔记等）保持默认（true）：边框和投影是这类窗口与桌面区分的正常外观。
-- `position: fullscreen` 的遮罩层（shot/select）不涉及：窗口本身就是全屏透明底。
+- `position: fullscreen` 的遮罩层（shot/select）**同样必须** `shadow: false`。
+  原先这里写着"不涉及"，真机证明是错的：透明窗仍是"带投影的无边框窗"，
+  DWM 照样画那圈非客户区与 1px 边框（全屏遮罩四周露一道亮线）；而且非客户区
+  让外框比屏幕大一圈，`outerSize()` 量出来的尺寸与客户区不一致，底图/选区整体偏移。
+- 遮罩层还要**真的透出桌面**：壳层给 `html/body` 刷了 `--bg-solid`，窗口透明
+  也白搭——不摘掉底色用户看到的就是一整块纯色。宿主已在 `transparent: true`
+  的视图 URL 上带 `transparent=1`，壳层据此给 `<html>` 加 `.ll-transparent`；
+  新写遮罩类视图不用自己处理，但**别在插件里再给 body 铺底色**。
 - 改了 shadow 记得同步 bump 插件版本，否则已安装用户不会拿到新 manifest。
 
 **事故记录**（2026-10-16/17 已修复，别改回去）：pomo 挂件（白边 + 悬停逐次长高、
