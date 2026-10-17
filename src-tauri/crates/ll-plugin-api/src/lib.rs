@@ -179,7 +179,7 @@ fn default_command_icon() -> String {
     "🧩".to_string()
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum WindowPosition {
     #[default]
@@ -189,8 +189,56 @@ pub enum WindowPosition {
     /// 且右上角通常比右下角少被任务栏图标与托盘干扰。
     TopRight,
     /// 全屏铺满某块显示器（区域框选截图 / 全屏遮罩取色这类"遮罩层"）。
-    /// `WindowPosition::Fullscreen(MonitorSelector)` 的序列化形式为字符串。
+    /// manifest 里可写成 `"fullscreen"`（缺省取光标所在屏）或
+    /// `{"fullscreen":"primary"}`（显式指定）。
     Fullscreen(MonitorSelector),
+}
+
+/// 手写 Deserialize：**必须**同时接受 `"fullscreen"` 与 `{"fullscreen":"cursor"}`。
+///
+/// serde 对 `Fullscreen(MonitorSelector)` 这种带数据的变体，默认只认外部标记形式
+/// `{"fullscreen":"cursor"}`；而 manifest 里最自然的写法是裸字符串 `"fullscreen"`
+/// （`/shot` 的区域框选遮罩层就是这么写的）。只认前者会让**整份 manifest 解析失败**，
+/// 宿主只能把插件静默跳过；运行期再调 `svc.screen.*` 时退回 `shell_safe_manifest`，
+/// 用户看到的是一句极具误导性的"manifest 未声明权限: screen"。
+impl<'de> Deserialize<'de> for WindowPosition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// 裸字符串形态（manifest 的常规写法）
+        #[derive(Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        enum Bare {
+            Center,
+            BottomRight,
+            TopRight,
+            /// 不带选择器 → 铺在光标所在屏（多屏用户的本能预期）
+            Fullscreen,
+        }
+
+        /// 显式带选择器的形态：`{"fullscreen":"primary"|"cursor"}`
+        #[derive(Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        enum Tagged {
+            Fullscreen(MonitorSelector),
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Bare(Bare),
+            Tagged(Tagged),
+        }
+
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Bare(Bare::Center) => WindowPosition::Center,
+            Repr::Bare(Bare::BottomRight) => WindowPosition::BottomRight,
+            Repr::Bare(Bare::TopRight) => WindowPosition::TopRight,
+            Repr::Bare(Bare::Fullscreen) => WindowPosition::Fullscreen(MonitorSelector::Cursor),
+            Repr::Tagged(Tagged::Fullscreen(sel)) => WindowPosition::Fullscreen(sel),
+        })
+    }
 }
 
 /// 是否是"贴边角落"定位（需要建窗后再手动摆位，而不是交给系统）。
@@ -823,6 +871,13 @@ pub struct CaptureRequest {
     /// 这是桌面截图工具的默认交付物：用户要的是"立刻粘到聊天窗口/文档"，
     /// 而不是"拿到一个路径再去文件夹里找"。仍受 `clipboard:write` 门控。
     pub to_clipboard: bool,
+    /// 为真时在结果里带上 `data_url`（`data:image/png;base64,…`）。
+    ///
+    /// 用途：**前端要立刻把这张图显示出来**（区域框选底图、标注层底图）。
+    /// 别指望页面自己 `fetch('file:///…')` 读刚落盘的文件：本地文件对页面是
+    /// 跨源资源，WebView2/Chromium 一律拒绝，症状是"遮罩层一片黑、底图永远出不来"。
+    /// 把字节顺着这条 IPC 一起带回去，最省事也最不容易踩平台差异。
+    pub inline: bool,
 }
 
 /// 区域框选矩形（桌面全局物理像素）
@@ -857,6 +912,9 @@ pub struct CaptureResult {
     /// 区域框选实际抓到的范围（全局物理坐标）；整屏捕获为 None
     #[serde(default)]
     pub region: Option<CapturedRegion>,
+    /// `inline: true` 时的 PNG data URL（前端可直接塞进 `<img src>`）；未请求则不出现
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_url: Option<String>,
 }
 
 /// 已捕获的区域（回传让插件能确认"框到的到底是哪块"）
@@ -928,6 +986,12 @@ pub trait ScreenApi: Send + Sync {
     fn cursor_position(&self) -> Result<(i32, i32), PluginError>;
     /// 本插件截图默认落盘目录（宿主按插件 id 隔离）
     fn default_screenshot_dir(&self) -> std::path::PathBuf;
+    /// 读回本插件截图目录里的 PNG，转成 data URL。
+    ///
+    /// 为什么不让前端自己读：WebView2 把 `file:///…` 当跨源本地资源，
+    /// 页面 fetch 一律失败（症状是底图永远空白）。宿主代读还能顺带把路径
+    /// 限制在本插件截图目录内——这不是通用文件读接口。
+    fn read_png_data_url(&self, path: &str) -> Result<String, PluginError>;
     /// 保存一段 PNG 字节到本插件的截图目录，并按需写入图片剪贴板。
     ///
     /// 为什么需要它：前端 Canvas 合成（截图标注、拼图、加水印）的产物是
@@ -1109,6 +1173,49 @@ mod tests {
         assert_eq!(json, "\"bottom-right\"");
         let back: WindowPosition = serde_json::from_str("\"top-right\"").unwrap();
         assert_eq!(back, WindowPosition::TopRight);
+    }
+
+    #[test]
+    fn fullscreen_position_accepts_string_and_tagged_forms() {
+        // `/shot` 的遮罩层写的是 `"position": "fullscreen"`：只认外部标记形式
+        // 会让整份 manifest 解析失败、插件被静默跳过，运行期报"未声明权限: screen"。
+        let bare: WindowPosition = serde_json::from_str("\"fullscreen\"").unwrap();
+        assert_eq!(bare, WindowPosition::Fullscreen(MonitorSelector::Cursor));
+
+        let tagged: WindowPosition =
+            serde_json::from_str(r#"{"fullscreen":"primary"}"#).unwrap();
+        assert_eq!(tagged, WindowPosition::Fullscreen(MonitorSelector::Primary));
+    }
+
+    /// 仓库里的真实 manifest 必须全部能解析：manifest 是插件的唯一真相，
+    /// 一个认不出的字段值就会让宿主把整个插件静默跳过（用户只看到一句
+    /// "manifest 未声明权限: xxx"，排查成本极高）。
+    #[test]
+    fn repo_plugin_manifests_all_parse() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../plugins");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return; // 脱离仓库的构建环境没有 plugins/，跳过
+        };
+
+        let mut bad = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path().join("manifest.json");
+            if !path.is_file() {
+                continue;
+            }
+            let text = match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(e) => {
+                    bad.push(format!("{}: 读取失败 {e}", path.display()));
+                    continue;
+                }
+            };
+            if let Err(e) = serde_json::from_str::<PluginManifest>(&text) {
+                bad.push(format!("{}: {e}", path.display()));
+            }
+        }
+
+        assert!(bad.is_empty(), "以下 manifest 解析失败:\n{}", bad.join("\n"));
     }
 
     /// 按 manifest 的真实形状造 ViewSpec：字段名一改，这里就红
