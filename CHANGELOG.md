@@ -51,6 +51,7 @@
 ### Internal
 
 - 修复：build.sh 的 node_modules 残缺探测覆盖前端实际引用的 `@tauri-apps/plugin-updater` / `plugin-process`，部分安装不再静默进入前端打包（Linux 实测曾在 vite 阶段报 import 解析失败）。
+- 工程：清理 ll-host 与 ll-icons 的 Linux 编译警告——删除未使用的 `Ordering` 导入与非 Windows 平台死代码（`drive_root_pythons` 空桩、`ICON_SIZE` 移入 Windows cfg）。
 - 工程：文档按 `workflows/standards/design/guides/records/knowledge` 分层，新增根 `AGENT.md` 与开发工作流（六步闭环、方案设计前置、提交门禁、文档死链检查）。
 - 工程：提交门禁新增变更日志检查（`--check-changelog`），每次提交必须在 `[Unreleased]` 记一行。
 

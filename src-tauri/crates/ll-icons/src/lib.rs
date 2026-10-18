@@ -16,6 +16,8 @@ use std::time::UNIX_EPOCH;
 /// 输出上限：32×32 PNG 正常 1–3 KB，64 KB 是防御性上限
 pub const MAX_PNG_BYTES: usize = 64 * 1024;
 /// 统一尺寸：与结果面板 `.item-icon` 的 26px 视觉尺寸匹配（高分屏由浏览器缩放）
+/// 仅 Windows 抽取路径用到；Linux/macOS 走 emoji 回退，无栅格化。
+#[cfg(windows)]
 const ICON_SIZE: u32 = 32;
 /// 内存缓存条数上限；超过就整体清空（图标很小，重建成本远低于 LRU 维护）
 const MEM_CACHE_MAX: usize = 256;
