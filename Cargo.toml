@@ -14,6 +14,8 @@ exclude = [
     "plugins/ai/be",
     "plugins/notes/be",
     "plugins/pomo/be",
+    "plugins/find/be",
+    "plugins/sysinfo/be",
 ]
 
 # 插件不再编进主程序（M5 全量剥离）：plugins/*/be 由各自 plugins/*/native 工程以 path 依赖引用；

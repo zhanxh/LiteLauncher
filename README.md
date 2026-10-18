@@ -104,8 +104,8 @@ LiteLauncher 遵循**"一切皆插件"**：功能不硬编码进壳层，一律�
 
 | 形态 | `backend.kind` | 代码位置 | 运行时依赖 | 重编译主程序 | 典型场景 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **native 动态库** | `native` | `plugins/<id>/{manifest.json, native/, be/, fe/}` + `<id>.dll` | 无（同进程） | 不需要，拷目录即装 | 官方件与高性能插件：`todo` `apps` `ai` `notes` `pomo` `echo` |
-| 外部插件（LLP/1） | `llp` | `plugins/<id>/{manifest.json, 脚本}` | 任意语言运行时（Python 等） | 不需要，拷目录即装 | 依赖系统命令 / 平台探测：`sysinfo` |
+| **native 动态库** | `native` | `plugins/<id>/{manifest.json, native/, be/, fe/}` + `<id>.dll` | 无（同进程） | 不需要，拷目录即装 | 官方件与要直连系统 API 的：`todo` `apps` `ai` `notes` `pomo` `find` `sysinfo` `echo` |
+| 外部插件（LLP/1） | `llp` | `plugins/<id>/{manifest.json, 脚本}` | 任意语言运行时（Python 等） | 不需要，拷目录即装 | 算法密集 / 纯计算：`hash` `cron` `cidr` `cost` |
 | **纯前端插件** | `none` | `plugins/<id>/{manifest.json, fe/}` | **无** | 不需要 | 纯计算 / 文本 / 换算类小工具 |
 | ~~编译期插件~~（遗留） | uiltin | plugins/<id>/{be,fe} | 无 | 需要 | M5 起已零使用：仓库内所有官方插件都走 native |
 
@@ -195,7 +195,20 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 
 > **全局热键协议**：manifest 以 `shortcut:<accel>` 逐条声明（无通配），宿主登记并**仲裁冲突**（同一加速键先到先得），触发时广播 `plugin-shortcut` 事件，插件用 `ctx.shortcuts.on(accel, cb)` 接收——插件拿不到原始按键流。`on()` 默认只在**主窗口**生效（每次窗口加载都会跑一遍全部插件的 `setup`，不区分就会重复触发）；取色台这类需要在视图窗口内响应热键的场景显式传 `{ scope: 'any' }`。
 
-**外部插件（LLP/1，Python sidecar）· 13 个**
+**native 动态库（`kind: native`，进程内、零运行时依赖）· 8 个**
+
+| 指令 | 名称 | 说明 |
+| :--- | :--- | :--- |
+| `/todo` `/app` `/ai` `/note` | 日程 / 应用 / AI / 笔记 | 各自带独立窗口，行为见上面各章 |
+| `/pomo` | 番茄钟 | `/pomo start 25 写代码`，专注↔短休按 **5:1** 交替；到点发系统通知并自动接下一段，`/pomo auto off` 改为每段结束等人工点挂件的 ▶；挂件被关掉后 `/pomo start`（不带参数）或 `/pomo widget` 可不重置计时地找回；`/pomo pin` 可贴到壁纸层 |
+| `/find` | 文件搜索 | 全盘文件按名称毫秒级搜索：Windows 进程内直调 Everything SDK，Linux 走 plocate（无索引时降级 fd / find）；`ext:rs` / `size:>500mb` / `dm:today` 字段语法，`desc size` 排序；回车打开，目录自动记入 recent |
+| `/sysinfo` | 系统信息 | 内核/内存/磁盘/开机时长 + **主程序与子进程内存占用**（webview、插件 sidecar 按名称聚合）；Windows 走 Win32、Linux 读 `/proc`，无 Python 依赖 |
+
+> **native 插件双平台都能装**：`backend.entry` 写多个产物名（`["find.dll", "libfind.so"]`），
+> 宿主按**当前平台后缀**挑一个（`ll-plugin-api::native_lib_suffix`），`integrity` 由构建脚本
+> 回填为本平台那份产物的 hash。`/find` 在 Windows 上走 Everything，在 Linux 上走 plocate（见下）。
+
+**外部插件（LLP/1，Python sidecar）· 10 个**
 
 *算法密集或依赖 Python 标准库的仍走 LLP*：
 
@@ -211,12 +224,9 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 | `/memo` | 备忘速记 | 速记与检索 |
 | `/cheat` | 命令速查 | 内置 git/docker/k8s 等常用命令，可增删 |
 | `/time` | 世界时钟 | 主要城市时间与时差 |
-| `/pomo` | 番茄钟 | `/pomo start 25 写代码`，专注↔短休按 **5:1** 交替；到点发系统通知并自动接下一段，`/pomo auto off` 改为每段结束等人工点挂件的 ▶；挂件被关掉后 `/pomo start`（不带参数）或 `/pomo widget` 可不重置计时地找回；`/pomo pin` 可贴到壁纸层 |
-| `/sysinfo` | 系统信息 | 平台/CPU/内存/磁盘探测 + **主程序与子进程内存占用**（webview、插件 sidecar 按名称聚合） |
-| `/find` | 文件搜索 | 全盘文件按名称毫秒级搜索，`ext:rs` / `size:>500mb` / `dm:today` 字段语法，`desc size` 排序；回车打开，目录自动记入 recent。**Windows 走 Everything，Linux 走 plocate（安装说明见下）** |
 
-> **🔴 Linux 用 `/find` 前必须装 plocate 索引**，否则基本不可用：索引库覆盖全盘（除 /tmp、/proc 等挂载点），查询毫秒级；
-> 未装索引时插件降级为 fd/find 实时遍历——只搜用户目录、每查一次全扫一遍，大目录会超过插件调用的 5 秒上限。
+> **`/find` 依赖系统索引**：Windows 用 Everything（插件目录自带 `bin/Everything64.dll`，索引库由
+> Everything 本体维护，没装/没运行时会直接给安装引导）；Linux 用 plocate，**装索引前基本不可用**：
 >
 > ```bash
 > # Debian / Ubuntu（Ubuntu 22.04+ 装完自带每日自动建库的定时任务）
@@ -226,8 +236,8 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 > sudo dnf install plocate && sudo updatedb
 > ```
 >
-> `updatedb` 首次建库约一两分钟；新建/改名的文件要等下次索引刷新才可见（定时任务默认每天跑，可手动 `sudo updatedb` 立即刷新）。
-> 装 `fd-find`（命令 `fd`/`fdfind`）能改善无索引时的降级体验，但实时遍历比不了索引。`/find where` 可查看当前后端与索引状态。
+> 没装索引时降级为 fd / find 实时遍历（只搜用户目录、每查一次全扫一遍）；装 `fd-find` 能改善降级体验。
+> `/find where` 可查看当前后端与索引状态。Windows 侧的 DLL 查找顺序：插件 `bin/` → `LITE_EVERYTHING_DLL` → 常见安装目录 → `bin/Everything32.dll`。
 
 > 所有"回车复制"依赖壳层的通用 `AfterSelect.copy` 能力（工具类插件的标准交互），落点为**宿主原生剪贴板**（`clipboard_write`），而非 webview 的 `navigator.clipboard`——后者在窗口即将隐藏时会被浏览器策略拒绝。
 
@@ -255,6 +265,10 @@ npm run plugin:test        # 可用 LLP_PYTHON 指定解释器
 
 # 纯前端插件测试：Node 里直跑插件逻辑，断言真实计算结果（不启动 Tauri）
 npm run plugin:test:fe
+
+# native 插件单测：业务逻辑在 plugins/<id>/be，不启动 Tauri、也不需要宿主
+cargo test --manifest-path plugins/find/be/Cargo.toml
+cargo test --manifest-path plugins/sysinfo/be/Cargo.toml
 ```
 
 ---

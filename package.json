@@ -17,7 +17,6 @@
     "plugin:create": "node tools/create-plugin.mjs",
     "plugin:test": "node tools/test-llp-plugins.mjs",
     "plugin:test:fe": "node tools/test-fe-plugins.mjs",
-    "plugin:test:find": "python tools/test-find-logic.py",
     "plugin:test:pomo": "python tools/test-pomo-logic.py",
     "check": "cargo check --workspace && tsc --noEmit",
     "plugin:deploy": "node tools/deploy-portable-plugins.mjs"

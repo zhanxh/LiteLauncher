@@ -133,6 +133,38 @@ pub struct BackendSpec {
     pub integrity: Option<String>,
 }
 
+/// 当前平台的 native 动态库后缀（manifest `backend.entry` 按它挑选）
+///
+/// 为什么不靠 `entry.first()`：同一个插件目录可能同时带 Windows 与 Linux 产物
+/// （便携包、双平台 CI），字面名写死哪个平台另一个就加载不了。
+pub const fn native_lib_suffix() -> &'static str {
+    if cfg!(windows) {
+        ".dll"
+    } else if cfg!(target_os = "macos") {
+        ".dylib"
+    } else {
+        ".so"
+    }
+}
+
+impl BackendSpec {
+    /// 从 `entry` 里挑出当前平台要 dlopen 的文件名。
+    ///
+    /// 规则：先找**后缀匹配且存在**的（`.dll` / `.so` / `.dylib`），没有就退回第一个存在的。
+    /// - 单平台老 manifest（只写 `find.dll`）行为不变——后缀匹配命中就是它；
+    /// - 双平台 manifest（`["find.dll", "libfind.so"]`）各自选各的；
+    /// - 后缀都不匹配但目录里确实有产物时（开发者跨平台手动拷），也不拦着。
+    ///
+    /// `exists` 由调用方注入（宿主传“插件目录里该文件存在”），逻辑本身可单测。
+    pub fn pick_library(&self, suffix: &str, exists: impl Fn(&str) -> bool) -> Option<&str> {
+        self.entry
+            .iter()
+            .find(|e| e.to_ascii_lowercase().ends_with(suffix) && exists(e))
+            .or_else(|| self.entry.iter().find(|e| exists(e)))
+            .map(String::as_str)
+    }
+}
+
 impl Default for BackendSpec {
     fn default() -> Self {
         Self { kind: default_backend_kind(), entry: Vec::new(), integrity: None }
@@ -1216,6 +1248,51 @@ mod tests {
         }
 
         assert!(bad.is_empty(), "以下 manifest 解析失败:\n{}", bad.join("\n"));
+    }
+
+    /// 按平台挑动态库：双平台 manifest 各自选各的，单平台老 manifest 行为不变。
+    #[test]
+    fn pick_library_by_platform_suffix() {
+        let spec = |entries: &[&str]| BackendSpec {
+            kind: "native".into(),
+            entry: entries.iter().map(|s| s.to_string()).collect(),
+            integrity: None,
+        };
+        let exists = |names: &'static [&'static str]| {
+            move |e: &str| names.contains(&e)
+        };
+
+        // Windows：只拷了 dll
+        let dual = spec(&["find.dll", "libfind.so"]);
+        assert_eq!(dual.pick_library(".dll", exists(&["find.dll"])), Some("find.dll"));
+        // Linux：只拷了 so
+        assert_eq!(dual.pick_library(".so", exists(&["libfind.so"])), Some("libfind.so"));
+        // 两个都在：各取各的，不靠顺序
+        let both = exists(&["find.dll", "libfind.so"]);
+        assert_eq!(dual.pick_library(".so", both), Some("libfind.so"));
+        assert_eq!(dual.pick_library(".dll", both), Some("find.dll"));
+        // 单平台老 manifest
+        let old = spec(&["find.dll"]);
+        assert_eq!(old.pick_library(".dll", exists(&["find.dll"])), Some("find.dll"));
+        // 后缀不匹配但确实有产物（开发者跨平台手拷）：不拦着
+        assert_eq!(old.pick_library(".so", exists(&["find.dll"])), Some("find.dll"));
+        // 一个都没有
+        assert_eq!(dual.pick_library(".dll", exists(&[])), None);
+        assert_eq!(spec(&[]).pick_library(".dll", exists(&[])), None);
+    }
+
+    /// 后缀常量必须能被 manifest 实际写出来的名字命中（大小写无关，且不依赖顺序）。
+    #[test]
+    fn suffix_constant_is_what_manifests_declare() {
+        let suffix = native_lib_suffix();
+        assert!([".dll", ".so", ".dylib"].contains(&suffix));
+        let real = format!("libx{}", suffix.to_uppercase());
+        let spec = BackendSpec {
+            kind: "native".into(),
+            entry: vec!["other.bin".into(), real.clone()],
+            integrity: None,
+        };
+        assert_eq!(spec.pick_library(suffix, |_| true), Some(real.as_str()));
     }
 
     /// 按 manifest 的真实形状造 ViewSpec：字段名一改，这里就红

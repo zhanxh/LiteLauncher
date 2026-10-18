@@ -132,11 +132,9 @@ for native_dir in plugins/*/native; do
     done
 done
 
-# 回填 backend.integrity：重编后的 dll 字节已变，旧 hash 会让宿主拒载（静默失效）
+# 回填 backend.integrity：重编后的 dll/so 字节已变，旧 hash 会让宿主拒载（静默失效）。
+# 脚本与宿主用同一条选库规则（按平台后缀），Windows 回填 .dll、Linux 回填 .so。
 node tools/update-plugin-integrity.mjs
-if [[ "$(uname -s)" == "Linux" ]]; then
-    echo "[提示] native 插件产物为 .so；当前 manifest 的 entry 按 Windows(.dll) 配置，跨平台发布需按平台调整 entry"
-fi
 
 BIN="src-tauri/target/release/LiteLauncher"
 if (( SHIP )); then

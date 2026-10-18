@@ -295,18 +295,23 @@ pub fn load_native_plugin(
     let plugin_id = manifest.id.clone();
     let say = |msg: &str| (log)(&plugin_id, msg);
 
-    let Some(entry) = manifest.backend.entry.first() else {
-        say("backend.kind=native 但未声明 backend.entry（动态库文件名），已跳过");
+    // 按**当前平台后缀**挑产物：同一目录可能同时带 dll 与 so（便携包/双平台 CI）
+    let suffix = ll_plugin_api::native_lib_suffix();
+    let picked = manifest
+        .backend
+        .pick_library(suffix, |e| plugin_dir.join(e).is_file());
+    let Some(entry) = picked else {
+        if manifest.backend.entry.is_empty() {
+            say("backend.kind=native 但未声明 backend.entry（动态库文件名），已跳过");
+        } else {
+            say(&format!(
+                "动态库不存在（本平台需要 {suffix}）: {}（请先构建插件，见 plugins/<id>/native 的构建脚本）",
+                manifest.backend.entry.join(", ")
+            ));
+        }
         return None;
     };
     let lib_path = plugin_dir.join(entry);
-    if !lib_path.is_file() {
-        say(&format!(
-            "动态库不存在: {}（请先构建插件，见 plugins/<id>/native 的构建脚本）",
-            lib_path.display()
-        ));
-        return None;
-    }
 
     // M4 完整性校验：manifest 声明 integrity = "sha256:<hex>" 时强制比对，
     // 不匹配拒载（供应链防线）；未声明则记提醒日志（软策略，便携分发建议声明）

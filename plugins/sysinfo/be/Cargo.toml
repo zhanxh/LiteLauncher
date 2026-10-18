@@ -1,0 +1,13 @@
+[package]
+name = "ll-plugin-sysinfo"
+version = "0.2.0"
+edition = "2024"
+description = "LiteLauncher /sysinfo 系统信息后端（M6 从 llp/Python 迁入）：Win32 直接采集，无 ctypes/无子进程"
+
+[dependencies]
+# 只允许依赖契约 crate 与通用基础库（仓库门禁）：不得依赖 ll-host / tauri
+ll-plugin-api = { path = "../../../src-tauri/crates/ll-plugin-api" }
+serde_json = "1"
+
+# 与 find 同一取舍：手写 Win32 声明（Toolhelp32 / GlobalMemoryStatusEx / psapi），
+# 不引 sysinfo / windows-sys——插件只要那十来个函数，依赖越少越好审计。

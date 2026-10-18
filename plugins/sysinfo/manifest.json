@@ -1,18 +1,27 @@
 {
   "id": "sysinfo",
   "name": "系统信息",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "api_version": "^1",
   "trigger": "/sysinfo",
-  "description": "系统信息查询：/sysinfo 列出内核/内存/磁盘/开机时长；/sysinfo open 打开系统监视器",
-  "permissions": ["notifications", "process"],
+  "description": "系统信息查询：/sysinfo 列出内核/内存/进程内存/磁盘/开机时长；/sysinfo open 打开系统监视器。信息由插件在宿主进程内直接采集（Windows 走 Win32、Linux 读 /proc），无 Python 依赖。",
+  "permissions": [
+    "notifications",
+    "process"
+  ],
   "backend": {
-    "kind": "llp",
-    "entry": ["python3", "sysinfo.py"]
+    "kind": "native",
+    "entry": [
+      "sysinfo.dll",
+      "libsysinfo.so"
+    ],
+    "integrity": "sha256:9f8cc4cf824b4d94b298b701ecb1af1617d53e89e0c2b8ee05688e4a86b6ed3e"
   },
   "command": {
     "icon": "🖥️",
-    "action_subcommands": ["open"],
+    "action_subcommands": [
+      "open"
+    ],
     "hint": "输入 open 回车打开系统监视器；或直接回车查看信息条目"
   }
 }

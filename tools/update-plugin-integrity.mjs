@@ -17,6 +17,15 @@ const root = process.cwd();
 const pluginsRoot = path.join(root, "plugins");
 const only = new Set(process.argv.slice(2).filter((a) => !a.startsWith("-")));
 
+// 与宿主的选库规则保持一致（ll-plugin-api::native_lib_suffix）
+const LIB_SUFFIX = process.platform === "win32" ? ".dll" : process.platform === "darwin" ? ".dylib" : ".so";
+
+/** 先找后缀匹配且存在的，否则退回第一个存在的——双平台目录各取各的 */
+function pickEntry(entries, exists) {
+  const list = entries ?? [];
+  return list.find((e) => e.toLowerCase().endsWith(LIB_SUFFIX) && exists(e)) ?? list.find(exists) ?? null;
+}
+
 function sha256(file) {
   const h = createHash("sha256");
   h.update(readFileSync(file));
@@ -44,18 +53,20 @@ for (const dirent of readdirSync(pluginsRoot, { withFileTypes: true })) {
   }
   if (manifest.backend?.kind !== "native") continue;
 
-  const entry = manifest.backend?.entry?.[0];
+  if (manifest.backend?.kind !== "native") continue;
+
+  // 目录里实际存在的那个平台产物（dll / so 各取各的）
+  const entry = pickEntry(manifest.backend?.entry, (e) =>
+    existsSync(path.join(pluginsRoot, dirent.name, e)),
+  );
   if (!entry) {
-    console.warn(`[integrity] ${manifest.id}: 缺 backend.entry，跳过`);
+    console.warn(
+      `[integrity] ${manifest.id}: 无可用动态库（本平台需要 ${LIB_SUFFIX}），跳过——先编插件再跑本脚本`,
+    );
     skipped += 1;
     continue;
   }
   const lib = path.join(pluginsRoot, dirent.name, entry);
-  if (!existsSync(lib)) {
-    console.warn(`[integrity] ${manifest.id}: 动态库不存在（${entry}），跳过——先编插件再跑本脚本`);
-    skipped += 1;
-    continue;
-  }
 
   const want = `sha256:${sha256(lib)}`;
   if (manifest.backend.integrity === want) {

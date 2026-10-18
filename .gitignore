@@ -15,5 +15,7 @@ plugins/*/native/target/
 # 运行时临时目录（memory/ 已入库，tmp/ 不入库）
 .workbuddy/tmp/
 
-# native 插件的构建产物：由 build.cmd 生成并回填 integrity，不入库
+# native 插件的构建产物：由 build.cmd / build.sh 生成并回填 integrity，不入库
 plugins/*/*.dll
+plugins/*/*.so
+plugins/*/*.dylib

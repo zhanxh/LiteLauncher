@@ -87,11 +87,12 @@ for (const dirent of readdirSync(srcRoot, { withFileTypes: true })) {
   } else {
     cpSync(path.join(srcRoot, dirent.name), dest, { recursive: true });
     if (kind === "native") {
-      // native 插件只分发产物：根级 manifest + 动态库 + fe/ + assets/；
-      // 源码目录（native/ 独立工程、be/ 复用源）一律留在仓库
+      // native 插件只分发产物：根级 manifest + 动态库 + fe/ + assets/ + bin/；
+      // 源码目录（native/ 独立工程、be/ 复用源）一律留在仓库。
+      // bin/ 必须保留：/find 的 Everything64.dll 就装在那里（丢了它便携版直接不可用）。
       rmSync(path.join(dest, "native"), { recursive: true, force: true });
       for (const ent of readdirSync(dest, { withFileTypes: true })) {
-        if (ent.isDirectory() && !["fe", "assets"].includes(ent.name)) {
+        if (ent.isDirectory() && !["fe", "assets", "bin"].includes(ent.name)) {
           rmSync(path.join(dest, ent.name), { recursive: true, force: true });
         }
       }

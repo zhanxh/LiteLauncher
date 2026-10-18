@@ -688,6 +688,11 @@ pomo 挂件（悬停展开条，自己排骨架）、`shot/select`（全屏透�
 
 LLP 是**独立分发的可执行 sidecar**（与 native 并列的外部形态）：拷入目录即安装，宿主启动时按需 spawn，天然带 5s 超时与进程隔离。
 
+> ⚠️ **本章的代码示例以 `sysinfo` 为例，但它在 M6（2026-10-18）已迁成 native 动态库**
+> （同样迁走的还有 `/find`；两者见 [native-plugin-guide.md](./native-plugin-guide.md) §9）。
+> 行文中的目录/清单写法仍然是 LLP 的准确规格，拿来上手时请换成仓库里**现拼在跑**的 LLP 插件：
+> `plugins/snip`（120 行，settings + 剪贴板）、`plugins/hash`（纯计算）、`plugins/bookmark`（带 undo 的 CRUD）。
+
 ### 9.1 形态与安装
 
 ```
@@ -758,7 +763,7 @@ Python 版 sidecar 依赖机器上有一个 Python 3 解释器。宿主按以下
 
 > 这些方法与前端 `ctx.call('svc.*')` 走的是**同一个分发器**（`services.rs::dispatch_svc`），并非只对 LLP 开放。
 
-参考实现：`plugins/sysinfo/sysinfo.py`（Python 标准库，~150 行，含完整握手/分发/svc 调用）。
+参考实现：`plugins/snip/snip.py`（Python 标准库，120 行，含完整握手/分发/svc 调用）。
 
 **MVP 边界**（后续迭代）：插件自定义 UI（iframe 沙箱 + postMessage 桥）、安装时权限确认弹窗、插件市场签名分发、流式事件通道。
 

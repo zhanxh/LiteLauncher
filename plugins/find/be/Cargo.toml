@@ -1,0 +1,16 @@
+[package]
+name = "ll-plugin-find"
+version = "0.3.0"
+edition = "2024"
+description = "LiteLauncher /find 文件搜索后端（M6 从 llp/Python 迁入）：Windows 直接 FFI 调 Everything SDK"
+
+[dependencies]
+# 只允许依赖契约 crate 与通用基础库（仓库门禁）：不得依赖 ll-host / tauri
+ll-plugin-api = { path = "../../../src-tauri/crates/ll-plugin-api" }
+serde_json = "1"
+# 本地时区的"某天零点"（dm:2024-01-01 的上界）：chrono 的 Local 带 DST，
+# 自己算偏移会在夏令时切换日错一小时。
+chrono = "0.4"
+
+# 刻意不引 libloading：迁移前的 ctypes 也是直接 LoadLibraryW + GetProcAddress，
+# 手写这 40 行换来的是插件零第三方依赖（与 sysinfo 的 Win32 采集同一套做法）。

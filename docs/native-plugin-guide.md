@@ -168,3 +168,37 @@ __llBridge.pluginId                    // 本插件 id
 - `build.cmd` 的 [1.5/5] 步骤自动构建全部 `plugins/*/native` 并复制 dll，
   `[4/5]` 部署到 `release/plugins/`（自动剥离 native/ 源码目录）。
 - 插件目录 = 自包含发布物：`manifest.json + 动态库 + fe/ + assets/`。
+
+> ⚠️ `plugins/<id>/bin/` 也要一起发：`/find` 的 `Everything64.dll` 就装在那里。
+> `tools/deploy-portable-plugins.mjs` 对 native 只保留 `fe/ assets/ bin/` 三类目录（其余视为源码），
+> 新增"自带二进制"类插件时记得同步这条白名单。
+
+---
+
+## 9. 迁移样本：`/find` 与 `/sysinfo`（LLP → native，M6）
+
+这两个是"值得为 native 重写"的典型：一个在热路径上要直连系统 SDK，一个采集的是操作系统级数据。
+
+| | `/find` | `/sysinfo` |
+|---|---|---|
+| 业务代码 | `plugins/find/be/src/{lib,term,query,format,everything,locate}.rs` | `plugins/sysinfo/be/src/{lib,model,win,procfs}.rs` |
+| 薄壳 | `plugins/find/native/src/lib.rs`（同 `pomo`） | `plugins/sysinfo/native/src/lib.rs` |
+| 前端 | **没有**——manifest 留 `command` 块即可，`externalPlugins.ts` 自动生成通用面板 | 同左 |
+| 单测 | `cargo test --manifest-path plugins/find/be/Cargo.toml`（74） | `cargo test --manifest-path plugins/sysinfo/be/Cargo.toml`（16） |
+
+三条经验：
+
+1. **`command` 块是 native 插件免写前端的关键**。只要 manifest 声明了 `command`（含 `queryDebounceMs`），
+   `/find` 的防抖、`action_subcommands` 的即时胶囊、`select` 的 copy/close 语义全部自动生效，
+   与 LLP 版逐字一致——迁移可以只改后端。
+2. **要读平台数据就别引第三方 crate**。两个插件各自手写了十几个 `extern "system"` 声明
+   （`LoadLibraryW` + `GetProcAddress` / Toolhelp32 / `GlobalMemoryStatusEx` / `K32GetProcessMemoryInfo`），
+   产物仍是零运行时依赖；`LoadLibraryW` 拿到的句柄刻意不 `FreeLibrary`（函数指针指进它的代码段）。
+3. **多平台：让宿主选产物，而不是写死文件名**。manifest 的 `entry` 写全 `["find.dll", "libfind.so"]`，
+   宿主按 `native_lib_suffix()`（`.dll` / `.so` / `.dylib`）挑一个；`backend.integrity` 由
+   `tools/update-plugin-integrity.mjs` 在每次构建后回填为**本平台**产物的 hash（Windows 构 dll、Linux 构 so）。
+   `pomo` / `todo` 这些只有 Windows 名的老 manifest 仍然能加载（后缀不命中时退回第一个存在的）。
+4. **平台专属代码也尽量让它“能编译”**。`locate.rs`（plocate/fd/find）与 `procfs.rs`（读 `/proc`）
+   只用 std，所以**在 Windows 上也参与编译与单测**——没有 Linux 机器时，这是唯一能保证
+   “Linux 分支不是一段没人跑过的代码”的手段。真正 `#[cfg(windows)]` 的只有直接写 Win32 FFI 的
+   `everything.rs` / `win.rs`；两端共用 `format` / `term` / `query` / `model`。
