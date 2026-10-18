@@ -1,0 +1,175 @@
+/* ==========================================================================
+   首启欢迎引导（?view=welcome）
+   与设置窗共用 PopupFrame 三段式：标题/状态栏固定，只有内容区滚动。
+   ========================================================================== */
+
+.welcome-app {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 26px 30px 10px;
+  box-sizing: border-box;
+}
+
+.welcome-hero h1 {
+  margin: 10px 0 6px;
+  font-size: 24px;
+  line-height: 1.3;
+  color: var(--text-main);
+}
+
+.welcome-hero p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.welcome-logo {
+  font-size: 34px;
+  line-height: 1;
+}
+
+.welcome-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--surface-raised);
+}
+
+.welcome-keyrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.welcome-keyrow kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  padding: 3px 7px;
+  font-family: var(--font-family);
+  font-size: 12px;
+  color: var(--text-main);
+  background: var(--keyhint-bg);
+  border: 1px solid var(--keyhint-border);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+}
+
+.welcome-plus {
+  color: var(--text-muted);
+}
+
+.welcome-keydesc {
+  color: var(--text-muted);
+}
+
+.welcome-list {
+  margin: 0;
+  padding-left: 19px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.welcome-list b {
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.welcome-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.welcome-chips {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.welcome-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 150px;
+  padding: 12px 14px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.welcome-chip:hover {
+  border-color: var(--accent-color);
+  background: var(--accent-light);
+}
+
+.welcome-chip b {
+  font-family: Consolas, Monaco, monospace;
+  font-size: 14px;
+  color: var(--accent-text);
+}
+
+.welcome-chip span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.welcome-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0 4px;
+}
+
+.welcome-step {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.welcome-spacer {
+  flex: 1;
+}
+
+.welcome-btn {
+  padding: 6px 14px;
+  font-size: 12.5px;
+  border-radius: 7px;
+  border: 1px solid var(--accent-color);
+  background: var(--accent-color);
+  color: #fff;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.welcome-btn:hover {
+  background: var(--accent-hover);
+}
+
+.welcome-btn.ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--keyhint-border);
+}
+
+.welcome-btn.ghost:hover {
+  color: var(--text-main);
+  background: var(--hover-overlay);
+}

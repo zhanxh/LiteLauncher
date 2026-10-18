@@ -33,11 +33,25 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi"],
     "category": "Utility",
     "license": "MIT",
     "shortDescription": "桌面快捷启动器：插件化的搜索、截图、剪贴板与工具集合",
     "longDescription": "LiteLauncher 是无边框常驻桌面的启动器。内置待办/应用/笔记/AI 插件，外部插件（LLP/1）拷入目录即装，支持 Python 等任意语言运行时。",
+    "createUpdaterArtifacts": true,
+    "resources": {
+      "../release/plugins": "plugins"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": true
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -45,5 +59,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/OWNER/LiteLauncher/releases/latest/download/latest.json"
+      ],
+      "pubkey": ""
+    }
   }
 }

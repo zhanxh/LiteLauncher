@@ -380,7 +380,12 @@ const sdkStub = {
           svcCalls.push({ pluginId, method: 'svc.shortcut.unregister', params: { accel } });
         },
         list: async () => [],
+        catalog: async () => [],
         on: async () => () => {},
+        onHotkey: async (hotkeyId) => {
+          svcCalls.push({ pluginId, method: 'svc.shortcut.onHotkey', params: { hotkeyId } });
+          return () => {};
+        },
       },
       windows: {
         open: async (view, params = {}) => {
@@ -1272,6 +1277,143 @@ const CASES = {
       },
     },
   ],
+  hash: [
+    {
+      tokens: ['md5', 'hello'],
+      expect: (items) => {
+        const md5 = items.find((i) => i.badge === 'MD5');
+        assert(md5?.metadata?.value === '5d41402abc4b2a76b9719d911017c592', `md5 结果错: ${md5?.metadata?.value}`);
+      },
+    },
+    {
+      tokens: ['hello'],
+      expect: (items) => {
+        assert(items.some((i) => i.badge === 'SHA256'), '全量模式应包含 SHA256');
+        assert(items.some((i) => i.badge === 'CRC32'), '全量模式应包含 CRC32');
+        assert(items.some((i) => i.badge === '长度'), '应包含输入长度');
+      },
+    },
+    {
+      tokens: ['base64d', '5L2g5aW9'],
+      expect: (items) => {
+        assert(items.find((i) => i.badge === 'BASE64D')?.metadata?.value === '你好', 'base64 解码应还原中文');
+      },
+    },
+    {
+      tokens: ['url', 'a b'],
+      expect: (items) => {
+        assert(items.find((i) => i.badge === 'URL')?.metadata?.value === 'a%20b', 'URL 编码应把空格编成 %20');
+      },
+    },
+    {
+      tokens: ['html', '<a>'],
+      expect: (items) => {
+        assert(items.find((i) => i.badge === 'HTML')?.metadata?.value === '&lt;a&gt;', 'HTML 转义错');
+      },
+    },
+    {
+      tokens: ['crc32', 'hello'],
+      expect: (items) => {
+        assert(items.find((i) => i.badge === 'CRC32')?.metadata?.value === '3610a686', 'CRC32 结果错');
+      },
+    },
+  ],
+  cron: [
+    {
+      tokens: ['0', '9', '*', '*', '1-5'],
+      expect: (items) => {
+        const desc = items.find((i) => i.badge === '含义');
+        assert(desc?.description?.includes('表达式：0 9 * * 1-5'), `描述缺表达式: ${desc?.description}`);
+        assert(desc?.title?.includes('周一–周五'), `描述缺工作日: ${desc?.title}`);
+        assert(items.filter((i) => i.metadata?.label === '触发时间').length === 5, '应给出 5 次触发');
+      },
+    },
+    {
+      tokens: ['*/15', '*', '*', '*', '*'],
+      expect: (items) => {
+        assert(items.filter((i) => i.metadata?.label === '触发时间').length === 5, '*/15 应给出 5 次触发');
+        assert(items.find((i) => i.badge === '含义')?.title?.includes('每 15 分钟'), '步长描述错');
+      },
+    },
+    {
+      tokens: ['bad'],
+      expect: (items) => {
+        assert(items[0].badge === '错误', '非法表达式应显式报错');
+      },
+    },
+  ],
+  cidr: [
+    {
+      tokens: ['192.168.1.0/24'],
+      expect: (items) => {
+        assert(items.find((i) => i.badge === '网络')?.metadata?.value === '192.168.1.0', '网络地址错');
+        assert(items.find((i) => i.badge === '广播')?.metadata?.value === '192.168.1.255', '广播地址错');
+        assert(items.find((i) => i.badge === '主机数')?.metadata?.value === '254', '可用主机数错');
+      },
+    },
+    {
+      tokens: ['10.0.0.0/24', '4'],
+      expect: (items) => {
+        assert(items.find((i) => i.badge === '拆分')?.description === '新前缀 /26', '拆分前缀错');
+        assert(items.filter((i) => /^#\d+$/.test(i.badge ?? '')).length === 4, '应拆出 4 个子网');
+      },
+    },
+    {
+      tokens: ['2001:db8::/32'],
+      expect: (items) => {
+        assert(items.find((i) => i.badge === '网络')?.metadata?.value === '2001:db8::', 'IPv6 网络地址错');
+        assert(items.find((i) => i.badge === '末地址')?.metadata?.value === '2001:db8:ffff:ffff:ffff:ffff:ffff:ffff', 'IPv6 末地址错');
+      },
+    },
+    {
+      tokens: ['bad'],
+      expect: (items) => assert(items[0].badge === '错误', '非法 IP 应报错'),
+    },
+  ],
+  time: [
+    {
+      tokens: [],
+      expect: (items) => {
+        assert(items[0].badge === '本地', '首个应是本地时间');
+        assert(items.filter((i) => i.metadata?.value).length === 14, '应列出 14 个城市');
+      },
+    },
+    {
+      tokens: ['纽约'],
+      expect: (items) => {
+        const city = items.find((i) => i.metadata?.label === '纽约');
+        assert(city && /^\d{2}:\d{2}$/.test(city.title), `纽约时间格式错: ${city?.title}`);
+        assert(city.metadata.value.startsWith('纽约 '), '复制值应以城市名开头');
+      },
+    },
+    {
+      tokens: ['不存在的城市'],
+      expect: (items) => assert(items[0].badge === '提示', '未知城市应给出提示'),
+    },
+  ],
+  pwd: [
+    {
+      tokens: ['24'],
+      expect: (items) => {
+        assert(items.length === 6, `应生成 6 项，实得 ${items.length}`);
+        assert(items[0].title.length === 24, '主密码长度应跟随参数');
+        assert(items.find((i) => i.badge === 'PIN' && i.title.length === 6), '缺 6 位 PIN');
+        assert(items.find((i) => i.badge === '短语')?.title.split('-').length === 3, '短语应为 3 词');
+      },
+    },
+    {
+      tokens: ['16', 'easy'],
+      expect: (items) => {
+        assert(/^[a-z]{16}$/.test(items[0].title), 'easy 模式应是小写字母');
+      },
+    },
+    {
+      tokens: ['20', 'nosym'],
+      expect: (items) => {
+        assert(!/[!@#$%^&*()\-_=+[\]{}<>?,.:;]/.test(items[0].title), 'nosym 不应含符号');
+      },
+    },
+  ],
 };
 
 function assert(condition, message) {
@@ -1598,11 +1740,12 @@ function testPomoTimerModule() {
     assert(T.breakMinutesOf(0) === T.breakMinutesOf(25), '非法输入应回落到默认 25 的短休');
     assert(T.breakMinutesOf(NaN) === 5 && T.breakMinutesOf(-3) === 5,
       'NaN/负数应回落到默认，不得算出 0 或负短休');
-    // 与 Python 侧同源规则的**跨语言一致性**：两边各写一遍就容易各错一遍
-    const pySrc = readFileSync(path.join(pluginsDir, 'pomo', 'pomo.py'), 'utf8');
-    const pyRatio = pySrc.match(/^BREAK_RATIO\s*=\s*(\d+)/m);
-    assert(pyRatio && Number(pyRatio[1]) === T.BREAK_RATIO,
-      `pomo.py 的 BREAK_RATIO 必须与 timer.ts 一致，实得 ${pyRatio && pyRatio[1]}`);
+    // 与 native 后端同源规则的**跨语言一致性**：两边各写一遍就容易各错一遍。
+    // pomo 已从 Python sidecar 迁为 native 动态库，比对对象随之改为 Rust 源码。
+    const rsSrc = readFileSync(path.join(pluginsDir, 'pomo', 'be', 'src', 'lib.rs'), 'utf8');
+    const rsRatio = rsSrc.match(/const BREAK_RATIO:\s*i64\s*=\s*(\d+)/);
+    assert(rsRatio && Number(rsRatio[1]) === T.BREAK_RATIO,
+      `pomo/be 的 BREAK_RATIO 必须与 timer.ts 一致，实得 ${rsRatio && rsRatio[1]}`);
 
     // 12) 段名
     assert(T.phaseName('break') === '短休', 'break 应显示「短休」');
@@ -2654,6 +2797,62 @@ function testCalDslModule() {
     }
     assert(d.describeDraft({ ...a, allDay: true }).includes('全天'), '全天应显式标出');
     assert(d.repeatLabel('every:1year') === '每年' && d.repeatLabel('every:2hour') === '每 2 小时', '重复标签覆盖年/时步长');
+
+    // 11) WP-09 自然语言时间：开头短语 → 时间，剩余文本 → 标题
+    const now = new Date(2026, 9, 14, 10, 0); // 2026-10-14 周三 10:00
+    const nat = (text) => d.parseNaturalTime(text, now);
+    const natCase = (text, start, title, end = '') => {
+      const r = nat(text);
+      assert(r, `自然语言没解析出时间: ${text}`);
+      assert(r.startAt === start, `「${text}」开始时间错: ${r.startAt}（期望 ${start}）`);
+      assert(r.title === title, `「${text}」标题错: "${r.title}"（期望 "${title}"）`);
+      assert((r.endAt || '') === end, `「${text}」结束时间错: ${r.endAt}（期望 ${end || '空'}）`);
+    };
+
+    natCase('明天下午三点开会', '2026-10-15 15:00', '开会');
+    natCase('后天 10点 复盘', '2026-10-16 10:00', '复盘');
+    natCase('周五 10点 项目复盘', '2026-10-16 10:00', '项目复盘');
+    natCase('下周一 9点半 站会', '2026-10-19 09:30', '站会');
+    natCase('下下周五 18点 团建', '2026-10-30 18:00', '团建');
+    natCase('3点 开会', '2026-10-15 03:00', '开会'); // 今天 03:00 已过 → 明天
+    natCase('9点一刻 站会', '2026-10-15 09:15', '站会');
+    natCase('15:30 评审', '2026-10-14 15:30', '评审');
+    natCase('晚上8点 跑步', '2026-10-14 20:00', '跑步');
+    natCase('中午12点 午饭', '2026-10-14 12:00', '午饭');
+    natCase('凌晨十二点 值班', '2026-10-15 00:00', '值班');
+    natCase('明天下午三点开会 30分钟', '2026-10-15 15:00', '开会', '2026-10-15 15:30');
+    natCase('下下周一 9点半 站会 半小时', '2026-10-26 09:30', '站会', '2026-10-26 10:00');
+
+    const allDay = nat('今天 全天评审');
+    assert(
+      allDay && allDay.allDay && allDay.startAt === '2026-10-14' && allDay.endAt === '2026-10-14',
+      `自然语言全天解析错: ${JSON.stringify(allDay)}`,
+    );
+
+    // 引号标题保护：首 token 被引号包裹时不做自然语言解析
+    const quoted = d.parseCalArgs(['明天下午三点开会'], now, [true]);
+    assert(quoted.startAt === '' && quoted.title === '明天下午三点开会', `引号标题被误解析: ${JSON.stringify(quoted)}`);
+
+    // 时间在开头、标题在后且带引号：时间应解析，标题原样
+    const mixed = d.parseCalArgs(['明天下午三点', '开会'], now, [false, true]);
+    assert(
+      mixed.startAt === '2026-10-15 15:00' && mixed.title === '开会',
+      `混合输入解析错: ${JSON.stringify(mixed)}`,
+    );
+
+    // 显式 DSL 优先：已有 10-15 14:00 时不再走自然语言
+    const explicit = d.parseCalArgs(['明天下午三点', '10-15', '14:00'], now);
+    assert(
+      explicit.startAt === '2026-10-15 14:00',
+      `显式 DSL 被自然语言覆盖: ${explicit.startAt}`,
+    );
+
+    // 只有日期 + 时段但没有钟点 → 不猜，整串留作标题
+    assert(nat('明天下午开会') === null, '缺少钟点的时段不该被猜测');
+    // 只有时间没有标题 → 返回 null，避免生成空标题日程
+    assert(nat('15:30') === null, '无标题的自然语言时间应回退');
+    // 非法钟点 → 不猜
+    assert(nat('25点 开会') === null, '25 点应判为非法并回退标题');
   } catch (err) {
     failures.push(err.message);
   }
@@ -2816,7 +3015,13 @@ async function main() {
     const accels = Array.from(new Set(shortcutCalls.map((c) => c.params?.accel))).sort();
     console.log(`  ✓ svc.shortcut.register 已覆盖：${accels.join(', ')}`);
   } else {
-    console.log('  ! 未有插件注册全局热键');
+    const bound = svcCalls.filter((c) => c.method === 'svc.shortcut.onHotkey');
+    const ids = Array.from(new Set(bound.map((c) => c.params?.hotkeyId))).sort();
+    console.log(
+      ids.length > 0
+        ? `  ✓ manifest 热键按 id 订阅：${ids.join(', ')}（注册由宿主统一完成）`
+        : '  ! 未有插件订阅全局热键',
+    );
   }
   // 视图注册：pick 的取色台必须经 svc.window.open 打开（key=none 插件唯一的开窗途径）
   if (svcCalls.some((c) => c.method === 'svc.window.open')) {

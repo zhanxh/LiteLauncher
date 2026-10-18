@@ -27,8 +27,8 @@ import { clearHistory, isPanelOpen, loadHistory, pushHistory } from './history';
 
 const PLUGIN_ID = 'pick';
 const VIEW_ID = 'panel';
-/** 与 manifest 的 `shortcut:alt+p` 声明、panel.tsx 保持一致 */
-const HOTKEY = 'alt+p';
+/** manifest `hotkeys[]` 里的 id；具体 accel 由宿主解析（用户可改键） */
+const HOTKEY_ID = 'pick';
 
 const ctx = getPluginContext(PLUGIN_ID);
 
@@ -136,10 +136,11 @@ export const pickPlugin: CommandPlugin = {
 
     items.push({
       id: `${PLUGIN_ID}:hotkey`,
-      title: `全局热键 ${HOTKEY}`,
-      description: '任意界面按下即取色：HEX 进剪贴板 + 系统通知（可在 manifest 的 shortcut: 权限里改）',
+      title: `全局热键 ${hotkeys[0]?.accel ?? 'alt+p'}`,
+      description: '任意界面按下即取色：HEX 进剪贴板 + 系统通知（可在“设置 → 快捷键”里修改）',
       icon: '⌨️',
       badge: '热键',
+      kind: 'info',
       metadata: { action: 'none' },
     });
 
@@ -199,25 +200,29 @@ export const pickPlugin: CommandPlugin = {
 };
 
 /**
- * 全局热键：注册 + 订阅。
+ * 全局热键：订阅 manifest 声明的 `pick` 热键。
  *
- * 面板开着时让位给面板（否则同一次按键会既复制又关窗，行为不可预期）。
- * `ctx.shortcuts.on` 默认只在主窗口生效——每个窗口加载都会跑一遍 setup，
- * 不区分的话打开视图窗口后热键会被执行两次。
+ * 注册由宿主在启动时完成（默认 alt+p，用户可在设置里改）；这里只按 id 订阅，
+ * 改键后事件仍按 id 路由，不需要重新订阅。面板开着时让位给面板。
  */
-async function setupHotkey(): Promise<void> {
+async function refreshHotkeyReport(): Promise<void> {
   try {
-    await ctx.shortcuts.register(HOTKEY);
-  } catch (err) {
-    ctx.log.warn(`全局热键 ${HOTKEY} 注册失败（可能被其他程序或插件占用）：${messageOf(err)}`);
-    return;
+    const info = (await ctx.shortcuts.catalog()).find((h) => h.id === HOTKEY_ID);
+    hotkeys.length = 0;
+    if (info?.registered) {
+      hotkeys.push({ accel: info.accel, description: '取光标处颜色并复制 HEX' });
+    } else {
+      ctx.log.warn(
+        `热键 ${info?.accel ?? 'alt+p'} 未注册（可能被其他程序/插件占用），可在“设置 → 快捷键”修改`,
+      );
+    }
+  } catch {
+    // 目录读取失败不影响取色本身
   }
+}
 
-  // 只在注册**成功后**才让速查表收录：否则 /hotkey 会教用户按一个不生效的键
-  hotkeys.length = 0;
-  hotkeys.push({ accel: HOTKEY, description: '取光标处颜色并复制 HEX' });
-
-  await ctx.shortcuts.on(HOTKEY, () => {
+async function setupHotkey(): Promise<void> {
+  await ctx.shortcuts.onHotkey(HOTKEY_ID, () => {
     void (async () => {
       if (await isPanelOpen().catch(() => false)) return; // 交给取色台处理
       try {
@@ -228,6 +233,12 @@ async function setupHotkey(): Promise<void> {
       }
     })();
   });
+
+  await refreshHotkeyReport();
+  // 设置里改键后刷新 /hotkey 的自报数组（它读的是插件对象上的数组）
+  void import('@tauri-apps/api/event')
+    .then(({ listen }) => listen('hotkey-changed', () => void refreshHotkeyReport()))
+    .catch(() => undefined);
 }
 
 export function setup(): void {

@@ -94,11 +94,15 @@ function makeExternalPlugin(info: ExternalPluginInfo): CommandPlugin {
           emptyText: data?.emptyText ?? '无结果',
         };
       } catch (err: any) {
-        return { items: [], emptyText: `${info.name} 不可用: ${err?.message || err}` };
+        return {
+          items: [],
+          emptyText: '',
+          error: `${info.name} 查询失败: ${err?.message || err}`,
+        };
       }
     },
 
-    async onSelect(item: PanelItem) {
+    async onSelect(item: PanelItem, actionId?: string) {
       if (!isTauri()) return { toast: `[预览] ${item.title}` };
       try {
         const res = await ctx.call<{
@@ -107,7 +111,7 @@ function makeExternalPlugin(info: ExternalPluginInfo): CommandPlugin {
           toast?: string;
           refresh?: boolean;
           copy?: string;
-        }>('select', { id: item.id, metadata: item.metadata ?? {} });
+        }>('select', { id: item.id, metadata: item.metadata ?? {}, actionId: actionId ?? null });
         return {
           close: res?.close,
           clearInput: res?.clearInput,

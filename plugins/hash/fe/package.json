@@ -1,0 +1,9 @@
+{
+  "name": "@ll/plugin-hash",
+  "version": "0.2.0",
+  "private": true,
+  "description": "哈希与编码（纯前端）：逻辑全在 fe/src/hash.ts",
+  "type": "module",
+  "main": "src/index.ts",
+  "llplugin": true
+}

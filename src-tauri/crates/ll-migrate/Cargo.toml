@@ -1,0 +1,13 @@
+[package]
+name = "ll-migrate"
+version = "0.1.0"
+edition = "2024"
+description = "LiteLauncher 插件数据库 schema 迁移（纯 rusqlite，可独立单测）"
+
+[dependencies]
+# bundled：Windows 上没有系统 sqlite3，必须自带
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+[lib]
+name = "ll_migrate"
+path = "src/lib.rs"

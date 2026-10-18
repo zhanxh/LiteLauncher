@@ -55,7 +55,16 @@ fn default_apps() -> &'static [(&'static str, &'static str)] {
 }
 
 pub fn run_legacy_migration(core_conn: &rusqlite::Connection, registry: &PluginDbRegistry) {
-    // 0. 幂等标记：已迁移过则直接保证插件库 schema 存在后返回
+    // 0. 先把插件库 schema 修好（建表 + 列级迁移）。
+    //
+    // 为什么放在幂等标记**之前**：旧数据搬迁可能因为某张表结构不一致而失败
+    // （例如核心库的 todos 缺 notified 列），此时 `all_ok` 为 false、标记永远
+    // 写不进去。若 schema 维护挂在"迁移成功"之后，用户就会永久停在 v1，
+    // 每次启动都重试一次注定失败的搬迁——与这张旧表无关的 apps 目录也因此
+    // 永远升不上 v2。schema 是幂等的，先修它不会影响旧数据搬迁。
+    ensure_plugin_schemas(registry);
+
+    // 0.1 幂等标记：已迁移过就直接返回（schema 已在上一步保证）
     let migrated = core_conn
         .query_row(
             "SELECT value FROM app_settings WHERE key = ?1",
@@ -67,7 +76,6 @@ pub fn run_legacy_migration(core_conn: &rusqlite::Connection, registry: &PluginD
         == Some("done");
 
     if migrated {
-        ensure_plugin_schemas(registry);
         return;
     }
 
@@ -82,7 +90,10 @@ pub fn run_legacy_migration(core_conn: &rusqlite::Connection, registry: &PluginD
     match std::fs::copy(&core_path, &backup) {
         Ok(_) => log_lifecycle(&format!("migration: 已备份至 {}", backup.display())),
         Err(e) => {
-            log_lifecycle(&format!("migration: 备份失败（{}），中止迁移，数据保留原位", e));
+            log_lifecycle(&format!(
+                "migration: 备份失败（{}），中止迁移，数据保留原位",
+                e
+            ));
             return;
         }
     }
@@ -135,7 +146,11 @@ pub fn run_legacy_migration(core_conn: &rusqlite::Connection, registry: &PluginD
     all_ok &= migrate_notes(core_conn, registry);
 
     // 5. 设置键前缀改写：popup_auto_close_secs → todo.popup_auto_close_secs
-    if let Err(e) = rewrite_setting_key(core_conn, "popup_auto_close_secs", "todo.popup_auto_close_secs") {
+    if let Err(e) = rewrite_setting_key(
+        core_conn,
+        "popup_auto_close_secs",
+        "todo.popup_auto_close_secs",
+    ) {
         log_lifecycle(&format!("migration: 设置键改写失败: {}", e));
         all_ok = false;
     }
@@ -223,6 +238,68 @@ fn ensure_plugin_schemas(registry: &PluginDbRegistry) {
             }
         }
     }
+
+    // 建表之后再跑列级迁移：全新库与老库都必须走到 v2
+    ensure_apps_schema_v2(registry);
+}
+
+/// 把 apps.db 从 v1 升到 v2（幂等；`PRAGMA user_version` 记录进度）
+///
+/// 列级逻辑在 `ll-migrate`（只依赖 rusqlite，可独立跑单测）；这里只负责
+/// 定位数据库、备份与日志——这些依赖宿主上下文，且不该被单测拖进 Tauri 链接。
+fn ensure_apps_schema_v2(registry: &PluginDbRegistry) {
+    let conn = match registry.cached("apps") {
+        Ok(c) => c,
+        Err(e) => {
+            log_lifecycle(&format!("migration: apps schema v2 无法打开数据库: {}", e));
+            return;
+        }
+    };
+    let conn = match conn.lock() {
+        Ok(c) => c,
+        Err(_) => {
+            log_lifecycle("migration: apps schema v2 数据库锁不可用");
+            return;
+        }
+    };
+
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
+    if version >= 2 {
+        return;
+    }
+
+    // 迁移前备份：v1 → v2 只加列，但历史数据里的重复 path 会被去重（有损），
+    // 必须留一份可回滚的快照。
+    let db_path = registry.root().join("apps").join("apps.db");
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM app_shortcuts", [], |r| r.get(0))
+        .unwrap_or(0);
+    if db_path.exists() && rows > 0 {
+        // WAL 中的最新写入先落盘，否则复制出来的 .db 可能缺数据
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(FULL);");
+        let backup = db_path.with_extension(format!(
+            "db.bak-v1-{}",
+            chrono::Local::now().format("%Y%m%d-%H%M%S")
+        ));
+        if let Err(e) = std::fs::copy(&db_path, &backup) {
+            log_lifecycle(&format!(
+                "migration: apps v2 备份失败（{}），中止迁移，数据保留 v1",
+                e
+            ));
+            return;
+        }
+        log_lifecycle(&format!("migration: apps v2 已备份至 {}", backup.display()));
+    }
+
+    match ll_migrate::apps::migrate_v2(&conn) {
+        Ok(()) => log_lifecycle(&format!(
+            "migration: apps schema v2 完成（{} 行应用）",
+            rows
+        )),
+        Err(e) => log_lifecycle(&format!("migration: apps schema v2 失败: {}", e)),
+    }
 }
 
 /// 通用单表搬迁：核心库 → 插件库，列集相同；成功后删除核心库旧行
@@ -241,16 +318,18 @@ fn migrate_table(
         if source_count == 0 {
             log_lifecycle(&format!("migration: {} 无数据，跳过", table));
             // 仍确保目标 schema 存在
-            let target_conn = registry
-                .cached(plugin_id)
-                .map_err(|e| e)?;
-            let target = target_conn.lock().map_err(|_| "目标库锁不可用".to_string())?;
+            let target_conn = registry.cached(plugin_id).map_err(|e| e)?;
+            let target = target_conn
+                .lock()
+                .map_err(|_| "目标库锁不可用".to_string())?;
             ensure_schema(&target).map_err(|e| format!("建表失败: {}", e))?;
             return Ok(());
         }
 
         let target_conn = registry.cached(plugin_id).map_err(|e| e)?;
-        let target = target_conn.lock().map_err(|_| "目标库锁不可用".to_string())?;
+        let target = target_conn
+            .lock()
+            .map_err(|_| "目标库锁不可用".to_string())?;
         ensure_schema(&target).map_err(|e| format!("建表失败: {}", e))?;
 
         let col_list: Vec<&str> = columns.split(", ").collect();
@@ -329,9 +408,12 @@ fn migrate_notes(core: &rusqlite::Connection, registry: &PluginDbRegistry) -> bo
 
     let result = (|| -> Result<(), String> {
         let target_conn = registry.cached("notes").map_err(|e| e)?;
-        let target = target_conn.lock().map_err(|_| "目标库锁不可用".to_string())?;
-        target.execute_batch(
-            "CREATE TABLE IF NOT EXISTS note_index (
+        let target = target_conn
+            .lock()
+            .map_err(|_| "目标库锁不可用".to_string())?;
+        target
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS note_index (
                 path        TEXT PRIMARY KEY,
                 title       TEXT NOT NULL,
                 mtime       INTEGER NOT NULL,
@@ -343,8 +425,8 @@ fn migrate_notes(core: &rusqlite::Connection, registry: &PluginDbRegistry) -> bo
                 content='note_index',
                 content_rowid='rowid'
             )",
-        )
-        .map_err(|e| format!("notes schema 建表失败: {}", e))?;
+            )
+            .map_err(|e| format!("notes schema 建表失败: {}", e))?;
 
         let source_count: i64 = core
             .query_row("SELECT COUNT(*) FROM note_index", [], |r| r.get(0))
@@ -382,12 +464,18 @@ fn migrate_notes(core: &rusqlite::Connection, registry: &PluginDbRegistry) -> bo
             drop(stmt);
 
             if copied != source_count {
-                return Err(format!("note_index 行数不一致（源 {}，已复制 {}）", source_count, copied));
+                return Err(format!(
+                    "note_index 行数不一致（源 {}，已复制 {}）",
+                    source_count, copied
+                ));
             }
             tx.execute("DELETE FROM note_index", [])
                 .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
-            log_lifecycle(&format!("migration: note_index 已迁移 {} 行 → notes 库", copied));
+            log_lifecycle(&format!(
+                "migration: note_index 已迁移 {} 行 → notes 库",
+                copied
+            ));
         }
 
         // FTS 索引重建（目标库），并清理核心库残留索引

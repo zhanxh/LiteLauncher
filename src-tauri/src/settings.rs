@@ -1,5 +1,5 @@
 use crate::db::DbState;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
@@ -95,6 +95,38 @@ pub async fn open_settings_window(app: AppHandle) -> Result<(), String> {
     .center()
     .build()
     .map_err(|e| format!("创建设置窗口失败: {}", e))?;
+
+    Ok(())
+}
+
+/// 打开欢迎引导窗（首启自动 / 设置里重看）
+///
+/// `apps` 是主窗口在打开前取到的目录数量：欢迎窗自己没有插件调用权限，
+/// 直接显示主窗口算好的数字，避免为"只读一个计数"放宽 plugin_call 的调用者校验。
+#[tauri::command]
+pub async fn open_welcome_window(app: AppHandle, apps: Option<u32>) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("welcome") {
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    let url = match apps {
+        Some(count) => format!("index.html?view=welcome&apps={count}"),
+        None => "index.html?view=welcome".to_string(),
+    };
+    WebviewWindowBuilder::new(&app, "welcome", WebviewUrl::App(url.into()))
+        .title("LiteLauncher - 欢迎")
+        .inner_size(720.0, 560.0)
+        .resizable(false)
+        .decorations(false)
+        // 与 todo/pomo 一致：Win11 无边框窗默认带一圈白边，关掉阴影才干净
+        .shadow(false)
+        // 主窗是 alwaysOnTop；欢迎窗也置顶，避免被其他置于顶层的窗口盖住
+        .always_on_top(true)
+        .center()
+        .build()
+        .map_err(|e| format!("创建欢迎窗口失败: {}", e))?;
 
     Ok(())
 }

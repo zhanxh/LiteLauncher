@@ -14,9 +14,9 @@ REM
 REM  Usage:
 REM    build.cmd          full build: frontend + main exe + portable plugin deploy
 REM    build.cmd check    quick gate: cargo check + frontend type check (no binary)
-REM    build.cmd ship     OFFICIAL RELEASE build: fat LTO + 1 codegen unit, into a
-REM                       separate target-ship dir, so the daily incremental cache
-REM                       in target\ stays usable after the one-off rebuild
+REM    build.cmd ship     OFFICIAL RELEASE build: fat LTO + 1 codegen unit,
+REM                       NSIS installer + updater artifacts (needs signing key;
+REM                       see docs/distribution.md), separate target-ship dir
 REM ============================================================
 
 REM -- Toolchain check ----------------------------------------
@@ -100,6 +100,13 @@ REM makes the loader reject the plugin at startup (silent failure).
 node tools\update-plugin-integrity.mjs
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
+REM -- [1.8/5] deploy external plugins BEFORE bundle --------
+REM tauri.conf.json bundle.resources maps release\plugins into the installer;
+REM the directory must exist and be current before the bundler runs.
+set "STEP=[1.8/5]"
+echo %STEP% Deploying external plugins to release\plugins\...
+node tools\deploy-portable-plugins.mjs || exit /b 1
+
 REM -- [2/5] main program: Tauri release build (built-in plugins)
 REM A running LiteLauncher.exe locks target\release\LiteLauncher.exe (os error 5),
 REM so fail early with a clear message instead of after a full compile.
@@ -123,7 +130,12 @@ if defined SHIP (
 ) else (
     echo %STEP% Building main program - Tauri release, built-in plugins included...
 )
-call npx tauri build --no-bundle
+if defined SHIP (
+    echo %STEP% Building NSIS installer + updater artifacts...
+    call npx tauri build --bundles nsis
+) else (
+    call npx tauri build --no-bundle
+)
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] main program build failed
     exit /b 1
@@ -139,16 +151,12 @@ if not exist "%BIN%\LiteLauncher.exe" (
 )
 copy /Y "%BIN%\LiteLauncher.exe" "release\LiteLauncher.exe" >nul || exit /b 1
 
-REM -- [4/5] deploy external plugins (llp/native/none) -----------
+REM -- [4/5] done -----------------------------------------------
 set "STEP=[4/5]"
-echo %STEP% Deploying external plugins to release\plugins\...
-node tools\deploy-portable-plugins.mjs || exit /b 1
-
-REM -- [5/5] done -----------------------------------------------
-set "STEP=[5/5]"
 echo %STEP% Done. Distributable output:
 echo   release\LiteLauncher.exe        main program (built-in: todo/apps/ai)
 echo   release\plugins\                external plugins (llp/native/none, ship together; notes = native)
+echo   src-tauri\target\release\bundle\  NSIS/MSI installer (when building without --no-bundle)
 exit /b 0
 
 :check

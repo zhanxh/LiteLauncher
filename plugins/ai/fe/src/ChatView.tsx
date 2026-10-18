@@ -224,7 +224,7 @@ export const ChatView: Component = () => {
           fallback={
             <section class="ai-keycard">
               <h2>配置 API Key</h2>
-              <p>密钥由宿主 SecretStore 托管（不写入插件数据），保存后立即可用。</p>
+              <p>密钥由宿主 SecretStore 托管（不写入插件数据）；Windows 使用 DPAPI 加密存储，Linux 当前为本地明文。</p>
               <input
                 type="password"
                 placeholder="sk-..."

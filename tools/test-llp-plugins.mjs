@@ -21,16 +21,11 @@ const pluginsDir = path.join(root, "plugins");
 // 每个插件的代表性输入（用于覆盖主要分支）
 // 注：纯前端插件（backend.kind = "none"）不在此覆盖，见 tools/test-fe-plugins.mjs
 const SAMPLES = {
-  hash: ["hello"],
-  cron: ["0 9 * * 1-5"],
-  cidr: ["192.168.1.0/24 4"],
   bookmark: ["", "git"],
   snip: [""],
-  pwd: ["24"],
   cost: [""],
   memo: [""],
   cheat: ["", "git"],
-  time: [""],
   // pomo 的分段状态机（专注↔短休 5:1、hold 等按钮、重启恢复）不在这层测——
   // 冒烟测试的 settings 是空桩，走不出计时态；那里只验协议不报错。
   // 状态机见 tools/test-pomo-logic.py，挂件推导见 tools/test-fe-plugins.mjs。

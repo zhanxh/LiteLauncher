@@ -13,6 +13,17 @@
     "windows",
     "shortcut:alt+p"
   ],
+  "hotkeys": [
+    {
+      "id": "pick",
+      "default": "alt+p",
+      "label": "光标处取色",
+      "description": "任意界面按下即取色，HEX 进剪贴板",
+      "scope": "main",
+      "editable": true,
+      "enabled": true
+    }
+  ],
   "views": [
     {
       "id": "panel",

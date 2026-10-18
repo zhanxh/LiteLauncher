@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 /// 单次返回上限默认值（键入过滤通常很快，前端按需渲染）
 pub const DEFAULT_LIMIT: usize = 30;
+/// 扫描上限：目录导入要一次拿全（开始菜单常见几百项），但也不能无限
+pub const MAX_LIMIT: usize = 2000;
 /// 递归扫描深度上限（applications 目录偶有子目录分组）
 const MAX_SCAN_DEPTH: u8 = 2;
 
@@ -35,7 +37,7 @@ pub fn search_system_apps(
     limit: Option<usize>,
     saved_paths: &HashSet<String>,
 ) -> Vec<SystemAppItem> {
-    let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 100);
+    let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let kw = keyword.unwrap_or_default().trim().to_lowercase();
 
     let mut items: Vec<SystemAppItem> = Vec::new();
@@ -181,8 +183,8 @@ fn scan_app_dir(
                     let path_str = path.to_string_lossy().to_string();
                     let name_lower = name.to_lowercase();
                     let exec_prog = exec.split_whitespace().next().unwrap_or("").to_lowercase();
-                    if let Some(score) = match_score(&name_lower, kw)
-                        .or_else(|| match_score(&exec_prog, kw))
+                    if let Some(score) =
+                        match_score(&name_lower, kw).or_else(|| match_score(&exec_prog, kw))
                     {
                         if seen.insert(path.clone()) {
                             scored.push((
@@ -256,7 +258,11 @@ fn parse_desktop_file(path: &Path) -> Option<(String, String)> {
 
 /// 扫描 $PATH 目录中名称匹配的可执行文件
 #[cfg(not(target_os = "windows"))]
-fn scan_path_executables(kw: &str, seen: &mut HashSet<PathBuf>, scored: &mut Vec<(u8, SystemAppItem)>) {
+fn scan_path_executables(
+    kw: &str,
+    seen: &mut HashSet<PathBuf>,
+    scored: &mut Vec<(u8, SystemAppItem)>,
+) {
     use std::os::unix::fs::PermissionsExt;
 
     let Some(path_var) = std::env::var_os("PATH") else {
@@ -312,12 +318,18 @@ fn collect_windows_apps(kw: &str, limit: usize, out: &mut Vec<SystemAppItem>) {
     // 开始菜单 = Windows 的"系统应用列表"：全部用户 + 当前用户两处
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(pd) = std::env::var_os("ProgramData") {
-        dirs.push(
-            PathBuf::from(pd).join(r"Microsoft\Windows\Start Menu\Programs"),
-        );
+        dirs.push(PathBuf::from(pd).join(r"Microsoft\Windows\Start Menu\Programs"));
     }
     if let Some(ad) = std::env::var_os("APPDATA") {
         dirs.push(PathBuf::from(ad).join(r"Microsoft\Windows\Start Menu\Programs"));
+    }
+    // 桌面快捷方式：不少装机软件只放桌面、不进开始菜单，
+    // 只扫开始菜单会漏掉它们（用户输入 `wx` 就找不到微信）
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        dirs.push(PathBuf::from(profile).join("Desktop"));
+    }
+    if let Some(public) = std::env::var_os("PUBLIC") {
+        dirs.push(PathBuf::from(public).join("Desktop"));
     }
     for dir in dirs {
         scan_start_menu(&dir, 0, kw, &mut seen, &mut scored);
@@ -418,7 +430,11 @@ mod tests {
         assert!(parse_desktop_file(&hidden).is_none());
 
         let link = dir.join("link.desktop");
-        fs::write(&link, "[Desktop Entry]\nType=Link\nName=URL\nURL=http://x\n").unwrap();
+        fs::write(
+            &link,
+            "[Desktop Entry]\nType=Link\nName=URL\nURL=http://x\n",
+        )
+        .unwrap();
         assert!(parse_desktop_file(&link).is_none());
 
         fs::remove_dir_all(&dir).unwrap();
@@ -470,8 +486,10 @@ mod tests {
         let mut scored = Vec::new();
         scan_path_executables("ls", &mut seen, &mut scored);
         let items = sort_and_truncate(scored, 50);
-        assert!(items
-            .iter()
-            .any(|i| i.kind == "exec" && i.path.ends_with("/ls")));
+        assert!(
+            items
+                .iter()
+                .any(|i| i.kind == "exec" && i.path.ends_with("/ls"))
+        );
     }
 }

@@ -7,7 +7,7 @@
  *   1. 把"哪块屏 × 延时几秒 × 整屏还是框选"表达成可选条目；
  *   2. 开全屏透明遮罩层做区域框选（view: select）；
  *   3. 把结果交给剪贴板（图片本体）/ 系统查看器（打开、打开文件夹）；
- *   4. 用全局热键把"免开启动器直接整屏截图"接上（`svc.shortcut.*`）。
+ *   4. 用全局热键把"免开启动器直接区域框选"接上（`svc.shortcut.*`）。
  */
 import {
   getPluginContext,
@@ -32,8 +32,8 @@ const VIEW_SELECT = 'select';
 /** 标注视图（区域框选后画箭头/马赛克/文字） */
 const VIEW_ANNOTATE = 'annotate';
 
-/** 全局热键：不打开启动器，直接把光标所在屏幕存盘（manifest 需声明同值 shortcut: 权限） */
-const HOTKEY = 'alt+shift+s';
+/** 全局热键 id：具体 accel 由 manifest 声明、宿主注册（用户可在设置里改） */
+const HOTKEY_ID = 'capture';
 
 /** 实际注册成功的全局热键（供 `/hotkey` 速查表；注册失败则不收录） */
 const hotkeys: PluginHotkey[] = [];
@@ -131,6 +131,24 @@ function monitorLabel(list: MonitorInfo[], index: number): string {
  * （用户要的是"看到就粘"，而不是"拿到一个路径再去文件夹里找图"）。
  * 同时仍落盘，供"打开/打开文件夹"兜底。
  */
+async function openRegion(
+  monitor = -1,
+  delayMs = 0,
+  annotate = false,
+): Promise<AfterSelect> {
+  try {
+    await ctx.windows.open(VIEW_SELECT, {
+      monitor: String(monitor),
+      delayMs: String(delayMs),
+      ...(annotate ? { annotate: '1' } : {}),
+    });
+    // 遮罩层接管后续流程，主窗口必须关掉，否则遮罩层底图里会拍到启动器自己
+    return { close: true };
+  } catch (err) {
+    return { toast: `无法打开框选层：${messageOf(err)}` };
+  }
+}
+
 async function capture(target: number, delayMs: number): Promise<AfterSelect> {
   try {
     const shot = await ctx.screen.capture({ monitor: target, hideWindows: true, delayMs, toClipboard: true });
@@ -255,6 +273,21 @@ export const shotPlugin: CommandPlugin = {
       });
     }
 
+    try {
+      const stats = await ctx.call<{ count: number; bytes: number }>('svc.screen.stats', {});
+      const mb = (stats.bytes / 1024 / 1024).toFixed(1);
+      items.push({
+        id: `${PLUGIN_ID}:storage`,
+        title: `已保存 ${stats.count} 张截图`,
+        description: `占用 ${mb} MB · 最多 500 张 / 30 天，超出自动清理`,
+        icon: '💾',
+        badge: '存储',
+        kind: 'info',
+      });
+    } catch {
+      // 统计失败不影响截图主流程
+    }
+
     return { items, emptyText: '无可用截图选项' };
   },
 
@@ -267,19 +300,7 @@ export const shotPlugin: CommandPlugin = {
       const monitor = typeof meta.monitor === 'number' ? meta.monitor : -1;
       const delayMs = typeof meta.delayMs === 'number' ? meta.delayMs : 0;
       // 标注模式只是给遮罩层多传一个标志，由它决定截图后是收尾还是转标注层
-      const annotate = meta.annotate === true;
-      try {
-        await ctx.windows.open('select', {
-          monitor: String(monitor),
-          delayMs: String(delayMs),
-          ...(annotate ? { annotate: '1' } : {}),
-        });
-        // 遮罩层接管后续流程，这里必须关掉主窗口，
-        // 否则遮罩层底图里会拍到启动器自己
-        return { close: true };
-      } catch (err) {
-        return { toast: `无法打开框选层：${messageOf(err)}` };
-      }
+      return openRegion(monitor, delayMs, meta.annotate === true);
     }
 
     if (action === 'capture') {
@@ -310,52 +331,53 @@ export const shotPlugin: CommandPlugin = {
 };
 
 /**
- * 全局热键通道：注册 + 订阅。
+ * 全局热键：订阅 manifest 声明的 `capture`。
  *
- * `ctx.shortcuts.on` 默认只在主窗口生效（每个窗口加载都会跑一遍 setup，
- * 不区分的话打开任意视图窗口后热键会被执行两次）。
+ * 注册由宿主启动时完成（默认 alt+shift+s，用户可在设置里改）；
+ * 事件按 hotkeyId 路由，改键后不需要重新订阅。
  */
-async function setupHotkey(): Promise<void> {
+async function refreshHotkeyReport(): Promise<void> {
   try {
-    await ctx.shortcuts.register(HOTKEY);
-  } catch (err) {
-    ctx.log.warn(`全局热键 ${HOTKEY} 注册失败（可能被占用）：${messageOf(err)}`);
-    return;
+    const info = (await ctx.shortcuts.catalog()).find((h) => h.id === HOTKEY_ID);
+    hotkeys.length = 0;
+    if (info?.registered) {
+      hotkeys.push({
+        accel: info.accel,
+        description: '免开启动器整屏截图，图片直接进剪贴板',
+      });
+    } else {
+      ctx.log.warn(
+        `热键 ${info?.accel ?? 'alt+shift+s'} 未注册（可能被占用），可在“设置 → 快捷键”修改`,
+      );
+    }
+  } catch {
+    // 目录读取失败不影响截图本身
   }
+}
 
-  // 只在注册成功后收录，理由同/pick
-  hotkeys.length = 0;
-  hotkeys.push({ accel: HOTKEY, description: '免开启动器整屏截图，图片直接进剪贴板' });
-
-  await ctx.shortcuts.on(HOTKEY, () => {
+async function setupHotkey(): Promise<void> {
+  await ctx.shortcuts.onHotkey(HOTKEY_ID, () => {
     void (async () => {
+      // 热键直达区域框选：不再静默整屏存盘，用户按下后直接拖拽选范围。
+      // 先把主窗口收起来（热键可能在启动器可见时按下），再开全屏遮罩层；
+      // 启动器不可见时靠遮罩层自己截图，成功后由遮罩层处理剪贴板与通知。
       try {
-        // 图片本体进剪贴板：启动器不可见，用户看不到 toast，
-        // 粘贴一次成功才是唯一可靠的"成了"信号
-        const shot = await ctx.screen.capture({
-          monitor: -1,
-          hideWindows: true,
-          delayMs: 0,
-          toClipboard: true,
-        });
-        lastShot = { path: shot.path, width: shot.width, height: shot.height };
-        lastShotLoaded = true;
-        await ctx.settings.setJson('lastShot', lastShot);
-        if (!shot.clipboardImage) {
-          await ctx.clipboard.write(shot.path).catch(() => undefined);
-        }
-        // 启动器不可见，只能靠系统通知把结果交回用户
-        await ctx.notify.send(
-          '截图已保存',
-          shot.clipboardImage
-            ? `${shot.width}×${shot.height} · 图片已复制，可直接粘贴`
-            : `${shot.width}×${shot.height} · 路径已复制到剪贴板`,
-        );
-      } catch (err) {
-        await ctx.notify.send('截图失败', messageOf(err)).catch(() => undefined);
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        await getCurrentWindow().hide();
+      } catch {
+        // 隐藏失败不阻断框选；遮罩层截图时还会再隐藏一次应用窗口
+      }
+      const res = await openRegion(-1, 0);
+      if (res.toast) {
+        await ctx.notify.send('截图失败', res.toast).catch(() => undefined);
       }
     })();
   });
+
+  await refreshHotkeyReport();
+  void import('@tauri-apps/api/event')
+    .then(({ listen }) => listen('hotkey-changed', () => void refreshHotkeyReport()))
+    .catch(() => undefined);
 }
 
 export function setup(): void {

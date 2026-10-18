@@ -17,6 +17,7 @@ use ll_plugin_api::{PluginBackend, PluginContext, PluginManifest};
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::AppHandle;
 
@@ -73,6 +74,10 @@ pub struct HostState {
     pub(crate) db_registry: RwLock<Option<Arc<PluginDbRegistry>>>,
     pub(crate) core_db: RwLock<Option<Arc<Mutex<Connection>>>>,
     pub(crate) app: RwLock<Option<AppHandle>>,
+    /// 剪贴板监听是否允许继续（插件禁用/暂停时置 false；线程本身不销毁）
+    clip_watch_enabled: Arc<AtomicBool>,
+    /// 监听线程是否已启动，避免重复 spawn
+    clip_watch_started: AtomicBool,
 }
 
 impl HostState {
@@ -86,6 +91,61 @@ impl HostState {
 
     pub fn set_app(&self, app: AppHandle) {
         *self.app.write().unwrap() = Some(app);
+    }
+
+    /// 启动期热键注册所需：每个插件的启用状态与可用热键声明
+    pub fn hotkey_specs(&self) -> Vec<(String, bool, Vec<ll_plugin_api::HotkeySpec>)> {
+        let Ok(plugins) = self.plugins.read() else {
+            return Vec::new();
+        };
+        plugins
+            .values()
+            .map(|entry| {
+                let manifest = entry.backend.manifest();
+                let hotkeys = manifest.valid_hotkeys();
+                (manifest.id, entry.enabled, hotkeys)
+            })
+            .collect()
+    }
+
+    /// 启动后台剪贴板监听（仅 Windows；插件 `clip` 存在且启用时）
+    ///
+    /// 监听线程独立于 `svc_context`：即使插件前端没打开，复制内容也会入库；
+    /// 暂停开关实时读库，不需要重启线程。
+    pub fn start_clipboard_watcher(&self, app: AppHandle, log: LogFn) {
+        let enabled = self
+            .plugins
+            .read()
+            .map(|map| map.get("clip").is_some_and(|entry| entry.enabled))
+            .unwrap_or(false);
+        // 禁用状态下不常驻线程；重新启用时由 plugin_set_enabled 再调一次
+        if !enabled {
+            return;
+        }
+        if self.clip_watch_started.swap(true, Ordering::SeqCst) {
+            self.clip_watch_enabled.store(true, Ordering::Relaxed);
+            return;
+        }
+        let Some(registry) = self.db_registry.read().ok().and_then(|r| r.clone()) else {
+            self.clip_watch_started.store(false, Ordering::SeqCst);
+            return;
+        };
+        let Ok(conn) = registry.cached("clip") else {
+            self.clip_watch_started.store(false, Ordering::SeqCst);
+            return;
+        };
+        self.clip_watch_enabled.store(true, Ordering::Relaxed);
+        services::start_clipboard_watcher(
+            app,
+            conn,
+            log,
+            Arc::clone(&self.clip_watch_enabled),
+        );
+    }
+
+    /// 插件启用/禁用时同步监听开关：禁用插件立即停止采集，不必重启线程
+    pub fn set_clipboard_watcher_enabled(&self, enabled: bool) {
+        self.clip_watch_enabled.store(enabled, Ordering::Relaxed);
     }
 
     /// 关闭全部外部进程插件（kind=llp）的 sidecar 子进程
@@ -118,7 +178,10 @@ impl HostState {
         let m = backend.manifest();
         self.plugins.write().unwrap().insert(
             m.id.clone(),
-            PluginEntry { backend, enabled: true },
+            PluginEntry {
+                backend,
+                enabled: true,
+            },
         );
     }
 
@@ -159,8 +222,13 @@ impl HostState {
                 continue;
             }
 
-            // 插件专属数据库（声明 db 权限才注入；独立文件，物理隔离）
-            let plugin_conn = registry.as_ref().and_then(|r| r.cached(&id).ok());
+            // 插件专属数据库：db 权限，或剪贴板历史（历史表也落在这份连接里）。
+            // 其余插件不凭空建库，避免 plugins/<id>/ 下出现一堆空 DB。
+            let plugin_conn = if manifest_needs_plugin_db(&manifest) {
+                registry.as_ref().and_then(|r| r.cached(&id).ok())
+            } else {
+                None
+            };
             let ctx = build_context_from_parts(
                 self.app.read().unwrap().as_ref(),
                 &manifest,
@@ -196,6 +264,17 @@ fn read_enabled_flag(db: &Arc<Mutex<Connection>>, plugin_id: &str) -> bool {
     .unwrap_or(true)
 }
 
+/// 插件的运行期上下文是否需要打开插件库文件
+///
+/// `clipboard:history` 的历史表也落在这份连接里；只认 `db` 会让 `/clip`
+/// 在 `svc_context` 里拿到 None 句柄，被误报成“manifest 未声明权限”。
+fn manifest_needs_plugin_db(manifest: &PluginManifest) -> bool {
+    manifest
+        .permissions
+        .iter()
+        .any(|p| p == "db" || p == "clipboard:history")
+}
+
 pub(crate) fn build_context_from_parts(
     app: Option<&AppHandle>,
     manifest: &PluginManifest,
@@ -213,9 +292,17 @@ pub(crate) fn build_context_from_parts(
     // db 字段会 take 掉 plugin_conn；剪贴板历史也需要同一份连接，故先克隆一个 Arc
     let clip_conn = plugin_conn.clone();
 
+    // 热键目录与设置句柄共享：effective accel 要读用户覆盖，catalog 要回给 /hotkey
+    let hotkey_specs = manifest.valid_hotkeys();
+    let settings_api: Arc<dyn ll_plugin_api::SettingsApi> = Arc::new(services::HostSettingsApi {
+        db: Arc::clone(&core_db),
+        plugin_id: manifest.id.clone(),
+    });
+
     PluginContext {
         db: if granted("db") {
-            plugin_conn.map(|conn| Arc::new(services::CoreDbApi(conn)) as Arc<dyn ll_plugin_api::DbApi>)
+            plugin_conn
+                .map(|conn| Arc::new(services::CoreDbApi(conn)) as Arc<dyn ll_plugin_api::DbApi>)
         } else {
             None
         },
@@ -272,7 +359,8 @@ pub(crate) fn build_context_from_parts(
                         app: app.clone(),
                         can_write: true,
                         can_read: granted("clipboard:read"),
-                    }) as Arc<dyn ll_plugin_api::ClipboardApi>),
+                    })
+                        as Arc<dyn ll_plugin_api::ClipboardApi>),
                     false => None,
                 };
                 Some(Arc::new(services::HostScreenApi {
@@ -296,7 +384,10 @@ pub(crate) fn build_context_from_parts(
                 (false, Some(app)) => Some(Arc::new(services::HostShortcutApi {
                     app: Some(app.clone()),
                     plugin_id: manifest.id.clone(),
+                    plugin_name: manifest.name.clone(),
                     allowed,
+                    hotkeys: hotkey_specs,
+                    settings: Arc::clone(&settings_api),
                 })),
                 _ => None,
             }
@@ -306,7 +397,10 @@ pub(crate) fn build_context_from_parts(
         clipboard_history: match (granted("clipboard:history"), app, &clip_conn) {
             (true, Some(app), Some(conn)) => {
                 if let Err(e) = services::ensure_clip_schema(conn) {
-                    log(&manifest.id, &format!("clipboard history schema 初始化失败: {}", e));
+                    log(
+                        &manifest.id,
+                        &format!("clipboard history schema 初始化失败: {}", e),
+                    );
                     None
                 } else {
                     Some(Arc::new(services::HostClipboardHistoryApi {
@@ -323,10 +417,7 @@ pub(crate) fn build_context_from_parts(
             app: app.cloned(),
             plugin_id: manifest.id.clone(),
         }),
-        settings: Arc::new(services::HostSettingsApi {
-            db: Arc::clone(&core_db),
-            plugin_id: manifest.id.clone(),
-        }),
+        settings: settings_api,
         log: Arc::new(services::FnLog {
             f: log,
             plugin_id: manifest.id.clone(),
@@ -349,18 +440,15 @@ fn shell_safe_manifest(plugin_id: &str) -> PluginManifest {
         api_version: "^1".to_string(),
         trigger: String::new(),
         description: String::new(),
-        permissions: [
-            "settings",
-            "notifications",
-            "events",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect(),
+        permissions: ["settings", "notifications", "events"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         views: Vec::new(),
         settings: Vec::new(),
         backend: Default::default(),
         command: None,
+        hotkeys: Vec::new(),
     }
 }
 
@@ -386,8 +474,10 @@ impl HostState {
         }
         .unwrap_or_else(|| shell_safe_manifest(plugin_id));
 
-        // 仅在声明 db 权限时才触碰插件库文件（避免为无 db 权限的插件凭空建库）
-        let plugin_conn = if manifest.permissions.iter().any(|p| p == "db") {
+        // 仅在需要插件库的权限（db / clipboard:history）下触碰库文件，
+        // 避免为无 db 权限的插件凭空建库；否则剪贴板历史会拿到 None 句柄，
+        // 被误报成“manifest 未声明权限: clipboard:history”。
+        let plugin_conn = if manifest_needs_plugin_db(&manifest) {
             self.db_registry
                 .read()
                 .unwrap()

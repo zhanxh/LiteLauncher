@@ -3,23 +3,27 @@
 //! 这些实现是宿主侧的"系统调用层"：插件只看到 ll-plugin-api 的 trait，
 //! 窗口创建、SQL 白名单、设置前缀隔离等约束全部在此强制。
 
+use base64::Engine as _;
 use ll_plugin_api::{
     AppliedSize, CaptureRequest, CaptureResult, CapturedRegion, ClipEntry, ClipboardApi,
     ClipboardHistoryApi, ClipboardHistoryApiExt, ClipboardPolicy, DbApi, DesktopAttachResult,
-    EventApi, ExistingPolicy, HttpApi, HttpRequest, LogApi, MonitorInfo, MonitorSelector, NotifyApi,
-    PixelGrid, PixelSample, PluginContext, PluginError, PluginErrorCode, PluginManifest,
+    EventApi, ExistingPolicy, HttpApi, HttpRequest, LogApi, MonitorInfo, MonitorSelector,
+    NotifyApi, PixelGrid, PixelSample, PluginContext, PluginError, PluginErrorCode, PluginManifest,
     PopupPolicy, ProcessApi, Region, SavedImage, ScreenApi, SecretApi, SettingsApi, ShortcutApi,
     ViewSpec, WindowApi, WindowPosition, corner_origin, is_corner_position, label_matches_view,
     popup_policy, popup_rect_after_size, window_label,
 };
 use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
-use base64::Engine as _;
-use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
@@ -77,7 +81,10 @@ fn sql_to_json(v: SqlValue) -> JsonValue {
 
 impl DbApi for CoreDbApi {
     fn migrate(&self, statements: &[&str]) -> Result<(), PluginError> {
-        let conn = self.0.lock().map_err(|_| PluginError::db("数据库锁不可用"))?;
+        let conn = self
+            .0
+            .lock()
+            .map_err(|_| PluginError::db("数据库锁不可用"))?;
         for stmt in statements {
             conn.execute_batch(stmt)
                 .map_err(|e| PluginError::db(format!("migrate 失败: {}", e)))?;
@@ -87,7 +94,10 @@ impl DbApi for CoreDbApi {
 
     fn execute(&self, sql: &str, params: &[JsonValue]) -> Result<u64, PluginError> {
         check_sql_head(sql, &["insert", "update", "delete", "replace"])?;
-        let conn = self.0.lock().map_err(|_| PluginError::db("数据库锁不可用"))?;
+        let conn = self
+            .0
+            .lock()
+            .map_err(|_| PluginError::db("数据库锁不可用"))?;
         let vals: Vec<SqlValue> = params
             .iter()
             .map(json_to_sql)
@@ -100,15 +110,14 @@ impl DbApi for CoreDbApi {
 
     fn query(&self, sql: &str, params: &[JsonValue]) -> Result<Vec<JsonValue>, PluginError> {
         check_sql_head(sql, &["select", "with"])?;
-        let conn = self.0.lock().map_err(|_| PluginError::db("数据库锁不可用"))?;
+        let conn = self
+            .0
+            .lock()
+            .map_err(|_| PluginError::db("数据库锁不可用"))?;
         let mut stmt = conn
             .prepare(sql)
             .map_err(|e| PluginError::db(format!("prepare 失败: {}", e)))?;
-        let names: Vec<String> = stmt
-            .column_names()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
         let vals: Vec<SqlValue> = params
             .iter()
             .map(json_to_sql)
@@ -154,7 +163,10 @@ impl SettingsApi for HostSettingsApi {
     }
 
     fn set(&self, key: &str, value: &str) -> Result<(), PluginError> {
-        let conn = self.db.lock().map_err(|_| PluginError::db("数据库锁不可用"))?;
+        let conn = self
+            .db
+            .lock()
+            .map_err(|_| PluginError::db("数据库锁不可用"))?;
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -248,9 +260,7 @@ impl WindowApi for HostWindowApi {
             .views
             .iter()
             .find(|v| v.id == view_id)
-            .ok_or_else(|| {
-                PluginError::window(format!("manifest 未声明视图: {}", view_id))
-            })?
+            .ok_or_else(|| PluginError::window(format!("manifest 未声明视图: {}", view_id)))?
             .clone();
 
         let app = self.app.clone();
@@ -327,10 +337,8 @@ impl WindowApi for HostWindowApi {
     fn attach_desktop(&self, label: &str) -> Result<DesktopAttachResult, PluginError> {
         let app = self.app.clone();
         let label = label.to_string();
-        tauri::async_runtime::block_on(async move {
-            crate::desktop::attach_window(&app, &label)
-        })
-        .map_err(|e| PluginError::window(format!("挂载到桌面失败: {e}")))
+        tauri::async_runtime::block_on(async move { crate::desktop::attach_window(&app, &label) })
+            .map_err(|e| PluginError::window(format!("挂载到桌面失败: {e}")))
     }
 
     fn desktop_supported(&self) -> bool {
@@ -352,8 +360,7 @@ impl WindowApi for HostWindowApi {
 const POPUP_RECT_MEMORY_TTL_MS: u64 = 500;
 
 fn popup_rect_memory() -> &'static Mutex<HashMap<String, ((f64, f64, f64, f64), Instant)>> {
-    static MEM: OnceLock<Mutex<HashMap<String, ((f64, f64, f64, f64), Instant)>>> =
-        OnceLock::new();
+    static MEM: OnceLock<Mutex<HashMap<String, ((f64, f64, f64, f64), Instant)>>> = OnceLock::new();
     MEM.get_or_init(Default::default)
 }
 
@@ -418,7 +425,9 @@ fn reassert_position(app: AppHandle, label: String, x: f64, y: f64, w: f64, h: f
                 Ok(s) if s > 0.01 => s,
                 _ => return,
             };
-            let Ok(size) = window.inner_size() else { return };
+            let Ok(size) = window.inner_size() else {
+                return;
+            };
             let live_w = size.width as f64 / scale;
             let live_h = size.height as f64 / scale;
             // 尺寸还没落地 = 回放还没发生，现在补位置等于白发；已经落地且与请求一致，
@@ -426,7 +435,9 @@ fn reassert_position(app: AppHandle, label: String, x: f64, y: f64, w: f64, h: f
             if !same_size((0.0, 0.0, live_w, live_h), (0.0, 0.0, w, h)) {
                 return;
             }
-            let Ok(pos) = window.outer_position() else { return };
+            let Ok(pos) = window.outer_position() else {
+                return;
+            };
             if (pos.y as f64 / scale - y).abs() < 2.0 && (pos.x as f64 / scale - x).abs() < 2.0 {
                 return;
             }
@@ -511,9 +522,7 @@ fn apply_content_size(
         .flatten()
         .or(app.primary_monitor().ok().flatten())
         .ok_or_else(|| PluginError::window("拿不到显示器信息，无法夹取窗口尺寸"))?;
-    let mon = monitor
-        .size()
-        .to_logical::<f64>(monitor.scale_factor());
+    let mon = monitor.size().to_logical::<f64>(monitor.scale_factor());
 
     // 未启用 auto_height 的视图在上面已经被拒绝改高，这里把区间收成当前高度，
     // 于是"只改宽度"的那条路径不会意外动到高度。
@@ -523,9 +532,18 @@ fn apply_content_size(
             min_h: cur.3,
             max_h: cur.3,
         });
-    let want_w = width.unwrap_or(cur.2).max(spec.min_width.unwrap_or(1.0).max(1.0));
+    let want_w = width
+        .unwrap_or(cur.2)
+        .max(spec.min_width.unwrap_or(1.0).max(1.0));
     let want_h = height.unwrap_or(cur.3);
-    let (x, y, w, h) = popup_rect_after_size(spec.position, mon.width, mon.height, cur, (want_w, want_h), policy);
+    let (x, y, w, h) = popup_rect_after_size(
+        spec.position,
+        mon.width,
+        mon.height,
+        cur,
+        (want_w, want_h),
+        policy,
+    );
     // 被上限截断 = 内容装不下，视图该转而给自己开内部滚动
     let clamped = height.map(|req| req > h + 0.5).unwrap_or(false);
 
@@ -601,7 +619,12 @@ fn open_on_main(
     let unique_label = spec
         .unique_by
         .as_ref()
-        .and_then(|k| params.iter().find(|(pk, _)| pk == k).map(|(_, v)| v.clone()))
+        .and_then(|k| {
+            params
+                .iter()
+                .find(|(pk, _)| pk == k)
+                .map(|(_, v)| v.clone())
+        })
         .map(|v| sanitize_label(&v));
     let label = window_label(plugin_id, &spec.id, unique_label.as_deref());
 
@@ -625,7 +648,10 @@ fn open_on_main(
     // （wry 在 Windows 上把该 URL 重写为 http://ll-plugin.localhost/<path>，handler 侧会还原）
     let use_assets = spec.frontend.as_deref() == Some("assets");
     let mut url = if use_assets {
-        format!("ll-plugin://localhost/{}/index.html?view={}", plugin_id, spec.id)
+        format!(
+            "ll-plugin://localhost/{}/index.html?view={}",
+            plugin_id, spec.id
+        )
     } else {
         format!("index.html?view={}", spec.id)
     };
@@ -653,7 +679,9 @@ fn open_on_main(
             .filter(|label| label.starts_with(&prefix))
             .cloned()
             .collect();
-        prune_content_heights(|label| !label.starts_with(&prefix) || live.iter().any(|l| l == label));
+        prune_content_heights(|label| {
+            !label.starts_with(&prefix) || live.iter().any(|l| l == label)
+        });
         live.iter()
             .map(|label| {
                 // 还没上报过高度的窗口（同一批提醒里刚建出来的第二、三张）只能退回声明值：
@@ -681,7 +709,12 @@ fn open_on_main(
     let window_title = spec
         .title_param
         .as_ref()
-        .and_then(|k| params.iter().find(|(pk, _)| pk == k).map(|(_, v)| v.clone()))
+        .and_then(|k| {
+            params
+                .iter()
+                .find(|(pk, _)| pk == k)
+                .map(|(_, v)| v.clone())
+        })
         .map(|v| format!("{} - {}", spec.title, v))
         .unwrap_or_else(|| spec.title.clone());
 
@@ -697,8 +730,8 @@ fn open_on_main(
     };
     let mut builder = if use_assets {
         // 第三方资产页面：自定义协议导航（Windows 上 WebView2 以 http://ll-plugin.localhost 承载）
-        let parsed = tauri::Url::parse(&url)
-            .map_err(|e| format!("资产视图 URL 解析失败（{url}）: {e}"))?;
+        let parsed =
+            tauri::Url::parse(&url).map_err(|e| format!("资产视图 URL 解析失败（{url}）: {e}"))?;
         WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed))
     } else {
         WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
@@ -983,13 +1016,8 @@ fn reveal_in_file_manager(target: &std::path::Path) -> std::io::Result<()> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         // 通用 Linux 无统一“定位选中”协议：退而打开父目录
-        let dir = target
-            .parent()
-            .filter(|p| p.is_dir())
-            .unwrap_or(target);
-        std::process::Command::new("xdg-open")
-            .arg(dir)
-            .spawn()?;
+        let dir = target.parent().filter(|p| p.is_dir()).unwrap_or(target);
+        std::process::Command::new("xdg-open").arg(dir).spawn()?;
         Ok(())
     }
 }
@@ -1066,7 +1094,10 @@ fn spawn_app(clean_path: &str) -> std::io::Result<std::process::Child> {
 /// 回退 `gtk-launch <桌面项ID>`（要求位于标准 applications 目录）
 #[cfg(not(target_os = "windows"))]
 fn spawn_desktop_entry(path: &str) -> std::io::Result<std::process::Child> {
-    if let Ok(child) = std::process::Command::new("gio").args(["launch", path]).spawn() {
+    if let Ok(child) = std::process::Command::new("gio")
+        .args(["launch", path])
+        .spawn()
+    {
         return Ok(child);
     }
 
@@ -1088,9 +1119,117 @@ fn spawn_desktop_entry(path: &str) -> std::io::Result<std::process::Child> {
 // ─────────────────────────────────────────────────────────────────────────────
 // SecretApi —— 核心托管的密钥存储（secret.<pluginId>.<key> 命名空间，M7）
 //
-// MVP 存储：核心库 app_settings 的保留键空间（不进插件库、其他插件无法表达该
-// 前缀）；OS keyring（keyring crate）为后续升级路径，接口已按其语义收敛。
+// Windows 使用 DPAPI（当前用户作用域 + 键名 entropy）加密后写入 app_settings；
+// 旧明文在首次读取时就地重写为密文。Linux v1 仍为明文，接口保持可替换 keyring。
 // ─────────────────────────────────────────────────────────────────────────────
+
+const DPAPI_PREFIX: &str = "dpapi:v1:";
+
+#[cfg(windows)]
+fn secret_entropy(full_key: &str) -> Vec<u8> {
+    format!("LiteLauncher.secret.v1:{}", full_key).into_bytes()
+}
+
+#[cfg(windows)]
+fn protect_secret(plain: &str, full_key: &str) -> Option<String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
+    };
+
+    let mut data = plain.as_bytes().to_vec();
+    let mut entropy = secret_entropy(full_key);
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: data.len() as u32,
+        pbData: data.as_mut_ptr(),
+    };
+    let entropy_blob = CRYPT_INTEGER_BLOB {
+        cbData: entropy.len() as u32,
+        pbData: entropy.as_mut_ptr(),
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+    let ok = unsafe {
+        CryptProtectData(
+            &input,
+            std::ptr::null(),
+            &entropy_blob,
+            std::ptr::null(),
+            std::ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let encrypted =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
+    unsafe {
+        LocalFree(output.pbData as *mut core::ffi::c_void);
+    }
+    Some(format!(
+        "{}{}",
+        DPAPI_PREFIX,
+        base64::engine::general_purpose::STANDARD.encode(encrypted)
+    ))
+}
+
+#[cfg(windows)]
+fn unprotect_secret(encoded: &str, full_key: &str) -> Option<String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
+    };
+
+    let mut encrypted = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let mut entropy = secret_entropy(full_key);
+    let input = CRYPT_INTEGER_BLOB {
+        cbData: encrypted.len() as u32,
+        pbData: encrypted.as_mut_ptr(),
+    };
+    let entropy_blob = CRYPT_INTEGER_BLOB {
+        cbData: entropy.len() as u32,
+        pbData: entropy.as_mut_ptr(),
+    };
+    let mut output = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+    let ok = unsafe {
+        CryptUnprotectData(
+            &input,
+            std::ptr::null_mut(),
+            &entropy_blob,
+            std::ptr::null(),
+            std::ptr::null(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let plain = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
+    unsafe {
+        LocalFree(output.pbData as *mut core::ffi::c_void);
+    }
+    String::from_utf8(plain).ok()
+}
+
+#[cfg(not(windows))]
+fn protect_secret(plain: &str, _full_key: &str) -> Option<String> {
+    Some(plain.to_string())
+}
+
+#[cfg(not(windows))]
+fn unprotect_secret(_encoded: &str, _full_key: &str) -> Option<String> {
+    None
+}
 
 pub struct HostSecretApi {
     pub db: Arc<Mutex<rusqlite::Connection>>,
@@ -1105,28 +1244,57 @@ impl HostSecretApi {
 
 impl SecretApi for HostSecretApi {
     fn get(&self, key: &str) -> Option<String> {
-        let conn = self.db.lock().ok()?;
-        conn.query_row(
-            "SELECT value FROM app_settings WHERE key = ?1",
-            rusqlite::params![self.full_key(key)],
-            |row| row.get::<_, String>(0),
-        )
-        .ok()
+        let full_key = self.full_key(key);
+        let raw = {
+            let conn = self.db.lock().ok()?;
+            conn.query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                rusqlite::params![&full_key],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()?
+        };
+        if let Some(encoded) = raw.strip_prefix(DPAPI_PREFIX) {
+            // 换 Windows 用户/换机器后 DPAPI 解不开：返回空让插件提示重填，不崩溃
+            return unprotect_secret(encoded, &full_key);
+        }
+        // 旧明文：读取成功后惰性迁移为密文（只写成功才返回，写失败也不阻塞读取）
+        #[cfg(windows)]
+        {
+            if let Some(encrypted) = protect_secret(&raw, &full_key) {
+                if let Ok(conn) = self.db.lock() {
+                    let _ = conn.execute(
+                        "UPDATE app_settings SET value = ?1 WHERE key = ?2",
+                        rusqlite::params![encrypted, &full_key],
+                    );
+                }
+            }
+        }
+        Some(raw)
     }
 
     fn set(&self, key: &str, value: &str) -> Result<(), PluginError> {
-        let conn = self.db.lock().map_err(|_| PluginError::db("数据库锁不可用"))?;
+        let full_key = self.full_key(key);
+        let stored = protect_secret(value, &full_key)
+            .ok_or_else(|| PluginError::internal("密钥加密失败（DPAPI 不可用）"))?;
+        let conn = self
+            .db
+            .lock()
+            .map_err(|_| PluginError::db("数据库锁不可用"))?;
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            rusqlite::params![self.full_key(key), value],
+            rusqlite::params![full_key, stored],
         )
         .map_err(|e| PluginError::db(format!("写入密钥失败: {}", e)))?;
         Ok(())
     }
 
     fn delete(&self, key: &str) -> Result<(), PluginError> {
-        let conn = self.db.lock().map_err(|_| PluginError::db("数据库锁不可用"))?;
+        let conn = self
+            .db
+            .lock()
+            .map_err(|_| PluginError::db("数据库锁不可用"))?;
         conn.execute(
             "DELETE FROM app_settings WHERE key = ?1",
             rusqlite::params![self.full_key(key)],
@@ -1188,8 +1356,8 @@ fn net_allowed(allowed: &[String], host: &str) -> bool {
 }
 
 fn check_net(api: &HostHttpApi, url: &str) -> Result<(), PluginError> {
-    let host = url_host(url)
-        .ok_or_else(|| PluginError::bad_params(format!("无法解析 URL: {}", url)))?;
+    let host =
+        url_host(url).ok_or_else(|| PluginError::bad_params(format!("无法解析 URL: {}", url)))?;
     if net_allowed(&api.allowed_hosts, &host) {
         Ok(())
     } else {
@@ -1209,7 +1377,12 @@ fn build_ureq_request(
         "POST" => agent.post(&req.url),
         "PUT" => agent.put(&req.url),
         "DELETE" => agent.delete(&req.url),
-        other => return Err(PluginError::bad_params(format!("不支持的 HTTP 方法: {}", other))),
+        other => {
+            return Err(PluginError::bad_params(format!(
+                "不支持的 HTTP 方法: {}",
+                other
+            )));
+        }
     };
     for (k, v) in &req.headers {
         r = r.set(k, v);
@@ -1448,14 +1621,9 @@ impl HostScreenApi {
     }
 
     /// 定位包含全局坐标 (x, y) 的显示器
-    fn monitor_at(
-        monitors: &[xcap::Monitor],
-        x: i32,
-        y: i32,
-    ) -> Result<usize, PluginError> {
-        hit_rect(&monitor_rects(monitors), x, y).ok_or_else(|| {
-            PluginError::internal(format!("坐标 ({}, {}) 不在任何显示器内", x, y))
-        })
+    fn monitor_at(monitors: &[xcap::Monitor], x: i32, y: i32) -> Result<usize, PluginError> {
+        hit_rect(&monitor_rects(monitors), x, y)
+            .ok_or_else(|| PluginError::internal(format!("坐标 ({}, {}) 不在任何显示器内", x, y)))
     }
 
     /// 隐藏全部可见窗口，返回被隐藏的窗口以便复原
@@ -1491,11 +1659,10 @@ impl HostScreenApi {
         let r_y2 = region.y.saturating_add(region.height as i32);
 
         // 选区左上角所在屏：结果里回传，让插件能确认抓到的是哪块
-        let primary_idx = Self::monitor_at(monitors, region.x, region.y)
-            .unwrap_or_else(|_| {
-                // 左上角落在屏缝里（少见）时退到第一块，保证至少不 panic
-                0
-            });
+        let primary_idx = Self::monitor_at(monitors, region.x, region.y).unwrap_or_else(|_| {
+            // 左上角落在屏缝里（少见）时退到第一块，保证至少不 panic
+            0
+        });
 
         let mut canvas = image::RgbaImage::new(region.width, region.height);
 
@@ -1563,6 +1730,11 @@ impl HostScreenApi {
         image
             .save(&req.path)
             .map_err(|e| PluginError::internal(format!("保存截图失败: {}", e)))?;
+        // 截图目录有上限：每写一张就检查一次，连续截图也不会无限增长
+        let shot_root = default_screenshots_root();
+        if req.path.starts_with(&shot_root) {
+            prune_screenshots(&shot_root);
+        }
 
         // 图片本体直进剪贴板：截图工具的默认交付物（用户要的是"立刻粘"）。
         // 剪贴板不可用时**不视为失败**——图片已落盘，"打开/文件夹"仍可兜底。
@@ -1628,6 +1800,7 @@ impl HostScreenApi {
         decoded
             .save(&path)
             .map_err(|e| PluginError::internal(format!("保存图片失败: {}", e)))?;
+        prune_screenshots(&dir);
 
         // 剪贴板要的是 RGBA 像素（宿主侧统一格式），不是 PNG 字节
         let mut clipboard_image = false;
@@ -1775,7 +1948,12 @@ impl ScreenApi for HostScreenApi {
         let rows = (bottom - top).max(1) as u32;
 
         let image = monitor
-            .capture_region((left - mx).max(0) as u32, (top - my).max(0) as u32, cols, rows)
+            .capture_region(
+                (left - mx).max(0) as u32,
+                (top - my).max(0) as u32,
+                cols,
+                rows,
+            )
             .map_err(|e| PluginError::internal(format!("放大镜取样失败: {}", e)))?;
 
         let mut cells = Vec::with_capacity((cols * rows) as usize);
@@ -1810,12 +1988,7 @@ impl ScreenApi for HostScreenApi {
     }
 
     fn default_screenshot_dir(&self) -> std::path::PathBuf {
-        let mut dir = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        dir.push("LiteLauncher");
-        dir.push("plugins");
-        dir.push(&self.plugin_id);
-        dir.push("screenshots");
-        dir
+        default_screenshots_root()
     }
 
     fn read_png_data_url(&self, path: &str) -> Result<String, PluginError> {
@@ -1851,10 +2024,207 @@ impl ScreenApi for HostScreenApi {
 // `plugin-shortcut` 事件——插件（尤其纯前端形态）注册的是"听事件"，不是"收按键流"。
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 全局热键注册表：加速键 → 持有它的插件 id
-fn shortcut_registry() -> &'static Mutex<HashMap<String, String>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+/// 全局热键注册表：加速键 → 持有者
+fn shortcut_registry() -> &'static Mutex<HashMap<String, ShortcutOwner>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, ShortcutOwner>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 热键持有者：插件热键带 hotkey_id（manifest 声明的 id），宿主主热键为 None
+#[derive(Clone, Debug)]
+pub struct ShortcutOwner {
+    pub plugin_id: String,
+    pub hotkey_id: Option<String>,
+    /// 人类可读名称，冲突提示用（如「取色器 / 光标处取色」）
+    pub label: String,
+}
+
+impl ShortcutOwner {
+    pub fn is_owned_by(&self, plugin_id: &str, hotkey_id: Option<&str>) -> bool {
+        self.plugin_id == plugin_id && self.hotkey_id.as_deref() == hotkey_id
+    }
+}
+
+/// 占用仲裁：同 owner 幂等；不同 owner 返回现有占用者
+pub fn shortcut_claim(accel: &str, owner: ShortcutOwner) -> Result<(), ShortcutOwner> {
+    let key = normalize_accel(accel);
+    let Ok(mut registry) = shortcut_registry().lock() else {
+        return Err(owner);
+    };
+    match registry.get(&key) {
+        Some(existing) if existing.is_owned_by(&owner.plugin_id, owner.hotkey_id.as_deref()) => {
+            Ok(())
+        }
+        Some(existing) => Err(existing.clone()),
+        None => {
+            registry.insert(key, owner);
+            Ok(())
+        }
+    }
+}
+
+pub fn shortcut_release(accel: &str) {
+    let key = normalize_accel(accel);
+    if let Ok(mut registry) = shortcut_registry().lock() {
+        registry.remove(&key);
+    }
+}
+
+pub fn shortcut_owner(accel: &str) -> Option<ShortcutOwner> {
+    let key = normalize_accel(accel);
+    shortcut_registry()
+        .lock()
+        .ok()
+        .and_then(|registry| registry.get(&key).cloned())
+}
+
+/// 当前全部已登记热键（审计/设置页用）
+pub fn shortcut_all() -> Vec<(String, ShortcutOwner)> {
+    let Ok(registry) = shortcut_registry().lock() else {
+        return Vec::new();
+    };
+    let mut all: Vec<(String, ShortcutOwner)> = registry
+        .iter()
+        .map(|(key, owner)| (key.clone(), owner.clone()))
+        .collect();
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    all
+}
+
+/// 注册一个 manifest 声明的插件热键：仲裁 → 系统注册 → 按 hotkeyId 广播事件
+pub fn register_plugin_hotkey(
+    app: &AppHandle,
+    accel: &str,
+    plugin_id: &str,
+    hotkey_id: &str,
+    label: &str,
+) -> Result<(), PluginError> {
+    let key = normalize_accel(accel);
+    if key.is_empty() {
+        return Err(PluginError::bad_params("热键为空"));
+    }
+    let shortcut: Shortcut = key
+        .parse()
+        .map_err(|e| PluginError::bad_params(format!("无法解析加速键 {}: {}", key, e)))?;
+
+    // 同一 owner 已经注册过 → 幂等返回，避免重复挂系统回调
+    if let Some(existing) = shortcut_owner(&key) {
+        if existing.is_owned_by(plugin_id, Some(hotkey_id)) {
+            return Ok(());
+        }
+        return Err(PluginError::new(
+            PluginErrorCode::Conflict,
+            format!("{} 已被 {} 占用", key, existing.label),
+        ));
+    }
+
+    let owner = ShortcutOwner {
+        plugin_id: plugin_id.to_string(),
+        hotkey_id: Some(hotkey_id.to_string()),
+        label: label.to_string(),
+    };
+    if let Err(existing) = shortcut_claim(&key, owner) {
+        return Err(PluginError::new(
+            PluginErrorCode::Conflict,
+            format!("{} 已被 {} 占用", key, existing.label),
+        ));
+    }
+
+    let pid = plugin_id.to_string();
+    let hid = hotkey_id.to_string();
+    let emit_key = key.clone();
+    let handle = app.clone();
+    let registered = app
+        .global_shortcut()
+        .on_shortcut(shortcut, move |_app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                use tauri::Emitter;
+                let _ = handle.emit(
+                    "plugin-shortcut",
+                    json!({ "pluginId": pid, "hotkeyId": hid, "accel": emit_key }),
+                );
+            }
+        });
+    if let Err(e) = registered {
+        shortcut_release(&key);
+        return Err(PluginError::new(
+            PluginErrorCode::Conflict,
+            format!("注册全局热键 {} 失败（可能被其它程序占用）: {}", key, e),
+        ));
+    }
+    Ok(())
+}
+
+/// 注销插件热键（只注销确实归该插件/hotkeyId 所有的那个键）
+pub fn unregister_plugin_hotkey(app: &AppHandle, accel: &str, plugin_id: &str, hotkey_id: &str) {
+    let key = normalize_accel(accel);
+    let owned = shortcut_owner(&key)
+        .map(|owner| owner.is_owned_by(plugin_id, Some(hotkey_id)))
+        .unwrap_or(false);
+    if !owned {
+        return;
+    }
+    shortcut_release(&key);
+    if let Ok(shortcut) = key.parse::<Shortcut>() {
+        let _ = app.global_shortcut().unregister(shortcut);
+    }
+}
+
+/// 注册宿主主热键（owner 固定 core，按下时执行调用方给的闭包）
+pub fn register_core_shortcut<F>(app: &AppHandle, accel: &str, on_press: F) -> Result<(), String>
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    let key = normalize_accel(accel);
+    if key.is_empty() {
+        return Err("热键为空".to_string());
+    }
+    let shortcut: Shortcut = key
+        .parse()
+        .map_err(|e| format!("无法解析加速键 {}: {}", key, e))?;
+    if let Some(existing) = shortcut_owner(&key) {
+        if existing.is_owned_by("core", None) {
+            return Ok(());
+        }
+        return Err(format!("{} 已被 {} 占用", key, existing.label));
+    }
+    let owner = ShortcutOwner {
+        plugin_id: "core".to_string(),
+        hotkey_id: None,
+        label: "启动器".to_string(),
+    };
+    if let Err(existing) = shortcut_claim(&key, owner) {
+        return Err(format!("{} 已被 {} 占用", key, existing.label));
+    }
+    let registered = app
+        .global_shortcut()
+        .on_shortcut(shortcut, move |_app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                on_press();
+            }
+        });
+    if let Err(e) = registered {
+        shortcut_release(&key);
+        return Err(format!(
+            "注册全局热键 {} 失败（可能被其它程序占用）: {}",
+            key, e
+        ));
+    }
+    Ok(())
+}
+
+pub fn unregister_core_shortcut(app: &AppHandle, accel: &str) {
+    let key = normalize_accel(accel);
+    let owned = shortcut_owner(&key)
+        .map(|owner| owner.is_owned_by("core", None))
+        .unwrap_or(false);
+    if !owned {
+        return;
+    }
+    shortcut_release(&key);
+    if let Ok(shortcut) = key.parse::<Shortcut>() {
+        let _ = app.global_shortcut().unregister(shortcut);
+    }
 }
 
 /// 归一化加速键：去空白、小写、统一 `+` 分隔（"Alt + P" → "alt+p"）
@@ -1862,18 +2232,19 @@ fn shortcut_registry() -> &'static Mutex<HashMap<String, String>> {
 /// manifest 声明、插件调用与宿主仲裁三处都过这个函数，避免"声明了 alt+p
 /// 却用 Alt+P 注册"这类大小写差异导致的白名单失配。
 pub fn normalize_accel(raw: &str) -> String {
-    raw.split('+')
-        .map(|part| part.trim().to_ascii_lowercase())
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("+")
+    ll_plugin_api::normalize_accel(raw)
 }
 
 pub struct HostShortcutApi {
     pub app: Option<AppHandle>,
     pub plugin_id: String,
+    pub plugin_name: String,
     /// manifest 声明的加速键白名单（构造时已归一化）
     pub allowed: Vec<String>,
+    /// manifest 声明的热键目录（已过滤非法项）
+    pub hotkeys: Vec<ll_plugin_api::HotkeySpec>,
+    /// 读用户覆盖（`hotkey.<id>` / `hotkey.<id>.enabled`，宿主自动加 pluginId 前缀）
+    pub settings: Arc<dyn SettingsApi>,
 }
 
 impl HostShortcutApi {
@@ -1886,6 +2257,17 @@ impl HostShortcutApi {
                 key
             )))
         }
+    }
+
+    fn spec(&self, hotkey_id: &str) -> Option<&ll_plugin_api::HotkeySpec> {
+        self.hotkeys.iter().find(|spec| spec.id == hotkey_id)
+    }
+
+    fn is_enabled(&self, spec: &ll_plugin_api::HotkeySpec) -> bool {
+        self.settings
+            .get(&format!("hotkey.{}.enabled", spec.id))
+            .map(|v| v != "false")
+            .unwrap_or(spec.enabled)
     }
 }
 
@@ -1902,32 +2284,25 @@ impl ShortcutApi for HostShortcutApi {
             .as_ref()
             .ok_or_else(|| PluginError::internal("宿主窗口上下文未就绪"))?;
 
-        {
-            let mut registry = shortcut_registry()
-                .lock()
-                .map_err(|_| PluginError::internal("全局热键注册表锁不可用"))?;
-            match registry.get(&key) {
-                // 幂等：本插件重复注册直接成功，不重复挂系统回调
-                Some(owner) if owner == &self.plugin_id => return Ok(()),
-                Some(owner) => {
-                    return Err(PluginError::new(
-                        PluginErrorCode::Conflict,
-                        format!("全局热键 {} 已被插件 {} 占用", key, owner),
-                    ))
-                }
-                None => {
-                    registry.insert(key.clone(), self.plugin_id.clone());
-                }
-            }
+        // 兼容路径：老插件直接 register(accel)，没有 manifest hotkey id。
+        // owner 的 hotkey_id=None，事件里也不带 hotkeyId，on(accel) 仍能收到。
+        let owner = ShortcutOwner {
+            plugin_id: self.plugin_id.clone(),
+            hotkey_id: None,
+            label: self.plugin_name.clone(),
+        };
+        if let Err(existing) = shortcut_claim(&key, owner) {
+            return Err(PluginError::new(
+                PluginErrorCode::Conflict,
+                format!("全局热键 {} 已被 {} 占用", key, existing.label),
+            ));
         }
 
         let shortcut: Shortcut = match key.parse() {
             Ok(sc) => sc,
             Err(e) => {
                 // 解析失败要回滚登记，否则这个键会被永久占住
-                if let Ok(mut registry) = shortcut_registry().lock() {
-                    registry.remove(&key);
-                }
+                shortcut_release(&key);
                 return Err(PluginError::bad_params(format!(
                     "无法解析加速键 {}: {}",
                     accel, e
@@ -1938,24 +2313,21 @@ impl ShortcutApi for HostShortcutApi {
         let plugin_id = self.plugin_id.clone();
         let emit_key = key.clone();
         let handle = app.clone();
-        let registered = app.global_shortcut().on_shortcut(
-            shortcut,
-            move |_app, _shortcut, event| {
-                // 只认按下，避免"按下 + 抬起"触发两次
-                if event.state == ShortcutState::Pressed {
-                    use tauri::Emitter;
-                    let _ = handle.emit(
-                        "plugin-shortcut",
-                        json!({ "pluginId": plugin_id, "accel": emit_key }),
-                    );
-                }
-            },
-        );
+        let registered =
+            app.global_shortcut()
+                .on_shortcut(shortcut, move |_app, _shortcut, event| {
+                    // 只认按下，避免"按下 + 抬起"触发两次
+                    if event.state == ShortcutState::Pressed {
+                        use tauri::Emitter;
+                        let _ = handle.emit(
+                            "plugin-shortcut",
+                            json!({ "pluginId": plugin_id, "accel": emit_key }),
+                        );
+                    }
+                });
 
         if let Err(e) = registered {
-            if let Ok(mut registry) = shortcut_registry().lock() {
-                registry.remove(&key);
-            }
+            shortcut_release(&key);
             return Err(PluginError::new(
                 PluginErrorCode::Conflict,
                 format!("注册全局热键 {} 失败（可能被其它程序占用）: {}", key, e),
@@ -1970,19 +2342,11 @@ impl ShortcutApi for HostShortcutApi {
         if self.require_allowed(&key).is_err() {
             return Ok(());
         }
-        let owned = {
-            let mut registry = shortcut_registry()
-                .lock()
-                .map_err(|_| PluginError::internal("全局热键注册表锁不可用"))?;
-            match registry.get(&key) {
-                Some(owner) if owner == &self.plugin_id => {
-                    registry.remove(&key);
-                    true
-                }
-                _ => false,
-            }
-        };
+        let owned = shortcut_owner(&key)
+            .map(|owner| owner.is_owned_by(&self.plugin_id, None))
+            .unwrap_or(false);
         if owned {
+            shortcut_release(&key);
             if let (Some(app), Ok(shortcut)) = (self.app.as_ref(), key.parse::<Shortcut>()) {
                 let _ = app.global_shortcut().unregister(shortcut);
             }
@@ -1996,11 +2360,59 @@ impl ShortcutApi for HostShortcutApi {
         };
         let mut mine: Vec<String> = registry
             .iter()
-            .filter(|(_, owner)| *owner == &self.plugin_id)
+            .filter(|(_, owner)| owner.plugin_id == self.plugin_id)
             .map(|(key, _)| key.clone())
             .collect();
         mine.sort();
         mine
+    }
+
+    fn effective(&self, hotkey_id: &str) -> Result<String, PluginError> {
+        let spec = self
+            .spec(hotkey_id)
+            .ok_or_else(|| PluginError::bad_params(format!("未知热键 id: {}", hotkey_id)))?;
+        if !self.is_enabled(spec) {
+            return Err(PluginError::disabled());
+        }
+        let accel = self
+            .settings
+            .get(&format!("hotkey.{}", spec.id))
+            .unwrap_or_else(|| spec.default.clone());
+        let accel = normalize_accel(&accel);
+        if accel.is_empty() {
+            return Err(PluginError::bad_params(format!(
+                "热键 {} 还没有设置按键",
+                spec.label
+            )));
+        }
+        Ok(accel)
+    }
+
+    fn catalog(&self) -> Vec<ll_plugin_api::PluginHotkeyInfo> {
+        self.hotkeys
+            .iter()
+            .map(|spec| {
+                let accel = self
+                    .settings
+                    .get(&format!("hotkey.{}", spec.id))
+                    .map(|v| normalize_accel(&v))
+                    .unwrap_or_else(|| spec.default.clone());
+                let registered = !accel.is_empty()
+                    && shortcut_owner(&accel)
+                        .map(|owner| owner.is_owned_by(&self.plugin_id, Some(&spec.id)))
+                        .unwrap_or(false);
+                ll_plugin_api::PluginHotkeyInfo {
+                    id: spec.id.clone(),
+                    label: spec.label.clone(),
+                    description: spec.description.clone(),
+                    default: spec.default.clone(),
+                    accel,
+                    scope: spec.scope.clone(),
+                    enabled: self.is_enabled(spec),
+                    registered,
+                }
+            })
+            .collect()
     }
 }
 
@@ -2055,7 +2467,60 @@ fn to_json<T: serde::Serialize>(value: &T) -> Result<JsonValue, PluginError> {
     serde_json::to_value(value).map_err(|e| PluginError::internal(format!("序列化失败: {}", e)))
 }
 
-/// 截图默认文件名：`shot-<epoch毫秒>.png`（可排序、天然不重名）
+/// 截图统一落到 `%LOCALAPPDATA%\LiteLauncher\screenshots`：
+/// 不再散落在各插件目录，用户可以一处找到，清理策略也只管一个目录。
+pub fn default_screenshots_root() -> std::path::PathBuf {
+    let mut dir = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    dir.push("LiteLauncher");
+    dir.push("screenshots");
+    dir
+}
+
+const MAX_SCREENSHOTS: usize = 500;
+const SCREENSHOT_RETENTION_DAYS: u64 = 30;
+
+/// 清理截图：只动 `shot-*.png`，绝不删用户手动放进目录的其他图片。
+///
+/// 先按 30 天过期删，再按最多 500 张从旧到新删；返回清理后的 (张数, 字节数)。
+pub fn prune_screenshots(dir: &std::path::Path) -> (usize, u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    let now = std::time::SystemTime::now();
+    let mut shots: Vec<(std::path::PathBuf, std::time::SystemTime, u64)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !(name.starts_with("shot-") && name.ends_with(".png")) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(now);
+        // 30 天过期：先删，避免只按数量留下很旧的图
+        let too_old = now
+            .duration_since(modified)
+            .map(|age| age.as_secs() > SCREENSHOT_RETENTION_DAYS * 24 * 3600)
+            .unwrap_or(false);
+        if too_old {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        shots.push((path, modified, meta.len()));
+    }
+    shots.sort_by_key(|(_, modified, _)| *modified);
+    while shots.len() > MAX_SCREENSHOTS {
+        let (path, _, _) = shots.remove(0);
+        let _ = std::fs::remove_file(path);
+    }
+    let bytes = shots.iter().map(|(_, _, len)| *len).sum();
+    (shots.len(), bytes)
+}
+
 fn default_shot_name() -> String {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2067,10 +2532,9 @@ fn default_shot_name() -> String {
 // ─────────────────────────────────────────────────────────────────────────────
 // 剪贴板历史（P1 `/clip`）：本地 SQLite + 隐私优先策略
 //
-// 刻意**不引入后台监听线程**：宿主是 Tauri 进程，轮询剪贴板既费电又可能在
-// 无 GUI 会话下报错。改为"按需读取 + 变化时写入"——插件在用户唤起 `/clip`
-// 时拉一次当前剪贴板并入库。这样历史里只有**用户自己主动查看时**的内容，
-// 隐私暴露面反而比 Ditto 的持续监听更小。
+// 后台轮询线程每 800ms 读一次剪贴板，变化才写库；暂停开关实时生效。
+// 写入前先按来源进程黑名单（密码管理器等）与疑似凭据启发式过滤，
+// 宁可漏记也不把高危内容落盘。
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct HostClipboardHistoryApi {
@@ -2082,7 +2546,9 @@ pub struct HostClipboardHistoryApi {
 
 /// 建表（幂等）：用 user_version 判版本，避免每次启动都跑一遍 DDL
 pub(crate) fn ensure_clip_schema(conn: &Arc<Mutex<Connection>>) -> Result<(), PluginError> {
-    let c = conn.lock().map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
+    let c = conn
+        .lock()
+        .map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
     let ver: i64 = c
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap_or(0);
@@ -2099,7 +2565,37 @@ pub(crate) fn ensure_clip_schema(conn: &Arc<Mutex<Connection>>) -> Result<(), Pl
         c.execute_batch("PRAGMA user_version = 1")
             .map_err(|e| PluginError::db(format!("设置 user_version 失败: {}", e)))?;
     }
+    // v2：补来源进程，供隐私黑名单与"来源：xxx"展示
+    if ver < 2 {
+        if !table_has_column(&c, "clips", "source_app")? {
+            c.execute("ALTER TABLE clips ADD COLUMN source_app TEXT", [])
+                .map_err(|e| PluginError::db(format!("添加 source_app 失败: {}", e)))?;
+        }
+        c.execute_batch("PRAGMA user_version = 2")
+            .map_err(|e| PluginError::db(format!("设置 user_version=2 失败: {}", e)))?;
+    }
     Ok(())
+}
+
+fn table_has_column(c: &Connection, table: &str, column: &str) -> Result<bool, PluginError> {
+    let mut stmt = c
+        .prepare(&format!("PRAGMA table_info({})", table))
+        .map_err(|e| PluginError::db(format!("读取表结构失败: {}", e)))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|e| PluginError::db(format!("读取表结构失败: {}", e)))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| PluginError::db(format!("读取表结构失败: {}", e)))?
+    {
+        let name: String = row
+            .get(1)
+            .map_err(|e| PluginError::db(format!("读取列名失败: {}", e)))?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// 裁剪到 max_bytes（按字符边界，避免切坏 UTF-8）
@@ -2111,7 +2607,10 @@ fn truncate_by_bytes(text: &str, max_bytes: u32) -> (String, bool) {
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
-    (format!("{}\n…（已截断，原 {} 字节）", &text[..end], text.len()), true)
+    (
+        format!("{}\n…（已截断，原 {} 字节）", &text[..end], text.len()),
+        true,
+    )
 }
 
 /// 过期阈值（毫秒时间戳）
@@ -2124,6 +2623,123 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// 启动后台剪贴板监听（仅 Windows；Linux 保持按需快照，避免 X11 选区副作用）
+///
+/// 每 800ms 读一次剪贴板；内容没变时 `ingest_current` 只做一次“最新一条”比较，
+/// 不会写库。暂停开关直接读库里的 `__clip_watching`，切换后下一拍生效。
+#[cfg(windows)]
+pub fn start_clipboard_watcher(
+    app: AppHandle,
+    conn: Arc<Mutex<Connection>>,
+    log: LogFn,
+    enabled: Arc<AtomicBool>,
+) {
+    if let Err(e) = ensure_clip_schema(&conn) {
+        (log)("clip", &format!("剪贴板监听初始化失败: {}", e));
+        return;
+    }
+    let err_log = Arc::clone(&log);
+    let api = HostClipboardHistoryApi {
+        app,
+        conn,
+        policy: ll_plugin_api::default_clipboard_policy(),
+        log,
+    };
+    let spawned = std::thread::Builder::new()
+        .name("clip-watch".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                // 插件禁用/用户暂停都不采集；线程保持存活，恢复时无需重建
+                if !enabled.load(Ordering::Relaxed) || !api.is_watching() {
+                    continue;
+                }
+                if let Err(e) = api.ingest_current() {
+                    (api.log)("clip", &format!("监听写入失败: {}", e));
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        (err_log)("clip", &format!("剪贴板监听线程启动失败: {}", e));
+    }
+}
+
+#[cfg(not(windows))]
+pub fn start_clipboard_watcher(
+    _app: AppHandle,
+    _conn: Arc<Mutex<Connection>>,
+    _log: LogFn,
+    _enabled: Arc<AtomicBool>,
+) {
+}
+
+/// 当前剪贴板内容的来源进程（小写 exe 名）
+///
+/// 优先取“剪贴板所有者窗口”的进程，而不是前台窗口：用户复制后立刻切走时，
+/// 前台已经变了，剪贴板所有者仍然指向真正写入内容的程序——隐私过滤才准。
+#[cfg(windows)]
+fn clipboard_source_app() -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::DataExchange::GetClipboardOwner;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
+    };
+
+    unsafe fn process_name(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<String> {
+        if hwnd.is_null() {
+            return None;
+        }
+        let mut pid = 0u32;
+        unsafe {
+            GetWindowThreadProcessId(hwnd, &mut pid);
+        }
+        if pid == 0 {
+            return None;
+        }
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut size = buf.len() as u32;
+        let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) };
+        unsafe {
+            CloseHandle(handle);
+        }
+        if ok == 0 || size == 0 {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buf[..size as usize]);
+        path.rsplit(|c| c == '\\' || c == '/')
+            .next()
+            .map(|name| name.to_ascii_lowercase())
+    }
+
+    unsafe {
+        process_name(GetClipboardOwner()).or_else(|| process_name(GetForegroundWindow()))
+    }
+}
+
+#[cfg(not(windows))]
+fn clipboard_source_app() -> Option<String> {
+    None
+}
+
+/// 来源是否命中密码管理器/凭据工具黑名单（大小写不敏感的子串匹配）
+fn is_excluded_source(policy: &ClipboardPolicy, source: Option<&str>) -> bool {
+    let Some(source) = source else {
+        return false;
+    };
+    let lower = source.to_ascii_lowercase();
+    policy
+        .excluded_apps
+        .iter()
+        .any(|blocked| lower.contains(&blocked.to_ascii_lowercase()))
 }
 
 impl HostClipboardHistoryApi {
@@ -2144,9 +2760,24 @@ impl HostClipboardHistoryApi {
         if trimmed.is_empty() {
             return Ok(false);
         }
+        // 隐私底线：来源命中密码管理器/凭据工具名单时，整条不落盘
+        let source_app = clipboard_source_app();
+        if is_excluded_source(&self.policy, source_app.as_deref()) {
+            (self.log)(
+                "clip",
+                &format!(
+                    "跳过来源应用 {}（隐私名单），未写入历史",
+                    source_app.as_deref().unwrap_or("")
+                ),
+            );
+            return Ok(false);
+        }
         // 与最近一条相同则不重复记录（反复复制同一内容不刷屏）
         {
-            let c = self.conn.lock().map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
+            let c = self
+                .conn
+                .lock()
+                .map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
             let last: Option<String> = c
                 .query_row("SELECT text FROM clips ORDER BY id DESC LIMIT 1", [], |r| {
                     r.get(0)
@@ -2176,8 +2807,8 @@ impl HostClipboardHistoryApi {
                 .lock()
                 .map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
             c.execute(
-                "INSERT INTO clips (text, ts) VALUES (?1, ?2)",
-                rusqlite::params![stored, ts],
+                "INSERT INTO clips (text, ts, source_app) VALUES (?1, ?2, ?3)",
+                rusqlite::params![stored, ts, source_app],
             )
             .map_err(|e| PluginError::db(format!("写入失败: {}", e)))?;
             // 条数上限：超了删最旧的
@@ -2210,7 +2841,7 @@ impl HostClipboardHistoryApi {
         let lim = limit.clamp(1, 500) as i64;
         let mut stmt = c
             .prepare(
-                "SELECT id, text, ts FROM clips
+                "SELECT id, text, ts, source_app FROM clips
                  WHERE ts >= ?1 AND text LIKE ?2 ESCAPE '\\'
                  ORDER BY id DESC LIMIT ?3",
             )
@@ -2228,6 +2859,7 @@ impl HostClipboardHistoryApi {
                     id: r.get(0)?,
                     text: r.get(1)?,
                     ts: r.get(2)?,
+                    source_app: r.get(3)?,
                 })
             })
             .map_err(|e| PluginError::db(format!("查询失败: {}", e)))?;
@@ -2310,9 +2942,11 @@ impl ClipboardHistoryApi for HostClipboardHistoryApi {
                 .conn
                 .lock()
                 .map_err(|_| PluginError::db("剪贴板历史库锁失败"))?;
-            c.query_row("SELECT text FROM clips WHERE id = ?1", rusqlite::params![id], |r| {
-                r.get(0)
-            })
+            c.query_row(
+                "SELECT text FROM clips WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
             .map_err(|e| PluginError::db(format!("未找到该条目: {}", e)))?
         };
         self.app
@@ -2592,9 +3226,8 @@ pub fn dispatch_svc(
                 .windows
                 .as_ref()
                 .ok_or_else(|| PluginError::permission_denied("windows"))?;
-            let caller = caller.ok_or_else(|| {
-                PluginError::bad_params("setContentSize 只能由视图窗口自身调用")
-            })?;
+            let caller = caller
+                .ok_or_else(|| PluginError::bad_params("setContentSize 只能由视图窗口自身调用"))?;
             let width = params.get("width").and_then(|v| v.as_f64());
             let height = params.get("height").and_then(|v| v.as_f64());
             to_json(&windows.set_content_size(caller, width, height)?)
@@ -2615,8 +3248,8 @@ pub fn dispatch_svc(
                 .windows
                 .as_ref()
                 .ok_or_else(|| PluginError::permission_denied("windows"))?;
-            let label = p_str("label")
-                .ok_or_else(|| PluginError::bad_params("缺少 label（窗口标签）"))?;
+            let label =
+                p_str("label").ok_or_else(|| PluginError::bad_params("缺少 label（窗口标签）"))?;
             to_json(&windows.attach_desktop(&label)?)
         }
 
@@ -2697,6 +3330,20 @@ pub fn dispatch_svc(
             };
             to_json(&screen.capture(&req)?)
         }
+        // 截图目录统计：`/shot` 面板显示"已保存 N 张 / 占用 X MB"
+        "svc.screen.stats" => {
+            let screen = ctx
+                .screen
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("screen"))?;
+            let dir = screen.default_screenshot_dir();
+            let (count, bytes) = prune_screenshots(&dir);
+            Ok(json!({
+                "count": count,
+                "bytes": bytes,
+                "dir": dir.to_string_lossy(),
+            }))
+        }
         // 读回本插件截图目录里的 PNG（标注层铺底图用）。
         // 只放行**本插件截图目录**：这是"回看自己的产物"，不是通用文件读，
         // 越界一律按权限错误拒绝，绝不给插件开一条读任意本地文件的缝。
@@ -2715,8 +3362,8 @@ pub fn dispatch_svc(
                 .ok_or_else(|| PluginError::permission_denied("screen"))?;
             // 前端 Canvas 合成的图（截图标注等）。传base64 而非字节数组：
             // JSON 里字节数组会膨胀成上百万个数字，base64 只占 1.33 倍且解析更快。
-            let b64 = p_str("pngBase64")
-                .ok_or_else(|| PluginError::bad_params("缺少 pngBase64"))?;
+            let b64 =
+                p_str("pngBase64").ok_or_else(|| PluginError::bad_params("缺少 pngBase64"))?;
             let png = decode_base64(&b64)?;
             to_json(&screen.save_png(&png, p_bool("toClipboard"))?)
         }
@@ -2746,6 +3393,22 @@ pub fn dispatch_svc(
                 .as_ref()
                 .ok_or_else(|| PluginError::permission_denied("shortcut:<accel>"))?;
             Ok(json!(shortcuts.list()))
+        }
+        "svc.shortcut.catalog" => {
+            let shortcuts = ctx
+                .shortcuts
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("shortcut:<accel>"))?;
+            serde_json::to_value(shortcuts.catalog())
+                .map_err(|e| PluginError::internal(format!("热键目录序列化失败: {}", e)))
+        }
+        "svc.shortcut.effective" => {
+            let shortcuts = ctx
+                .shortcuts
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("shortcut:<accel>"))?;
+            let id = p_str("hotkeyId").ok_or_else(|| PluginError::bad_params("缺少 hotkeyId"))?;
+            Ok(json!({ "accel": shortcuts.effective(&id)? }))
         }
 
         // ── 剪贴板历史（P1 `/clip`，manifest 声明 clipboard:history）────────────
@@ -2801,9 +3464,7 @@ pub fn dispatch_svc(
 }
 
 /// 取剪贴板历史句柄；未声明 `clipboard:history` 权限时明确拒绝
-fn clip_history(
-    ctx: &PluginContext,
-) -> Result<&dyn ClipboardHistoryApiExt, PluginError> {
+fn clip_history(ctx: &PluginContext) -> Result<&dyn ClipboardHistoryApiExt, PluginError> {
     ctx.clipboard_history
         .as_deref()
         .ok_or_else(|| PluginError::permission_denied("clipboard:history"))
@@ -2816,10 +3477,12 @@ mod launch_policy_tests {
     #[test]
     fn url_with_query_ampersand_is_accepted() {
         // 回归：/qr 的图片链接带 &data=，曾被路径黑名单误杀
-        assert!(validate_url_target(
-            "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=www.baidu.com"
-        )
-        .is_ok());
+        assert!(
+            validate_url_target(
+                "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=www.baidu.com"
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -2886,13 +3549,16 @@ mod tests {
 
 #[cfg(test)]
 mod m7_service_tests {
-    use super::{net_allowed, url_host, HostSecretApi};
+    use super::{HostSecretApi, net_allowed, url_host};
+    #[cfg(windows)]
+    use super::DPAPI_PREFIX;
     use ll_plugin_api::SecretApi;
     use std::sync::{Arc, Mutex};
 
     fn secret_api() -> HostSecretApi {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+        conn.execute_batch("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .unwrap();
         HostSecretApi {
             db: Arc::new(Mutex::new(conn)),
             plugin_id: "ai".into(),
@@ -2910,6 +3576,53 @@ mod m7_service_tests {
     }
 
     #[test]
+    fn secrets_are_encrypted_and_legacy_plaintext_migrates_on_read() {
+        let api = secret_api();
+        api.set("api_key", "sk-secret-value").unwrap();
+
+        let raw = {
+            let conn = api.db.lock().unwrap();
+            conn.query_row(
+                "SELECT value FROM app_settings WHERE key = 'secret.ai.api_key'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        #[cfg(windows)]
+        {
+            assert!(raw.starts_with(DPAPI_PREFIX), "Windows 必须写 DPAPI 密文");
+            assert!(!raw.contains("sk-secret-value"), "SQLite 里不能出现明文 key");
+        }
+        #[cfg(not(windows))]
+        assert_eq!(raw, "sk-secret-value");
+
+        // 模拟旧版本遗留的明文：首次读取后应就地迁移
+        {
+            let conn = api.db.lock().unwrap();
+            conn.execute(
+                "UPDATE app_settings SET value = 'sk-legacy-plain' WHERE key = 'secret.ai.api_key'",
+                [],
+            )
+            .unwrap();
+        }
+        assert_eq!(api.get("api_key").as_deref(), Some("sk-legacy-plain"));
+        let migrated = {
+            let conn = api.db.lock().unwrap();
+            conn.query_row(
+                "SELECT value FROM app_settings WHERE key = 'secret.ai.api_key'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        #[cfg(windows)]
+        assert!(migrated.starts_with(DPAPI_PREFIX), "读取旧明文后应重写为密文");
+        #[cfg(not(windows))]
+        assert_eq!(migrated, "sk-legacy-plain");
+    }
+
+    #[test]
     fn secrets_isolated_between_plugins() {
         // 不同插件 id 的句柄看到的是不同命名空间（宿主强制前缀隔离）
         let ai = secret_api();
@@ -2921,9 +3634,18 @@ mod m7_service_tests {
 
     #[test]
     fn url_host_extraction() {
-        assert_eq!(url_host("https://api.openai.com/v1/chat/completions").as_deref(), Some("api.openai.com"));
-        assert_eq!(url_host("http://API.Example.com:8080/x").as_deref(), Some("api.example.com"));
-        assert_eq!(url_host("https://u:p@host.com/y").as_deref(), Some("host.com"));
+        assert_eq!(
+            url_host("https://api.openai.com/v1/chat/completions").as_deref(),
+            Some("api.openai.com")
+        );
+        assert_eq!(
+            url_host("http://API.Example.com:8080/x").as_deref(),
+            Some("api.example.com")
+        );
+        assert_eq!(
+            url_host("https://u:p@host.com/y").as_deref(),
+            Some("host.com")
+        );
         assert!(url_host("not a url").is_none());
     }
 
@@ -2940,8 +3662,10 @@ mod m7_service_tests {
 
 #[cfg(test)]
 mod d_group_tests {
-    use super::{baseline_rect, hit_rect, normalize_accel, HostShortcutApi};
-    use ll_plugin_api::{PluginErrorCode, ShortcutApi};
+    use super::{HostSettingsApi, HostShortcutApi, baseline_rect, hit_rect, normalize_accel};
+    use ll_plugin_api::{PluginErrorCode, SettingsApi, ShortcutApi};
+    use rusqlite::Connection;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn accel_normalization_is_case_insensitive() {
@@ -2968,10 +3692,17 @@ mod d_group_tests {
 
     #[test]
     fn shortcut_registration_requires_manifest_declaration() {
+        let core = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
         let api = HostShortcutApi {
             app: None,
             plugin_id: "shot".into(),
+            plugin_name: "屏幕截图".into(),
             allowed: vec!["alt+shift+s".into()],
+            hotkeys: Vec::new(),
+            settings: Arc::new(HostSettingsApi {
+                db: core,
+                plugin_id: "shot".into(),
+            }) as Arc<dyn SettingsApi>,
         };
         // 未声明的加速键 → 权限错误（且先于宿主句柄校验，无 GUI 也能报准）
         let err = api.register("alt+p").unwrap_err();
@@ -2989,10 +3720,7 @@ mod d_group_tests {
     fn baseline_uses_requested_rect_while_resize_in_flight() {
         let prev = (2258.0, 16.0, 286.0, 88.0); // 我们刚请求过 286 宽
         // live 还是上一帧的宽度 → 位置同样没更新，用 live 推锚边必漂
-        assert_eq!(
-            baseline_rect(Some(prev), (2238.0, 16.0, 306.0, 88.0)),
-            prev
-        );
+        assert_eq!(baseline_rect(Some(prev), (2238.0, 16.0, 306.0, 88.0)), prev);
         // 亚像素取整不算"还在路上"
         assert_eq!(
             baseline_rect(Some(prev), (2258.4, 16.0, 286.4, 88.4)),
@@ -3008,5 +3736,82 @@ mod d_group_tests {
         assert_eq!(baseline_rect(Some(prev), dragged), dragged);
         // 没有历史（第一次调用 / 窗口刚重建 / TTL 过期）→ 实时矩形
         assert_eq!(baseline_rect(None, dragged), dragged);
+    }
+}
+
+#[cfg(test)]
+mod clip_schema_tests {
+    use super::*;
+
+    #[test]
+    fn schema_adds_source_app_and_bumps_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE clips (
+                 id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                 text TEXT NOT NULL,
+                 ts   INTEGER NOT NULL
+             );
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+        let conn = Arc::new(Mutex::new(conn));
+        ensure_clip_schema(&conn).unwrap();
+
+        let c = conn.lock().unwrap();
+        let ver: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ver, 2);
+        let mut stmt = c.prepare("PRAGMA table_info(clips)").unwrap();
+        let names: Vec<String> = stmt
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(names.iter().any(|n| n == "source_app"));
+    }
+
+    #[test]
+    fn password_manager_sources_are_excluded_case_insensitively() {
+        let policy = ll_plugin_api::default_clipboard_policy();
+        assert!(is_excluded_source(&policy, Some("KeePassXC.exe")));
+        assert!(is_excluded_source(&policy, Some("1Password.exe")));
+        assert!(!is_excluded_source(&policy, Some("Code.exe")));
+        assert!(!is_excluded_source(&policy, None));
+    }
+}
+
+#[cfg(test)]
+mod screenshot_cleanup_tests {
+    use super::prune_screenshots;
+
+    #[test]
+    fn caps_at_500_and_only_touches_shot_pngs() {
+        let dir = std::env::temp_dir().join(format!(
+            "ll-shot-cleanup-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..505 {
+            std::fs::write(dir.join(format!("shot-{i:04}.png")), b"png").unwrap();
+        }
+        std::fs::write(dir.join("keep-me.txt"), b"user file").unwrap();
+
+        let (count, bytes) = prune_screenshots(&dir);
+        assert_eq!(count, 500);
+        assert_eq!(bytes, 500 * 3);
+        assert!(dir.join("keep-me.txt").exists(), "非 shot-*.png 不能被删");
+
+        let remaining = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("shot-"))
+            .count();
+        assert_eq!(remaining, 500);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

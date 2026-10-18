@@ -65,6 +65,246 @@ const normTime = (t: string) => {
   return `${pad(Number(h))}:${pad(Number(m))}`;
 };
 
+// ── 自然语言时间（WP-09）───────────────────────────────────────────────────
+//
+// 只做"开头一小段"的保守解析：日期/星期/时段/时刻/时长；剩余文本原样当标题。
+// 显式 DSL 永远优先（parseCalArgs 只在没有任何 DSL 时间时才调用本函数），
+// 引号内的标题由 quotedArgs 保护，不参与解析。
+
+export interface NaturalTimeResult {
+  startAt: string;
+  endAt: string;
+  allDay: boolean;
+  title: string;
+}
+
+const CN_DIGITS: Record<string, number> = {
+  零: 0,
+  '〇': 0,
+  一: 1,
+  二: 2,
+  两: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+};
+
+/** 中文数字 → 整数（支持 1–99：三、十、十一、二十三；纯阿拉伯数字原样） */
+function cnNumber(raw: string): number | null {
+  const s = raw.replace(/[两]/g, '二').replace(/[〇]/g, '零').replace(/\s+/g, '');
+  if (!s) return null;
+  if (/^\d+$/.test(s)) return Number(s);
+  let total = 0;
+  let section = 0;
+  let saw = false;
+  for (const char of s) {
+    if (char in CN_DIGITS) {
+      section = CN_DIGITS[char];
+      saw = true;
+    } else if (char === '十') {
+      total += (section || 1) * 10;
+      section = 0;
+      saw = true;
+    } else if (char === '百') {
+      total += (section || 1) * 100;
+      section = 0;
+      saw = true;
+    } else {
+      return null;
+    }
+  }
+  return saw ? total + section : null;
+}
+
+const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const fmtDay = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const fmtMinute = (d: Date) => `${fmtDay(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+interface NaturalDate {
+  date: Date;
+  length: number;
+  /** 星期类日期：没有显式"下周"时，时刻已过要顺延一周而不是当天 */
+  weekday: boolean;
+  /** 用户是否写了 今天/明天/本周/下周 这类显式限定 */
+  explicit: boolean;
+}
+
+const WEEKDAY_NUM: Record<string, number> = {
+  一: 1,
+  二: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  日: 7,
+  天: 7,
+  '1': 1,
+  '2': 2,
+  '3': 3,
+  '4': 4,
+  '5': 5,
+  '6': 6,
+  '7': 7,
+};
+
+function matchNaturalDate(text: string, now: Date): NaturalDate | null {
+  const rel = /^(今天|明天|后天|大后天)/.exec(text);
+  if (rel) {
+    const REL_OFFSET: Record<string, number> = { 今天: 0, 明天: 1, 后天: 2, 大后天: 3 };
+    const offset = REL_OFFSET[rel[1]] ?? 0;
+    const date = dayStart(now);
+    date.setDate(date.getDate() + offset);
+    return { date, length: rel[0].length, weekday: false, explicit: true };
+  }
+
+  const week = /^(下下|下|本)?(?:周|星期)([一二三四五六日天1-7])/.exec(text);
+  if (!week) return null;
+  const prefix = week[1] ?? '';
+  const target = WEEKDAY_NUM[week[2]];
+  if (!target) return null;
+  const current = ((now.getDay() + 6) % 7) + 1; // 周一=1 … 周日=7
+  const monday = dayStart(now);
+  monday.setDate(monday.getDate() - (current - 1));
+  let date: Date;
+  if (prefix === '下') {
+    // "下周一" = 下一周的周一；"下下周一" 再顺延一周
+    date = dayStart(monday);
+    date.setDate(date.getDate() + 7 + (target - 1));
+  } else if (prefix === '下下') {
+    date = dayStart(monday);
+    date.setDate(date.getDate() + 14 + (target - 1));
+  } else if (prefix === '本') {
+    date = dayStart(monday);
+    date.setDate(date.getDate() + (target - 1));
+  } else {
+    // 不带前缀：取"最近的将来"（今天就是当天则留在今天）
+    const delta = (target - current + 7) % 7;
+    date = dayStart(now);
+    date.setDate(date.getDate() + delta);
+  }
+  return { date, length: week[0].length, weekday: true, explicit: Boolean(prefix) };
+}
+
+const NATURAL_PERIOD_RE = /^(凌晨|早上|上午|中午|下午|傍晚|晚上|夜里)/;
+const NATURAL_TIME_RE =
+  /^(?:(\d{1,2})|([零〇一二两三四五六七八九十]{1,3}))\s*(?:[:：点时])\s*(?:(半|一刻|三刻)|(?:(\d{1,2})|([零〇一二两三四五六七八九十]{1,3}))\s*(分)?)?/;
+
+function adjustHour(hour: number, period: string): number {
+  if (!period) return hour;
+  if (period === '下午' || period === '傍晚') return hour < 12 ? hour + 12 : hour;
+  if (period === '晚上') return hour === 12 ? 0 : hour < 12 ? hour + 12 : hour;
+  if (period === '夜里') return hour === 12 ? 0 : hour < 12 ? hour + 12 : hour;
+  if (period === '中午') return hour < 11 ? hour + 12 : hour;
+  if (period === '凌晨') return hour === 12 ? 0 : hour;
+  return hour;
+}
+
+const NATURAL_DURATION_RE =
+  /\s*(一个半小时|半\s*小时|(?:\d{1,3}|[零〇一二两三四五六七八九十]{1,3})\s*(?:小时|钟头|分钟|分))\s*$/;
+
+function durationMinutes(raw: string): number | null {
+  const text = raw.replace(/\s+/g, '');
+  if (text === '一个半小时') return 90;
+  if (text === '半小时') return 30;
+  const m = /^(.+?)(小时|钟头|分钟|分)$/.exec(text);
+  if (!m) return null;
+  const n = cnNumber(m[1]);
+  if (n === null || n <= 0) return null;
+  const minutes = m[2] === '小时' || m[2] === '钟头' ? n * 60 : n;
+  return minutes > 24 * 60 ? null : minutes;
+}
+
+/**
+ * 解析输入开头的自然语言时间，剩余部分作为标题。
+ *
+ * 解析失败返回 null（调用方保留整串标题，并在胶囊里显示"未识别时间"），
+ * 绝不抛错、绝不猜一个用户没说过的时间。
+ */
+export function parseNaturalTime(text: string, now: Date = new Date()): NaturalTimeResult | null {
+  let rest = text.trim();
+  if (!rest) return null;
+
+  let dateInfo: NaturalDate | null = null;
+  const dateMatch = matchNaturalDate(rest, now);
+  if (dateMatch) {
+    dateInfo = dateMatch;
+    rest = rest.slice(dateMatch.length).trimStart();
+  }
+
+  let period = '';
+  const periodMatch = NATURAL_PERIOD_RE.exec(rest);
+  if (periodMatch) {
+    period = periodMatch[1];
+    rest = rest.slice(periodMatch[0].length).trimStart();
+  }
+
+  const timeMatch = NATURAL_TIME_RE.exec(rest);
+  if (!timeMatch) {
+    // 只有日期没有时刻 = 全天；写了"下午"却没给钟点则不猜，交回标题
+    if (!dateInfo || period) return null;
+    const title = rest.replace(/^[\s,，。;；:：、-]+/, '').trim();
+    if (!title) return null;
+    const day = fmtDay(dateInfo.date);
+    return { startAt: day, endAt: day, allDay: true, title };
+  }
+
+  const hourRaw = timeMatch[1] ?? timeMatch[2] ?? '';
+  const unit = timeMatch[3] ?? '';
+  const minuteRaw = timeMatch[4] ?? timeMatch[5] ?? '';
+  const hour = cnNumber(hourRaw);
+  let minute = minuteRaw ? cnNumber(minuteRaw) : 0;
+  if (minute === null) minute = 0;
+  if (unit === '半') minute = 30;
+  if (unit === '一刻') minute = 15;
+  if (unit === '三刻') minute = 45;
+  if (hour === null || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+  rest = rest.slice(timeMatch[0].length).trimStart();
+
+  // 时长允许放在标题末尾（"9点半 站会 30分钟"），从尾部吃而不是从开头
+  let duration: number | null = null;
+  const durationMatch = NATURAL_DURATION_RE.exec(rest);
+  if (durationMatch) {
+    duration = durationMinutes(durationMatch[1]);
+    if (duration !== null) {
+      rest = rest.slice(0, durationMatch.index).trimEnd();
+    }
+  }
+
+  const title = rest.replace(/^[\s,，。;；:：、-]+/, '').trim();
+  if (!title) return null;
+
+  const adjustedHour = adjustHour(hour, period);
+  const base = dateInfo ? dayStart(dateInfo.date) : dayStart(now);
+  const start = new Date(
+    base.getFullYear(),
+    base.getMonth(),
+    base.getDate(),
+    adjustedHour,
+    minute,
+  );
+
+  // 只有时刻：今天已过 → 明天（沿用现有 DSL 规则）
+  if (!dateInfo && start.getTime() <= now.getTime()) {
+    start.setDate(start.getDate() + 1);
+  }
+  // 星期类日期且没写"本周/下周"：时刻已过 → 顺延一周，而不是落在过去
+  if (dateInfo?.weekday && !dateInfo.explicit && start.getTime() <= now.getTime()) {
+    start.setDate(start.getDate() + 7);
+  }
+
+  const startAt = fmtMinute(start);
+  let endAt = '';
+  if (duration !== null) {
+    endAt = fmtMinute(new Date(start.getTime() + duration * 60_000));
+  }
+  return { startAt, endAt, allDay: false, title };
+}
+
 /** `--al 10,30` → [10,30]；非法项丢掉而不是报错，用户手滑打个空格不该整条指令失败 */
 function parseAlarms(raw: string): number[] {
   const out: number[] = [];
@@ -83,7 +323,11 @@ function takeValue(tokens: string[], i: number): string {
   return next;
 }
 
-export function parseCalArgs(tokens: string[], today: Date = new Date()): CalDraft {
+export function parseCalArgs(
+  tokens: string[],
+  today: Date = new Date(),
+  quoted?: boolean[],
+): CalDraft {
   const draft: CalDraft = {
     title: '',
     startAt: '',
@@ -97,6 +341,7 @@ export function parseCalArgs(tokens: string[], today: Date = new Date()): CalDra
     repeatRule: '',
   };
   const words: string[] = [];
+  const wordQuoted: boolean[] = [];
   // 日期与时间分开出现时（`10-15 14:00`）才需要它；一旦拼上就按带日期的绝对时间处理
   let datePart = '';
   let alarmsGiven = false;
@@ -207,9 +452,21 @@ export function parseCalArgs(tokens: string[], today: Date = new Date()): CalDra
     }
 
     words.push(arg);
+    wordQuoted.push(quoted?.[i] ?? false);
   }
 
   draft.title = words.join(' ').trim();
+  // 自然语言兜底：只在没有任何 DSL 时间、且标题首词不是引号包裹时尝试。
+  // 引号标题必须原样保留（`/cal new "明天下午三点开会"` 不应被吃掉）。
+  if (!draft.startAt && !draft.allDay && !datePart && words.length > 0 && !wordQuoted[0]) {
+    const natural = parseNaturalTime(draft.title, today);
+    if (natural) {
+      draft.title = natural.title;
+      draft.startAt = natural.startAt;
+      draft.endAt = natural.endAt;
+      draft.allDay = natural.allDay;
+    }
+  }
   // 只给了日期没给钟点 → 用户要的是"那一天"，不是 00:00 的一小时定时
   if (datePart && !draft.startAt) {
     draft.allDay = true;

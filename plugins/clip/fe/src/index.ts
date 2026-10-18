@@ -29,6 +29,8 @@ interface ClipEntry {
   id: number;
   text: string;
   ts: number;
+  /** 来源进程 exe 名（旧数据可能为空） */
+  source_app?: string | null;
 }
 
 /** 宿主返回的隐私策略 */
@@ -52,9 +54,8 @@ function messageOf(err: unknown): string {
 
 /** 拉历史；带关键词则搜索 */
 async function loadEntries(keyword: string, limit = 50): Promise<ClipEntry[]> {
-  // 无关键词时先把"当前剪贴板"过一遍隐私策略入库——用户复制的东西才看得到。
-  // 带关键词时**不 ingest**：搜索是对已有历史的检索，不该顺手把当前剪贴板
-  // 塞进结果里（否则搜 "kubectl" 却先看到刚复制的那条，语义上很怪）。
+  // 后台监听（Windows）已经持续入库；这里补一次当前剪贴板，作为
+  // “监听未启动/非 Windows 平台”的兜底——重复内容会被宿主去重。
   if (!keyword) {
     await ctx.call('svc.clipboard.history.ingest', {});
   }
@@ -73,6 +74,7 @@ async function policyLine(): Promise<string> {
       `最多 ${p.max_entries} 条`,
       `${p.retention_days} 天过期`,
       p.detect_secrets ? '疑似凭据不记录' : '',
+      p.excluded_apps?.length ? '密码管理器不入库' : '',
     ].filter(Boolean);
     return `数据只存本机 · ${bits.join(' · ')}`;
   } catch {
@@ -113,7 +115,7 @@ export const clipPlugin: CommandPlugin = {
     }
     items.push({
       id: `${PLUGIN_ID}:policy`,
-      title: watching ? '监听中：打开 /clip 时记录当前剪贴板' : '已暂停：不再记录新的复制',
+      title: watching ? '监听中：后台记录本机复制内容' : '已暂停：不再记录新的复制',
       description: await policyLine(),
       icon: watching ? '🔒' : '⏸️',
       badge: watching ? '隐私' : '已暂停',
@@ -135,6 +137,7 @@ export const clipPlugin: CommandPlugin = {
         description: entries.length > 0 ? `命中 ${entries.length} 条` : '无命中',
         icon: '🔍',
         badge: '搜索',
+        kind: 'info',
         metadata: { action: 'none' },
       });
     }
@@ -143,9 +146,10 @@ export const clipPlugin: CommandPlugin = {
       items.push({
         id: `${PLUGIN_ID}:e${e.id}`,
         title: preview(e.text),
-        description: `${relativeTime(e.ts)} · ${sizeHint(e.text)}${isMultiline(e.text) ? ' · 多行' : ''}`,
+        description: `${relativeTime(e.ts)} · ${sizeHint(e.text)}${isMultiline(e.text) ? ' · 多行' : ''}${e.source_app ? ` · ${e.source_app.replace(/\.exe$/i, '')}` : ''}`,
         icon: '📄',
         badge: `id ${e.id}`,
+        actions: [{ id: 'copy-only', label: '仅复制，不关窗', accel: 'ctrl+enter' }],
         // value 走壳层通用 copy 契约：回车即回填剪贴板
         metadata: { action: 'recall', id: e.id, value: e.text },
       });
@@ -155,9 +159,10 @@ export const clipPlugin: CommandPlugin = {
       items.push({
         id: `${PLUGIN_ID}:empty`,
         title: keyword ? `没有匹配「${keyword}」的历史` : '还没有可回填的历史',
-        description: '复制一段文本后再次打开本指令即可看到',
+        description: '复制任意文本后回来即可找回；数据只存本机，可随时暂停',
         icon: '💡',
         badge: '空',
+        kind: 'info',
         metadata: { action: 'none' },
       });
     }
@@ -166,7 +171,7 @@ export const clipPlugin: CommandPlugin = {
     return { items, emptyText: note || '没有可回填的剪贴板历史' };
   },
 
-  async onSelect(item: PanelItem): Promise<AfterSelect> {
+  async onSelect(item: PanelItem, actionId?: string): Promise<AfterSelect> {
     const meta = item.metadata ?? {};
     const action = String(meta.action ?? '');
 
@@ -174,6 +179,13 @@ export const clipPlugin: CommandPlugin = {
       const id = Number(meta.id);
       try {
         await ctx.call('svc.clipboard.history.recall', { id });
+        if (actionId === 'copy-only') {
+          // 只回填、不关窗：连续取多条时不必反复打开 /clip
+          return {
+            copy: String(meta.value ?? ''),
+            toast: '已复制（面板保持打开）',
+          };
+        }
         // 同时回传 copy：宿主 recall 已写入剪贴板，但壳层的通用 copy 走的是
         // 原生命令且在窗口隐藏的**同一帧内**执行，比插件 await 后再写更稳
         // （插件侧那次写入可能撞上 webview 失焦被拒）。两者不冲突，幂等。

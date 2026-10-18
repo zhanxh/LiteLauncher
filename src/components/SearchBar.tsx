@@ -6,7 +6,8 @@ interface SearchBarProps {
   prefixIcon?: string;
   hasContent: boolean;
   onInput: (val: string) => void;
-  onEnter: () => void;
+  /** 回车时带上修饰键：壳层据此匹配 PanelItem.actions 的 accel */
+  onEnter: (mods: { ctrl: boolean; shift: boolean; alt: boolean }) => void;
   onArrowDown: () => void;
   onArrowUp: () => void;
   onEscape: () => void;
@@ -83,7 +84,8 @@ export const SearchBar: Component<SearchBarProps> = (props) => {
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      props.onEnter();
+      if (e.isComposing) return; // 输入法组合中不触发，避免选词回车误执行
+      props.onEnter({ ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey });
     } else if (e.key === 'Escape') {
       e.preventDefault();
       props.onEscape();

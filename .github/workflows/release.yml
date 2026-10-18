@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            . -> src-tauri/target-ship
+            plugins/apps/be -> target
+            plugins/find/be -> target
+            plugins/sysinfo/be -> target
+            plugins/todo/be -> target
+            plugins/notes/be -> target
+            plugins/ai/be -> target
+            plugins/pomo/be -> target
+
+      - run: npm ci
+      - run: npm run version:check
+
+      - name: 校验 tag 与 package 版本一致
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $pkg = (Get-Content package.json | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $tag -ne $pkg) {
+            throw "tag ${{ github.ref_name }} 与 package.json $pkg 不一致"
+          }
+          Write-Host "release version=$pkg"
+
+      - name: 配置更新源（owner/repo/pubkey）
+        shell: pwsh
+        env:
+          TAURI_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          if (-not $env:TAURI_UPDATER_PUBKEY) {
+            throw "缺少仓库 Variable TAURI_UPDATER_PUBKEY（tauri signer generate 的公钥）"
+          }
+          node tools/release-config.mjs --owner ${{ github.repository_owner }} --repo ${{ github.event.repository.name }}
+
+      - name: 构建安装包（NSIS + updater artifacts）
+        shell: cmd
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: build.cmd ship
+
+      - name: 生成 latest.json
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          node tools/make-latest-json.mjs `
+            --repo "${{ github.repository }}" `
+            --version $version `
+            --bundle-dir src-tauri/target-ship/release/bundle/nsis `
+            --out latest.json
+        shell: pwsh
+
+      - name: 打包便携插件目录
+        shell: pwsh
+        run: Compress-Archive -Path release/plugins -DestinationPath release/plugins.zip -Force
+
+      - name: 发布 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: LiteLauncher ${{ github.ref_name }}
+          body_path: CHANGELOG.md
+          files: |
+            release/LiteLauncher.exe
+            release/plugins.zip
+            latest.json
+            src-tauri/target-ship/release/bundle/nsis/*.exe
+            src-tauri/target-ship/release/bundle/nsis/*.sig
+            src-tauri/target-ship/release/bundle/nsis/*.nsis.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

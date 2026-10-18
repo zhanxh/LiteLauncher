@@ -2,6 +2,8 @@
 
 > **基于 Tauri 2 + SolidJS + SQLite (FTS5) 的下一代生产力启动器（Launcher）**
 > **核心理念：** Command-First, Window-as-Context, Plugin-Driven
+>
+> 文档入口：[docs/README.md](docs/README.md)（状态以 `CHANGELOG.md` 与代码为准）
 
 ---
 
@@ -31,9 +33,12 @@ flowchart TD
 
 | 快捷键 | 作用范围 | 功能说明 |
 | :--- | :--- | :--- |
-| **`Alt + Space`** | 全局 | 唤起 / 隐藏 LiteLauncher 主搜索框 |
-| **`Alt + X`** | 全局 | 备选热键（系统 Alt+Space 被占用时的容错方案） |
+| **`Alt + Space`** | 全局 | 唤起 / 隐藏 LiteLauncher 主搜索框（可在设置 → 快捷键改键） |
+| **`Alt + X`** | 全局 | 主热键注册失败时的自动回退键 |
+| **`Alt + Shift + S`** | 全局 | 免开启动器直接拖拽框选区域截图（可在设置 → 快捷键改键） |
 | **`Enter` (回车)** | 主搜索框 | 执行即时命令 / 补全候选指令 / 选择当前高亮项 |
+| **`Ctrl + Enter`** | 结果面板 | 结果项声明时执行次级动作（如打开所在文件夹） |
+| **`Shift + Enter`** | 结果面板 | 结果项声明时执行次级动作（如复制路径） |
 | **`Esc`** | 主搜索框 | 若有文本优先清空；文本为空时隐藏主窗口 |
 | **`Esc`** | 笔记编辑器 | 关闭编辑器窗口 |
 | **`↑ / ↓`** | 结果面板 | 在列表项之间快速切换选择高亮 |
@@ -45,9 +50,11 @@ flowchart TD
 ## 🚀 指令系统
 
 ### 1. 应用启动 (`/app`)
-- **Query 模式**：输入 `/app` 或 `/app [关键字]` 过滤系统应用，敲击回车直接唤起程序并自动隐藏启动器。
+- **Query 模式**：输入 `/app` 或 `/app [关键字]` 过滤应用，敲击回车直接唤起程序并自动隐藏启动器。
 - **Action 模式**：输入 `/app add "应用名称" "可执行路径"`，实时预览胶囊，回车持久化保存至捷径库。
-- **拼音简写**：支持直接输入 `jsq`（计算器）、`jsb`（记事本）智能推荐。
+- **自动收录**：首次启动后台扫描开始菜单与桌面，已装应用无需手动添加；`/app rescan` 可强制重扫。
+- **中文检索**：支持全拼与首字母——`wx` 命中微信、`vsc` 命中 Visual Studio Code；启动次数越多排得越前。
+- **手动优先**：`/app add` 添加的条目永不被扫描覆盖；裸命令种子在同名系统快捷方式出现时自动升级为真实路径。
 
 ### 2. 日程管理 (`/cal`)
 - **日程窗口 (`/cal app`)**：960×720 独立窗口，**月 / 周 / 日三视图**；左侧按分类日历勾选过滤，顶部一次 `query_range` 拉取当前区间的全部实例（含重复展开）。
@@ -57,6 +64,7 @@ flowchart TD
 - **Action 即时添加**：
   - `/cal new "需求评审" 10-15 14:00-15:30` → 指定日期 + 区间。
   - `/cal new "周报" 2026-10-12` → 只给日期即为**全天事项**（不占时间轴格子）。
+  - `/cal new 明天下午三点 项目评审` → 自然语言时间兜底（明天/后天/周几/下周几、上午/下午/晚上、3点半/15:30、1小时/半小时）；显式时间语法优先，引号内标题不参与解析。
   - `14:30` 简写按今天理解，该时刻已过则顺延至明天；`M-D` 省略年份时过期的日子按明年理解。
   - 修饰参数：`--al 10,30`（多条提醒，提前分钟数）、`--al none`（显式关闭）、`--where 会议室`、`--note 备注`、`--cal 工作`（分类）、`--all-day`、`--free` / `--busy`（忙闲）。未知 `--flag` 静默忽略，裸词一律留作标题。
   - 实时语义胶囊回显解析结果（`🗓 10-15 14:00–15:30 · 📍会议室 · ⏰ -30min/-10min · 🔁 每周`），回车写入 SQLite；保存后若与既有日程重叠会附带提示。
@@ -190,8 +198,10 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 
 | 指令 | 名称 | 说明 |
 | :--- | :--- | :--- |
-| `/shot` | 屏幕截图 | 回车截取光标所在屏幕（截前自动隐藏 LiteLauncher）、`/shot 2` 指定显示器、`/shot -d3` 延时 3 秒；完成后路径进剪贴板，面板出现「用系统查看器打开 / 打开所在文件夹 / 复制路径」。**全局热键 `alt+shift+s`** 免开启动器直接截图，结果以系统通知反馈 |
+| `/shot` | 屏幕截图 | 回车区域框选（推荐）或整屏截图（截前自动隐藏 LiteLauncher）、`/shot 2` 指定显示器、`/shot -d3` 延时 3 秒；完成后图片进剪贴板，面板出现「用系统查看器打开 / 打开所在文件夹 / 复制路径」。**全局热键 `alt+shift+s`** 免开启动器直达区域框选 |
 | `/pick` | 取色器 | **全局热键 `alt+p`** 取光标处像素 → HEX 进剪贴板 + 通知；`/pick` 另有「取光标处颜色」「打开浮动取色台」「最近取色（HEX/RGB/HSL 可切换复制）」「清空历史」。取色台是声明式视图窗口：放大镜实时跟随鼠标，**鼠标移入面板即冻结**（否则会采到面板自己的颜色），点按钮复制 |
+
+截图统一保存到 `%LOCALAPPDATA%\LiteLauncher\screenshots`；最多 500 张或 30 天，超出自动清理，只删 `shot-*.png`，不会碰你手动放进目录的其他图片。
 
 > **全局热键协议**：manifest 以 `shortcut:<accel>` 逐条声明（无通配），宿主登记并**仲裁冲突**（同一加速键先到先得），触发时广播 `plugin-shortcut` 事件，插件用 `ctx.shortcuts.on(accel, cb)` 接收——插件拿不到原始按键流。`on()` 默认只在**主窗口**生效（每次窗口加载都会跑一遍全部插件的 `setup`，不区分就会重复触发）；取色台这类需要在视图窗口内响应热键的场景显式传 `{ scope: 'any' }`。
 
@@ -208,22 +218,29 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 > 宿主按**当前平台后缀**挑一个（`ll-plugin-api::native_lib_suffix`），`integrity` 由构建脚本
 > 回填为本平台那份产物的 hash。`/find` 在 Windows 上走 Everything，在 Linux 上走 plocate（见下）。
 
-**外部插件（LLP/1，Python sidecar）· 10 个**
+**纯前端内置（原 Python 迁移）· 5 个**
 
-*算法密集或依赖 Python 标准库的仍走 LLP*：
+*这些指令现在随前端包分发，干净 Windows 无需 Python 即可用：*
 
 | 指令 | 名称 | 说明 |
 | :--- | :--- | :--- |
 | `/hash` | 哈希与编码 | md5/sha1/sha256/sha512/base64/url/html/crc32；`/hash md5 文本` 或 `/hash 文本` |
 | `/cron` | Cron 解析 | 5 段表达式 → 人类可读描述 + 未来 5 次触发时间 |
 | `/cidr` | 网段计算 | 网络/广播/掩码/可用范围/主机数，支持 IPv6 与子网拆分 |
+| `/pwd` | 密码生成器 | `/pwd 24`、`easy`、`nosym`；含 PIN 与记忆短语（Web Crypto） |
+| `/time` | 世界时钟 | 主要城市时间与时差（Intl 时区数据） |
+
+**外部插件（LLP/1，Python sidecar）· 5 个**
+
+*有状态或依赖 Python 标准库的仍走 LLP*：
+
+| 指令 | 名称 | 说明 |
+| :--- | :--- | :--- |
 | `/bookmark` | 书签收藏 | `add "标题" URL` / `del 序号`；回车在浏览器打开 |
 | `/snip` | 文本片段 | 常用短语存取，回车即复制 |
-| `/pwd` | 密码生成器 | `/pwd 24`、`easy`、`nosym`；含 PIN 与记忆短语 |
 | `/cost` | 快速记账 | `add 25 午餐`；今日/本月合计与分类汇总 |
 | `/memo` | 备忘速记 | 速记与检索 |
 | `/cheat` | 命令速查 | 内置 git/docker/k8s 等常用命令，可增删 |
-| `/time` | 世界时钟 | 主要城市时间与时差 |
 
 > **`/find` 依赖系统索引**：Windows 用 Everything（插件目录自带 `bin/Everything64.dll`，索引库由
 > Everything 本体维护，没装/没运行时会直接给安装引导）；Linux 用 plocate，**装索引前基本不可用**：
@@ -242,6 +259,16 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 > 所有"回车复制"依赖壳层的通用 `AfterSelect.copy` 能力（工具类插件的标准交互），落点为**宿主原生剪贴板**（`clipboard_write`），而非 webview 的 `navigator.clipboard`——后者在窗口即将隐藏时会被浏览器策略拒绝。
 
 ### 安装与卸载
+
+Windows 安装包：
+
+```bat
+build.cmd ship
+```
+
+产物在 `src-tauri\target-ship\release\bundle\nsis\`，插件会随包安装到
+`$INSTDIR\plugins`。便携版仍可直接用 `release\LiteLauncher.exe` + `release\plugins\`。
+签名、更新源与自动更新配置见 [docs/distribution.md](docs/distribution.md)。
 
 ```bash
 # 安装全部外部插件到用户目录（~/.local/share/LiteLauncher/extplugins/）
@@ -371,7 +398,7 @@ build.cmd ship
 - **`.deb` 里只有主程序**，外部插件不在包内：装完把 `release/plugins/` 放到 `~/.local/share/LiteLauncher/extplugins/`（两级部署见 `src-tauri/src/lib.rs:194`）。Python 类插件（pomo 等）还要求目标机 PATH 上有 `python3`（`src-tauri/crates/ll-host/src/python.rs:161`）。
 
 ### 4. 排障日志
-- `lifecycle.log`：生成在 exe 同目录，记录窗口事件、IPC 调用与前端 console 转发，排障首选。
+- `lifecycle.log`：生成在 exe 同目录。默认 `info`（启动/迁移/插件 init/热键），`LL_LOG=debug` 才记录窗口尺寸、焦点、IPC 与前端 console；`LL_LOG=off` 全关。超过 2 MB 时启动自动轮转为 `lifecycle.log.1`（只保留一份）。
 
 ---
 

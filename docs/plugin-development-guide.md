@@ -691,7 +691,9 @@ LLP 是**独立分发的可执行 sidecar**（与 native 并列的外部形态�
 > ⚠️ **本章的代码示例以 `sysinfo` 为例，但它在 M6（2026-10-18）已迁成 native 动态库**
 > （同样迁走的还有 `/find`；两者见 [native-plugin-guide.md](./native-plugin-guide.md) §9）。
 > 行文中的目录/清单写法仍然是 LLP 的准确规格，拿来上手时请换成仓库里**现拼在跑**的 LLP 插件：
-> `plugins/snip`（120 行，settings + 剪贴板）、`plugins/hash`（纯计算）、`plugins/bookmark`（带 undo 的 CRUD）。
+> `plugins/snip`（120 行，settings + 剪贴板）、`plugins/bookmark`（带 undo 的 CRUD）、
+> `plugins/cheat`（带内置数据的检索）。`hash/cron/cidr/time/pwd` 已在 WP-15 迁为纯前端，
+> 可作为"从 LLP 迁走"的对照样例（`plugins/<id>/fe/src`）。
 
 ### 9.1 形态与安装
 
@@ -990,7 +992,10 @@ npm run plugin:test:fe     # Node 内直跑插件逻辑（转译 TS + 桩化壳�
 3. 新增 `fe/package.json`（`"llplugin": true`），删除 sidecar 脚本；
 4. `npm run gen && npx tsc --noEmit && npm run plugin:test:fe`。
 
-**边界判断**：算法密集、依赖 Python 标准库（`hashlib`/`ipaddress`）、或依赖系统命令的实现，**留在 LLP 更省事**——例如 `/hash`（WebCrypto 无 MD5）、`/cidr`、`/cron`。
+**边界判断**：算法密集、依赖 Python 标准库（`hashlib`/`ipaddress`）、或依赖系统命令的实现，
+**未必都要迁**；但如果 Web Crypto / Intl / BigInt 能覆盖，迁纯前端可以让干净 Windows 用户
+不用装 Python。WP-15 已迁 `/hash`（手写 MD5）、`/cron`、`/cidr`、`/time`、`/pwd`；
+有状态/持久化的 `/bookmark`、`/snip`、`/memo`、`/cost`、`/cheat` 仍留 LLP。
 
 ### 11.8 native 动态库形态（DLL/SO）
 

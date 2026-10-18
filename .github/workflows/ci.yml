@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+# 并发取消：同一分支连续 push 时只保留最新一次，节省 CI 时间
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Windows 是主目标平台：Rust 单测 + 插件单测 + 前端构建全跑
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            plugins/apps/be -> target
+            plugins/find/be -> target
+            plugins/sysinfo/be -> target
+            plugins/todo/be -> target
+            plugins/notes/be -> target
+            plugins/ai/be -> target
+            plugins/pomo/be -> target
+
+      - run: npm ci
+      - run: npm run gen
+      - run: npm run version:check
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+      - name: Rust 单测（workspace）
+        run: cargo test --workspace
+
+      - name: native 插件业务单测
+        shell: pwsh
+        run: |
+          $manifests = Get-ChildItem plugins -Directory |
+            ForEach-Object { Join-Path $_.FullName 'be\Cargo.toml' } |
+            Where-Object { Test-Path $_ }
+          foreach ($m in $manifests) {
+            Write-Host "==> cargo test --manifest-path $m"
+            cargo test --manifest-path $m
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: 前端插件逻辑测试
+        run: npm run plugin:test:fe
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: LLP 插件冒烟测试
+        run: npm run plugin:test
+
+  # Linux 只跑前端与纯逻辑：Tauri 的系统依赖（webkit/gtk）不适合在 CI 里装一遍
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run gen
+      - run: npm run version:check
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npm run plugin:test:fe

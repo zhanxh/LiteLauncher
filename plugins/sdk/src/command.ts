@@ -14,6 +14,11 @@ export interface ParsedInput {
   subcommand?: string;
   /** 参数列表（自动保留引号内的完整字符串） */
   args: string[];
+  /**
+   * 与 `args` 一一对应：该项是否来自引号包裹。
+   * 语法解析器用它保护"引号内的标题不被当成时间/关键词"。
+   */
+  quotedArgs?: boolean[];
   /** 识别出的命名参数或时间属性等键值对 */
   namedArgs: Record<string, string>;
   /** 是否匹配为 Action 即时执行命令 */
@@ -58,6 +63,18 @@ export interface AfterSelect {
 }
 
 /**
+ * 结果项的次级动作（壳层按 accel 绑定按键并在 footer 提示）
+ *
+ * 插件只声明"能做什么"，按键映射与幂等提示由壳层统一处理；
+ * 老插件不声明 actions 时行为完全不变（只有主动作）。
+ */
+export interface PanelAction {
+  id: string;
+  label: string;
+  accel?: 'ctrl+enter' | 'shift+enter' | 'alt+enter';
+}
+
+/**
  * Query 模式下面板渲染项
  */
 export interface PanelItem {
@@ -67,6 +84,18 @@ export interface PanelItem {
   category?: string;
   icon?: string;
   badge?: string;
+  /**
+   * 分组标题：连续同组条目共享一个小标题（空状态用「常用应用 / 最近使用 / 推荐指令」）。
+   * 只影响展示与高度，不改变键盘顺序。
+   */
+  group?: string;
+  /** 次级动作；无声明时只有主动作 */
+  actions?: PanelAction[];
+  /**
+   * `action`（默认，可执行）| `info`（说明项，键盘导航跳过）。
+   * 说明项从可导航序列里剔除，避免"按了回车没反应"的死条目。
+   */
+  kind?: 'action' | 'info';
   metadata?: Record<string, any>;
 }
 
@@ -76,6 +105,8 @@ export interface PanelItem {
 export interface PanelData {
   items: PanelItem[];
   emptyText?: string;
+  /** 查询失败时的用户可读原因；壳层会渲染错误态与「重试」，优先于空态 */
+  error?: string;
 }
 
 /**
@@ -87,10 +118,16 @@ export interface SearchProvider {
   id: string;
   /** 排序优先级：越小越靠前（核心历史推荐固定为 0） */
   priority: number;
+  /**
+   * 空输入时是否参与聚合：
+   * 声明后壳层在输入框为空时调用 `search('')`，用于「常用应用」这类
+   * 无需关键词就能给出的入口；普通 provider 不声明，避免空状态被噪声塞满。
+   */
+  searchOnEmpty?: boolean;
   /** 检索结果（失败应自行吞错返回空数组，避免拖垮聚合） */
   search(raw: string): Promise<PanelItem[]>;
   /** 用户选中本 provider 产出的条目后的行为 */
-  onSelect?(item: PanelItem): Promise<AfterSelect | void>;
+  onSelect?(item: PanelItem, actionId?: string): Promise<AfterSelect | void>;
 }
 
 /**
@@ -204,5 +241,5 @@ export interface CommandPlugin {
    * 用户在面板中敲击回车或点击某项后的回调
    * 返回 AfterSelect 声明壳层后续行为（关窗/清空/提示/刷新）
    */
-  onSelect?(item: PanelItem): Promise<AfterSelect | void>;
+  onSelect?(item: PanelItem, actionId?: string): Promise<AfterSelect | void>;
 }

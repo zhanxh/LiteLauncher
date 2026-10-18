@@ -149,6 +149,11 @@ if (( SHIP )); then
 else
     echo "[2/4] 构建主程序（Tauri release，含内置插件）..."
 fi
+# tauri.conf.json 的 bundle.resources 会把 release/plugins 打进安装包，
+# 所以必须先部署插件再执行 bundler。
+echo "[1.8/4] 部署外部插件到 release/plugins/..."
+node tools/deploy-portable-plugins.mjs
+
 # ship = 正式发布包：顺手打 .deb，让目标机用 apt 补运行库。
 # 日常构建保持 --no-bundle（快，且不碰网络）。目标只有 deb：rpm 要装 rpmbuild，
 # appimage 要从 GitHub 下 linuxdeploy，两者都不适合放进构建默认路径。
@@ -163,10 +168,7 @@ echo "[3/4] 拷贝主程序到 release/LiteLauncher..."
 mkdir -p release
 cp -f "$BIN" release/LiteLauncher
 
-echo "[4/4] 部署外部插件到 release/plugins/..."
-node tools/deploy-portable-plugins.mjs
-
-echo "构建完成。可分发内容："
+echo "[4/4] 完成。可分发内容："
 echo "  release/LiteLauncher        主程序（内置：todo/apps/ai；notes 为 native 插件）"
 echo "  release/plugins/            外部插件（便携部署，随程序分发）"
 

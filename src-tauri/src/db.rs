@@ -35,6 +35,17 @@ pub fn extplugins_dir() -> PathBuf {
     dir
 }
 
+/// 应用图标缓存目录（`ll-icon://` 抽出的 32×32 PNG）
+///
+/// 放 LocalAppData 而不是插件目录：图标是宿主能力，清缓存不应影响插件数据。
+pub fn icons_dir() -> PathBuf {
+    let mut dir = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+    dir.push("LiteLauncher");
+    dir.push("icons");
+    fs::create_dir_all(&dir).ok();
+    dir
+}
+
 /// 初始化核心 SQLite 数据库与核心数据表
 ///
 /// M3 起业务表归属各插件独立库（todos→todo.db、app_shortcuts→apps.db、

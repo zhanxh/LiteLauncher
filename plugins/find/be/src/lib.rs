@@ -15,7 +15,7 @@
 //! 行为约定（方法名、返回字段、条目 id）逐字对齐 LLP 版本，前端不需要任何改动。
 
 use ll_plugin_api::{PluginBackend, PluginContext, PluginError, PluginManifest};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -209,7 +209,8 @@ impl FindPlugin {
             return Ok(self.recent_panel());
         }
 
-        let sort = term::resolve_sort(&keyword, &args);        let limit = term::resolve_limit(&keyword, &args, DEFAULT_LIMIT);
+        let sort = term::resolve_sort(&keyword, &args);
+        let limit = term::resolve_limit(&keyword, &args, DEFAULT_LIMIT);
         let term_text = term::parse_term(&keyword);
 
         let started = Instant::now();
@@ -301,14 +302,30 @@ impl FindPlugin {
 
         let is_dir = md.get("isDir").and_then(|v| v.as_bool()).unwrap_or(false);
         let name = md.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        if is_dir {
-            self.push_recent(path);
-        }
+        let action_id = params
+            .get("actionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
         let ctx = self.ctx()?;
         let process = ctx
             .process
             .as_ref()
             .ok_or_else(|| PluginError::permission_denied("process"))?;
+
+        if action_id == "copy-path" {
+            return Ok(json!({ "copy": path, "toast": "路径已复制" }));
+        }
+        if action_id == "reveal" {
+            process
+                .reveal(path)
+                .map_err(|e| PluginError::internal(format!("定位失败: {e}")))?;
+            return Ok(json!({ "close": true, "toast": "已在文件夹中定位" }));
+        }
+
+        if is_dir {
+            self.push_recent(path);
+        }
         // 文件与目录都走宿主 launch：文件是「用默认程序打开」，目录是「资源管理器打开」
         process
             .launch(path)
@@ -325,7 +342,8 @@ impl FindPlugin {
 
 impl PluginBackend for FindPlugin {
     fn manifest(&self) -> PluginManifest {
-        serde_json::from_str(include_str!("../../manifest.json")).expect("find manifest.json 解析失败")
+        serde_json::from_str(include_str!("../../manifest.json"))
+            .expect("find manifest.json 解析失败")
     }
 
     fn init(&self, ctx: PluginContext) -> Result<(), PluginError> {
@@ -411,7 +429,9 @@ mod tests {
     #[test]
     fn empty_input_gets_usage_panel() {
         let plugin = FindPlugin::new();
-        let res = plugin.call("search", json!({ "keyword": null })).expect("用法面板");
+        let res = plugin
+            .call("search", json!({ "keyword": null }))
+            .expect("用法面板");
         assert_eq!(res["emptyText"], "输入关键词");
         assert_eq!(res["items"].as_array().unwrap().len(), 6); // 1 + 5 个示例
     }

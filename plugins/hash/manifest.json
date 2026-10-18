@@ -1,14 +1,13 @@
 {
   "id": "hash",
   "name": "哈希与编码",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "api_version": "^1",
   "trigger": "/hash",
-  "description": "哈希与编码工具：/hash 文本 列出全部（md5/sha1/sha256/sha512/base64/url/html/crc32），或 /hash md5 文本 只算指定项；回车复制结果。",
+  "description": "哈希与编码工具：/hash 文本 列出全部（md5/sha1/sha256/sha512/base64/url/html/crc32），或 /hash md5 文本 只算指定项；回车复制结果。纯前端，无需 Python。",
   "permissions": [],
   "backend": {
-    "kind": "llp",
-    "entry": ["python3", "hash.py"]
+    "kind": "none"
   },
   "command": {
     "icon": "🔐",

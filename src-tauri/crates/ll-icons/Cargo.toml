@@ -1,0 +1,18 @@
+[package]
+name = "ll-icons"
+version = "0.1.0"
+edition = "2024"
+description = "LiteLauncher 应用图标：路径校验、ll-icon:// 解析、Windows 图标抽取与磁盘缓存（无 tauri 依赖，可独立单测）"
+
+[dependencies]
+
+[target.'cfg(windows)'.dependencies]
+# 图标抽取只用 GDI/Shell 的少量函数；版本与既有依赖树保持一致，避免多编一份
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+image = { version = "0.25", default-features = false, features = ["png"] }

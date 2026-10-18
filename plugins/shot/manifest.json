@@ -1,10 +1,10 @@
 {
   "id": "shot",
   "name": "屏幕截图",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "api_version": "^1",
   "trigger": "/shot",
-  "description": "屏幕截图：回车区域框选（推荐）、整屏截图，或框选后进标注层画箭头/马赛克/文字；/shot -d3 延时 3 秒。图片本体自动进剪贴板可直接粘贴。",
+  "description": "屏幕截图：回车区域框选（推荐）、整屏截图，或框选后进标注层画箭头/马赛克/文字；/shot -d3 延时 3 秒。全局热键 Alt+Shift+S 直达区域框选，图片本体自动进剪贴板。",
   "permissions": [
     "screen",
     "clipboard:write",
@@ -13,6 +13,17 @@
     "process",
     "windows",
     "shortcut:alt+shift+s"
+  ],
+  "hotkeys": [
+    {
+      "id": "capture",
+      "default": "alt+shift+s",
+      "label": "区域截图",
+      "description": "按热键直接拖拽框选区域，图片进剪贴板",
+      "scope": "main",
+      "editable": true,
+      "enabled": true
+    }
   ],
   "views": [
     {

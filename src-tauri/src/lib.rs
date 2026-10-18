@@ -1,7 +1,8 @@
 pub mod db;
+pub mod history;
+pub mod hotkeys;
 pub mod ll_plugin_assets;
 pub mod migration;
-pub mod history;
 pub mod python_env;
 pub mod settings;
 
@@ -10,11 +11,10 @@ use ll_host::{HostState, PluginDbRegistry};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{
+    AppHandle, LogicalSize, Manager,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, LogicalSize, Manager,
 };
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 fn lifecycle_log_path() -> std::path::PathBuf {
     std::env::current_exe()
@@ -23,7 +23,36 @@ fn lifecycle_log_path() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("lifecycle.log"))
 }
 
-pub fn log_lifecycle(msg: &str) {
+const LOG_ROTATE_BYTES: u64 = 2 * 1024 * 1024;
+
+fn lifecycle_log_level() -> &'static str {
+    static LEVEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    LEVEL
+        .get_or_init(|| {
+            std::env::var("LL_LOG")
+                .unwrap_or_else(|_| "info".to_string())
+                .to_ascii_lowercase()
+        })
+        .as_str()
+}
+
+fn rotate_lifecycle_log_once() {
+    static ROTATED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ROTATED.get_or_init(|| {
+        let path = lifecycle_log_path();
+        let too_big = std::fs::metadata(&path)
+            .map(|m| m.len() > LOG_ROTATE_BYTES)
+            .unwrap_or(false);
+        if too_big {
+            let backup = path.with_extension("log.1");
+            let _ = std::fs::remove_file(&backup);
+            let _ = std::fs::rename(&path, &backup);
+        }
+    });
+}
+
+fn write_lifecycle_line(msg: &str) {
+    rotate_lifecycle_log_once();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -35,10 +64,28 @@ pub fn log_lifecycle(msg: &str) {
     }
 }
 
+/// info 级日志：启动、迁移、插件 init、热键注册等低频事件
+pub fn log_lifecycle(msg: &str) {
+    if lifecycle_log_level() == "off" {
+        return;
+    }
+    write_lifecycle_line(msg);
+}
+
+/// debug 级日志：窗口尺寸/焦点/移动、每次 IPC 等高频事件
+///
+/// 默认 `LL_LOG=info` 不写；`LL_LOG=debug` 才打开，避免日志被逐键 IPC 淹没。
+pub fn log_debug(msg: &str) {
+    if lifecycle_log_level() != "debug" {
+        return;
+    }
+    write_lifecycle_line(msg);
+}
+
 /// 动态调整启动器主窗口高度
 #[tauri::command]
 fn set_main_window_height(app: AppHandle, height: f64) -> Result<(), String> {
-    log_lifecycle(&format!("IPC: set_main_window_height height={}", height));
+    log_debug(&format!("IPC: set_main_window_height height={}", height));
     if let Some(window) = app.get_webview_window("main") {
         let clamped_height = height.clamp(70.0, 640.0);
         window
@@ -51,13 +98,13 @@ fn set_main_window_height(app: AppHandle, height: f64) -> Result<(), String> {
 /// 接收前端控制台日志并写入生命周期文件
 #[tauri::command]
 fn record_fe_log(msg: String) {
-    log_lifecycle(&format!("FE: {}", msg));
+    log_debug(&format!("FE: {}", msg));
 }
 
 /// 隐藏主窗口
 #[tauri::command]
 fn hide_main_window(app: AppHandle) -> Result<(), String> {
-    log_lifecycle("IPC: hide_main_window called");
+    log_debug("IPC: hide_main_window called");
     if let Some(window) = app.get_webview_window("main") {
         window.hide().map_err(|e| e.to_string())?;
     }
@@ -84,7 +131,7 @@ fn present_main(window: &tauri::WebviewWindow) {
 /// 显示并聚焦主窗口（每次打开默认屏幕居中）
 #[tauri::command]
 fn show_main_window(app: AppHandle) -> Result<(), String> {
-    log_lifecycle("IPC: show_main_window called");
+    log_debug("IPC: show_main_window called");
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.center();
         present_main(&window);
@@ -97,13 +144,12 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 /// 语义：已显示**且已聚焦** → 隐藏；其余一律前置展示——
 /// 窗口可见但焦点在别的应用时（输入草稿未清空等场景不会自动隐藏），
 /// 快捷键应当把它带回前台，而不是误触隐藏
-#[tauri::command]
-fn toggle_main_window(app: AppHandle) -> Result<(), String> {
-    log_lifecycle("IPC: toggle_main_window called");
+pub(crate) fn toggle_main_window(app: AppHandle) -> Result<(), String> {
+    log_debug("IPC: toggle_main_window called");
     if let Some(window) = app.get_webview_window("main") {
         let is_visible = window.is_visible().unwrap_or(false);
         let is_focused = window.is_focused().unwrap_or(false);
-        log_lifecycle(&format!(
+        log_debug(&format!(
             "IPC: toggle state visible={} focused={}",
             is_visible, is_focused
         ));
@@ -138,27 +184,78 @@ fn clipboard_read(app: AppHandle) -> Result<Option<String>, String> {
     Ok(app.clipboard().read_text().ok())
 }
 
+/// `ll-icon://` 协议应答：解析路径 → 缓存命中/抽图 → PNG 字节
+///
+/// 失败一律回 404（不是 500）：图标是纯装饰资源，前端 `onError` 会回退 emoji，
+/// 让一个抽不出来的快捷方式把整条结果列表变成错误页才是真正的故障。
+fn serve_icon(cache: &ll_icons::IconCache, uri: &str) -> tauri::http::Response<Vec<u8>> {
+    let body = ll_icons::path_from_uri(uri).and_then(|path| cache.png_for_path(&path));
+    let (status, content_type, bytes) = match body {
+        Some(png) => (200, "image/png", png),
+        None => (404, "text/plain; charset=utf-8", b"icon not found".to_vec()),
+    };
+    tauri::http::Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .header("Cache-Control", "public, max-age=86400")
+        .body(bytes)
+        .unwrap_or_else(|_| {
+            tauri::http::Response::builder()
+                .status(500)
+                .body(Vec::new())
+                .unwrap()
+        })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // M2：资产根目录（extplugins → 便携 → 开发期仓库），协议闭包持有（与外部插件扫描同源）
     let ll_asset_roots = ll_plugin_assets::asset_roots();
-    tauri::Builder::default()
+    // 图标缓存目录在启动时确定；协议闭包持有一份，所有窗口共享
+    let icon_cache = Arc::new(ll_icons::IconCache::new(db::icons_dir()));
+    let mut builder = tauri::Builder::default();
+    // 单实例必须最先注册：第二次启动只唤起已有窗口，不再起第二个托盘/热键注册
+    if std::env::var("LL_ALLOW_MULTI").is_err() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            let _ = show_main_window(app.clone());
+        }));
+    }
+    builder
         .plugin(tauri_plugin_opener::init())
+        // 自动更新：检查/下载/安装由前端 updater 模块驱动；签名公钥在 tauri.conf.json
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // 更新安装完成后重启应用
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         // 原生剪贴板：插件走 svc.clipboard.*，壳层走 clipboard_write/read
         .plugin(tauri_plugin_clipboard_manager::init())
+        // 开机自启：由设置页开关驱动，Windows 写 HKCU Run
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         // M2：ll-plugin:// 自定义协议——插件自带前端（fe/ 静态资产）的承载通道，
         // 页面经建窗时注入的 window.__llBridge 调宿主（与 plugin_call 同一权限管线）
         .register_uri_scheme_protocol("ll-plugin", move |_ctx, request| {
-            ll_plugin_assets::serve_plugin_asset(&ll_asset_roots, request.uri().to_string().as_str())
+            ll_plugin_assets::serve_plugin_asset(
+                &ll_asset_roots,
+                request.uri().to_string().as_str(),
+            )
+        })
+        // 应用图标：`ll-icon://localhost/<percent-encoded path>`。
+        // 抽图与缓存都在宿主完成，插件只回 URL——避免逐键 IPC 传 base64，
+        // 也让插件不必引入任何 Win32 依赖。
+        .register_uri_scheme_protocol("ll-icon", move |_ctx, request| {
+            serve_icon(&icon_cache, &request.uri().to_string())
         })
         .setup(|app| {
             // 1. 初始化核心 SQLite 数据库（command_history + app_settings）
             let db_conn = match db::init_db() {
                 Ok(conn) => Arc::new(Mutex::new(conn)),
                 Err(e) => {
-                    let _ = std::fs::write("db_init_error.log", format!("DB INIT ERROR: {:?}\n", e));
+                    let _ =
+                        std::fs::write("db_init_error.log", format!("DB INIT ERROR: {:?}\n", e));
                     std::process::exit(1);
                 }
             };
@@ -198,7 +295,10 @@ pub fn run() {
                 vec![(db::extplugins_dir(), "用户安装目录 extplugins".into())];
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(parent) = exe.parent() {
-                    ext_dirs.push((parent.join("plugins"), "便携目录（主程序旁 plugins）".into()));
+                    ext_dirs.push((
+                        parent.join("plugins"),
+                        "便携目录（主程序旁 plugins）".into(),
+                    ));
                 }
             }
             // 开发期：仓库 plugins/ 即"便携目录"的对照物，直接纳入扫描。
@@ -211,13 +311,35 @@ pub fn run() {
                 "开发期仓库 plugins/".into(),
             ));
             host.register_external_plugins(&ext_dirs, Arc::clone(&plugin_log));
+            let watcher_log = Arc::clone(&plugin_log);
             host.init_all(plugin_log);
 
             let app_handle = app.handle().clone();
 
+            // 后台剪贴板监听：clip 插件启用时随应用启动，暂停开关实时生效
+            host.start_clipboard_watcher(app_handle.clone(), watcher_log);
+
+            // 截图清理不阻塞首屏：启动 10 秒后再扫目录（最多 500 张 / 30 天）
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                let dir = ll_host::services::default_screenshots_root();
+                let (count, bytes) = ll_host::services::prune_screenshots(&dir);
+                log_lifecycle(&format!(
+                    "screenshots: 清理后 {} 张 / {} KB",
+                    count,
+                    bytes / 1024
+                ));
+            });
+
+            // 热键注册：主热键（失败回退 Alt+X）+ 所有 manifest 声明的插件热键。
+            // 插件前端只订阅事件，不自己抢注——用户改键后无需重载插件。
+            hotkeys::init_main_hotkey(&app_handle, &db_conn);
+            hotkeys::init_plugin_hotkeys(&app_handle, &db_conn, host.hotkey_specs());
+
             // 2. 初始化系统托盘菜单（带安全容错，失败不阻断核心窗口运行）
             if let Ok(show_item) = MenuItem::with_id(app, "show", "显示", true, None::<&str>) {
-                if let Ok(quit_item) = MenuItem::with_id(app, "quit", "退出", true, None::<&str>) {
+                if let Ok(quit_item) = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)
+                {
                     if let Ok(tray_menu) = Menu::with_items(app, &[&show_item, &quit_item]) {
                         let mut tray_builder = TrayIconBuilder::new()
                             .menu(&tray_menu)
@@ -225,7 +347,8 @@ pub fn run() {
 
                         // 确保托盘图标存在，若 default_window_icon 为空则安全回退到内置图标
                         let tray_icon = app.default_window_icon().cloned().or_else(|| {
-                            tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png")).ok()
+                            tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
+                                .ok()
                         });
                         if let Some(icon) = tray_icon {
                             tray_builder = tray_builder.icon(icon);
@@ -261,17 +384,8 @@ pub fn run() {
                 }
             }
 
-            // 3. 注册全局快捷键：优先 Alt+Space，同时注册 Alt+X 作为备选容错（防系统热键冲突）
-            for hotkey in &["alt+space", "alt+x"] {
-                if let Ok(sc) = hotkey.parse::<Shortcut>() {
-                    let handle_for_shortcut = app_handle.clone();
-                    let _ = app.global_shortcut().on_shortcut(sc, move |_app, _shortcut, event| {
-                        if event.state == ShortcutState::Pressed {
-                            let _ = toggle_main_window(handle_for_shortcut.clone());
-                        }
-                    });
-                }
-            }
+            // 3. 全局快捷键由 hotkeys 模块统一注册（主热键 + 插件 manifest 热键），
+            //    这里不再硬编码 Alt+Space/Alt+X。
 
             // 4. DevTools 支持由 Cargo `devtools` feature 提供（按 F12 打开），不再启动时自动展开
 
@@ -280,7 +394,7 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            log_lifecycle(&format!("WindowEvent on {}: {:?}", window.label(), event));
+            log_debug(&format!("WindowEvent on {}: {:?}", window.label(), event));
             // 当主窗口收到关闭请求时，仅隐藏窗口而不退出整个程序
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
@@ -294,7 +408,6 @@ pub fn run() {
             set_main_window_height,
             hide_main_window,
             show_main_window,
-            toggle_main_window,
             // 壳层原生剪贴板（插件通用 copy 能力与"粘贴即搜"）
             clipboard_write,
             clipboard_read,
@@ -302,6 +415,7 @@ pub fn run() {
             settings::set_setting,
             settings::get_app_info,
             settings::open_settings_window,
+            settings::open_welcome_window,
             // Python 运行时配置（LLP sidecar 依赖）
             python_env::get_python_env,
             python_env::detect_python_path,
@@ -309,10 +423,20 @@ pub fn run() {
             python_env::pick_python_file,
             history::record_command_usage,
             history::get_recent_commands,
+            // 主热键 / 开机自启
+            hotkeys::get_main_hotkey,
+            hotkeys::set_main_hotkey,
+            hotkeys::get_autostart,
+            hotkeys::set_autostart,
             // 插件宿主统一通道（插件能力不再逐命令注册）
             ll_host::commands::plugin_call,
             ll_host::commands::plugin_list,
             ll_host::commands::plugin_set_enabled,
+            // 插件热键管理（manifest 默认 + 用户覆盖）
+            ll_host::commands::plugin_hotkeys,
+            ll_host::commands::set_plugin_hotkey,
+            ll_host::commands::reset_plugin_hotkey,
+            ll_host::commands::set_plugin_hotkey_enabled,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -327,7 +451,10 @@ pub fn run() {
                     }
                 }
                 tauri::RunEvent::WindowEvent { label, event, .. } => {
-                    log_lifecycle(&format!("RunEvent::WindowEvent label={} event={:?}", label, event));
+                    log_debug(&format!(
+                        "RunEvent::WindowEvent label={} event={:?}",
+                        label, event
+                    ));
                 }
                 tauri::RunEvent::Ready => {
                     log_lifecycle("RunEvent::Ready");

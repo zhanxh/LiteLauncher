@@ -178,10 +178,145 @@ body.settings-mode {
   line-height: 1.5;
 }
 
+/* 通用页：设置行 */
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.setting-row:last-of-type {
+  border-bottom: none;
+}
+
+.setting-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.setting-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-main);
+}
+
+.setting-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.setting-row .ll-btn {
+  flex-shrink: 0;
+}
+
+/* 快捷键页 */
+.hotkey-section-title {
+  margin: 20px 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.hotkey-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.hotkey-row:last-of-type {
+  border-bottom: none;
+}
+
+.hotkey-meta {
+  flex: 1;
+  min-width: 190px;
+}
+
+.hotkey-title {
+  font-size: 13.5px;
+  color: var(--text-main);
+}
+
+.hotkey-plugin {
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+}
+
+.hotkey-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.hotkey-input {
+  width: 152px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  font-family: inherit;
+  text-align: center;
+  color: var(--text-main);
+  background: var(--keyhint-bg);
+  border: 1px solid var(--keyhint-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.hotkey-input:focus {
+  outline: none;
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px var(--accent-light);
+}
+
+.hotkey-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.hotkey-row.conflict .hotkey-desc {
+  color: var(--danger-text);
+}
+
+.hotkey-row.muted {
+  opacity: 0.55;
+}
+
+.settings-msg {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-msg.ok {
+  color: #34d399;
+}
+
+.settings-msg.err {
+  color: var(--danger-text);
+}
+
 /* 关于信息 */
 .info-grid {
   display: flex;
   flex-direction: column;
+  gap: 10px;
+}
+
+/* 关于页的引导重看入口 */
+.settings-actions {
+  margin-top: 18px;
+  display: flex;
   gap: 10px;
 }
 

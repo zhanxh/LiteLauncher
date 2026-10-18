@@ -1,7 +1,9 @@
 node_modules
 dist
 release
+latest.json
 src-tauri/target
+src-tauri/target-ship
 src-tauri/gen/schemas
 *.log
 __pycache__/

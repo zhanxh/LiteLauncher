@@ -1,8 +1,14 @@
-import { CommandPlugin, ParsedInput, ActionPreviewCapsule, PanelData, PanelItem, SearchProvider } from '@ll/sdk';
+import { CommandPlugin, ParsedInput, ActionPreviewCapsule, PanelData, PanelItem, PanelAction, SearchProvider } from '@ll/sdk';
 import { getPluginContext } from '@ll/sdk';
 
 // 经宿主统一通道访问 app 插件后端
 const ctx = getPluginContext('apps');
+
+/** 应用条目的次级动作：定位到文件夹 / 复制路径（后者不关窗，便于连续取用） */
+const APP_ACTIONS: PanelAction[] = [
+  { id: 'reveal', label: '打开所在文件夹', accel: 'ctrl+enter' },
+  { id: 'copy-path', label: '复制路径', accel: 'shift+enter' },
+];
 
 interface AppItemBackend {
   id: string;
@@ -10,6 +16,8 @@ interface AppItemBackend {
   path: string;
   icon: string;
   description: string;
+  /** 宿主按 source 给的来源徽标：已安装 / 自定义（旧后端没有该字段） */
+  badge?: string;
 }
 
 interface SystemAppItem {
@@ -50,15 +58,26 @@ export const appPlugin: CommandPlugin = {
   id: 'app',
   trigger: '/app',
   name: '应用启动器',
-  description: '应用检索与启动；/app add 名称[ 路径] 从系统应用候选中快速添加',
+  description:
+    '应用检索与启动：已装应用会自动收录，直接输入名称或拼音首字母即可；/app add 名称 可补充未收录的程序，/app rescan 重新扫描。',
   icon: '🚀',
+  argsHint: '[关键字] | add 名称 [路径] | rescan',
+  examples: ['/app wx', '/app add 微信', '/app rescan'],
   showItemsInActionMode: true,
 
   isAction(input: ParsedInput): boolean {
-    return input.subcommand === 'add';
+    return input.subcommand === 'add' || input.subcommand === 'rescan';
   },
 
   getPreview(input: ParsedInput): ActionPreviewCapsule | null {
+    if (input.subcommand === 'rescan') {
+      return {
+        title: '重新扫描已安装应用',
+        detail: '扫描开始菜单与桌面，已添加的自定义条目不会被覆盖',
+        badge: '即时动作',
+        hint: 'Enter 开始扫描',
+      };
+    }
     if (input.subcommand !== 'add') return null;
 
     const name = input.args[0] || '（请输入应用名称）';
@@ -73,6 +92,27 @@ export const appPlugin: CommandPlugin = {
   },
 
   async execute(input: ParsedInput): Promise<{ success: boolean; message: string }> {
+    if (input.subcommand === 'rescan') {
+      if (!isTauri()) {
+        return { success: true, message: '[预览模式] 已重新扫描应用' };
+      }
+      try {
+        const res = await ctx.call<{ added: number; updated: number; total: number; skipped?: boolean }>(
+          'rescan',
+          {},
+        );
+        if (res?.skipped) {
+          return { success: false, message: '扫描正在进行中，请稍后再试' };
+        }
+        return {
+          success: true,
+          message: `扫描完成：新增 ${res?.added ?? 0} 个，共 ${res?.total ?? 0} 个应用`,
+        };
+      } catch (err: any) {
+        return { success: false, message: `扫描失败: ${err?.message || err}` };
+      }
+    }
+
     const name = input.args[0]?.trim();
     const path = input.args[1]?.trim();
 
@@ -168,7 +208,8 @@ export const appPlugin: CommandPlugin = {
           title: app.name,
           description: app.description,
           icon: app.icon || '🚀',
-          badge: '应用',
+          badge: app.badge || '应用',
+          actions: APP_ACTIONS,
           metadata: { path: app.path },
         }));
 
@@ -208,7 +249,7 @@ export const appPlugin: CommandPlugin = {
   },
 
   /** 面板项选中：候选添加（保持启动器可见）或启动应用（关窗）——原 App.tsx 特判迁入此处 */
-  async onSelect(item: PanelItem) {
+  async onSelect(item: PanelItem, actionId?: string) {
     // 系统应用候选：添加为快捷方式（不隐藏启动器，便于连续添加）
     if (item.metadata?.isAppAdd) {
       const { name, path, added } = item.metadata as { name: string; path: string; added?: boolean };
@@ -226,23 +267,50 @@ export const appPlugin: CommandPlugin = {
       return { toast: `[预览] 添加应用: ${name} → ${path}` };
     }
 
-    // 应用快捷方式启动
+    // 应用快捷方式启动 / 次级动作
     const path = item.metadata?.path;
     if (!path) return;
-
-    if (isTauri()) {
-      try {
-        await ctx.call('launch', { path });
-        return { close: true, toast: `已启动: ${item.title}` };
-      } catch (err: any) {
-        return { toast: `启动失败: ${err?.message || err}` };
-      }
-    }
-    return { toast: `[预览] 启动应用: ${path}` };
+    return await launchApp(item, actionId);
   },
 };
 
 // ─────────────────── SearchProviders（裸文本搜索扩展点）───────────────────
+
+/** 后端应用行 → 面板项（本地检索与空状态推荐共用） */
+function toPanelItem(a: AppItemBackend): PanelItem {
+  return {
+    id: `app-${a.id}`,
+    title: a.name,
+    description: a.description,
+    icon: a.icon || '🚀',
+    badge: a.badge || '启动应用',
+    actions: APP_ACTIONS,
+    metadata: { path: a.path },
+  };
+}
+
+/** 启动应用（两条 provider 路径共用，避免行为漂移） */
+async function launchApp(item: PanelItem, actionId?: string) {
+  const path = item.metadata?.path;
+  if (!path || !isTauri()) return { close: true } as const;
+  if (actionId === 'copy-path') {
+    return { copy: path, toast: '路径已复制' };
+  }
+  if (actionId === 'reveal') {
+    try {
+      await ctx.call('reveal', { path });
+      return { close: true, toast: '已在文件夹中定位' };
+    } catch (err: any) {
+      return { toast: `打开文件夹失败: ${err?.message || err}` };
+    }
+  }
+  try {
+    await ctx.call('launch', { path });
+    return { close: true, toast: `已启动: ${item.title}` };
+  } catch (err: any) {
+    return { toast: `启动失败: ${err?.message || err}` };
+  }
+}
 
 /** 本地应用快捷方式检索 */
 export const appsLocalProvider: SearchProvider = {
@@ -253,29 +321,37 @@ export const appsLocalProvider: SearchProvider = {
     if (!isTauri()) return [];
     try {
       const apps = await ctx.call<AppItemBackend[]>('list', { keyword: raw });
-      return apps.map((a) => ({
-        id: `app-${a.id}`,
-        title: a.name,
-        description: a.description,
-        icon: a.icon || '🚀',
-        badge: '启动应用',
-        metadata: { path: a.path },
-      }));
+      return apps.map(toPanelItem);
     } catch {
       return [];
     }
   },
 
-  async onSelect(item: PanelItem) {
-    const path = item.metadata?.path;
-    if (!path || !isTauri()) return { close: true };
+  onSelect: launchApp,
+};
+
+/**
+ * 空状态推荐：不需要关键词就能给出的「常用应用」入口。
+ *
+ * 声明 `searchOnEmpty` 后壳层会在输入框为空时调用；数据源是后端的
+ * launch_count / last_used_at 排序，用户用得越多越靠前。
+ */
+export const appsSuggestProvider: SearchProvider = {
+  id: 'apps.suggest',
+  priority: 0,
+  searchOnEmpty: true,
+
+  async search(): Promise<PanelItem[]> {
+    if (!isTauri()) return [];
     try {
-      await ctx.call('launch', { path });
-      return { close: true, toast: `已启动: ${item.title}` };
-    } catch (err: any) {
-      return { toast: `启动失败: ${err?.message || err}` };
+      const apps = await ctx.call<AppItemBackend[]>('suggest', { limit: 6 });
+      return apps.map((a) => ({ ...toPanelItem(a), group: '常用应用' }));
+    } catch {
+      return [];
     }
   },
+
+  onSelect: launchApp,
 };
 
 /** 系统命令直接运行兜底 */

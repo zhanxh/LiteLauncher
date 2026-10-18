@@ -232,6 +232,31 @@ export interface PluginShortcuts {
     handler: () => void,
     opts?: { scope?: 'main' | 'any' },
   ): Promise<() => void>;
+  /**
+   * 订阅 manifest `hotkeys[]` 声明的热键（按 id，不再关心具体 accel）。
+   *
+   * 注册由宿主在启动时完成；用户改键后事件仍按 id 路由，
+   * 所以**不需要重新订阅**。`scope` 同 `on`，默认 main。
+   */
+  onHotkey(
+    hotkeyId: string,
+    handler: () => void,
+    opts?: { scope?: 'main' | 'any' },
+  ): Promise<() => void>;
+  /** manifest 热键目录（effective accel、默认值、注册状态），供 /hotkey 与调试用 */
+  catalog(): Promise<PluginHotkeyInfo[]>;
+}
+
+/** manifest `hotkeys[]` 在宿主侧解析后的运行时信息 */
+export interface PluginHotkeyInfo {
+  id: string;
+  label: string;
+  description: string;
+  default: string;
+  accel: string;
+  scope: 'main' | 'any' | string;
+  enabled: boolean;
+  registered: boolean;
 }
 
 /** [`PluginWindows.setContentSize`](#) 的返回值：宿主夹取后真正落到窗口上的尺寸 */
@@ -568,6 +593,29 @@ export function getPluginContext(pluginId: string): PluginContext {
             const payload = event.payload;
             if (!payload || payload.pluginId !== pluginId) return;
             if (normalizeAccel(payload.accel ?? '') !== want) return;
+            try {
+              handler();
+            } catch (err) {
+              console.error('[shortcuts] 热键处理失败:', err);
+            }
+          },
+        );
+      },
+      catalog: async () =>
+        (await svc<PluginHotkeyInfo[] | null>('shortcut.catalog', {})) ?? [],
+      onHotkey: async (hotkeyId, handler, opts = {}) => {
+        if ((opts.scope ?? 'main') === 'main' && isViewWindow()) {
+          return () => {};
+        }
+        if (!isHostAvailable()) {
+          return () => {};
+        }
+        return await listen<{ pluginId?: string; hotkeyId?: string }>(
+          'plugin-shortcut',
+          (event) => {
+            const payload = event.payload;
+            if (!payload || payload.pluginId !== pluginId) return;
+            if (payload.hotkeyId !== hotkeyId) return;
             try {
               handler();
             } catch (err) {

@@ -1,5 +1,5 @@
 import { ParsedInput, CommandPlugin } from '@ll/sdk';
-import { tokenizeInput } from './tokenizer';
+import { tokenizeInputDetailed } from './tokenizer';
 import { pluginRegistry } from '@ll/sdk';
 import { fuzzyScore } from './fuzzy';
 
@@ -45,7 +45,8 @@ function tryEvaluateMath(text: string): string | undefined {
  */
 export function parseCommand(rawInput: string): ParseResult {
   const raw = rawInput.trim();
-  const tokens = tokenizeInput(rawInput);
+  const detailedTokens = tokenizeInputDetailed(rawInput);
+  const tokens = detailedTokens.map((token) => token.text);
 
   // 1. 尝试数学表达式计算
   const mathResult = tryEvaluateMath(raw);
@@ -185,6 +186,9 @@ export function parseCommand(rawInput: string): ParseResult {
     trigger: matchedPlugin.trigger,
     subcommand,
     args: paramTokens,
+    quotedArgs: detailedTokens
+      .slice(tokens.length - paramTokens.length)
+      .map((token) => token.quoted),
     namedArgs: {},
     isAction: false,
     queryText: remainingTokens.join(' '),

@@ -116,6 +116,7 @@ export const todoPlugin: CommandPlugin = {
   argsHint: 'new|list|today|week|open|del|done|cal|import|export',
   examples: [
     '/cal app —— 打开日程窗口（月/周/日三视图）',
+    '/cal new 明天下午三点 项目评审 —— 自然语言时间，剩余文本自动作标题',
     '/cal new "需求评审" 10-15 14:00-15:30 —— 指定区间，默认提前 0 分钟提醒',
     '/cal new "周报" friday 17:00 every:1week --al 30,10 —— 每周五 17:00，提前 30 与 10 分钟各提醒一次',
     '/cal new "出差" 10-20 --all-day --where 上海 —— 全天事项（时间轴上不占格子）',
@@ -148,7 +149,7 @@ export const todoPlugin: CommandPlugin = {
   enrichParsed(tokens: string[], _input: ParsedInput): Partial<ParsedInput> {
     const sub = _input.subcommand;
     if (!sub || !SYNTAX_SUBS.has(sub)) return {};
-    const draft = parseCalArgs(tokens);
+    const draft = parseCalArgs(tokens, new Date(), _input.quotedArgs);
     const namedArgs: Record<string, string> = { ..._input.namedArgs };
     // 时间/重复同时写进老键名：外部按 namedArgs['time'] 取值的写法不该因为改名而失效
     if (draft.startAt) {

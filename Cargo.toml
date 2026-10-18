@@ -6,6 +6,8 @@ members = [
     "src-tauri/crates/ll-plugin-abi",
     "src-tauri/crates/ll-host",
     "src-tauri/crates/ll-native-shell",
+    "src-tauri/crates/ll-migrate",
+    "src-tauri/crates/ll-icons",
 ]
 
 exclude = [
@@ -22,8 +24,9 @@ exclude = [
 # exclude 保证它们不属于本 workspace、但 `cd plugins/<id>/be && cargo test` 仍可独立运行（否则单测被静默跳过）。
 
 # 依赖规则（CI/grep 门禁）：
-# 1. plugins/*/be 只允许依赖 ll-plugin-api 与通用基础库（serde/chrono/uuid/dirs），
-#    禁止依赖 ll-host、tauri 或彼此——保证插件可独立编译、独立演进。
+# 1. plugins/*/be 只允许依赖 ll-plugin-api 与通用基础库（serde/chrono/uuid/dirs/
+#    pinyin 这类零平台依赖的纯计算/文本库），禁止依赖 ll-host、tauri 或彼此——
+#    保证插件可独立编译、独立演进。
 # 2. ll-host 不得依赖任何具体插件（注册方向：应用 crate → 插件 crate）。
 
 # ── 构建档位（日常 vs 正式发布）────────────────────────────────

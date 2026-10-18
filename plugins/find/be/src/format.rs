@@ -3,7 +3,7 @@
 //! 全部是纯函数，不碰文件系统也不碰 Everything——结果依赖外部进程，
 //! 没法在单测里造，所以展示层单独出来测（单测见文件末尾）。
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const KIND_ICON: &str = "📁"; // 目录
 pub const FILE_ICON: &str = "📄"; // 文件
@@ -100,7 +100,11 @@ pub fn shorten_middle(text: &str, max_segments: usize) -> String {
 
 /// 把一条结果转成面板项
 pub fn build_row(r: &Row, now_ms: i64, rank: usize) -> Value {
-    let name = if r.name.is_empty() { r.path.clone() } else { r.name.clone() };
+    let name = if r.name.is_empty() {
+        r.path.clone()
+    } else {
+        r.name.clone()
+    };
     let icon = if r.hidden || r.system {
         HIDDEN_ICON
     } else if r.is_dir {
@@ -138,6 +142,10 @@ pub fn build_row(r: &Row, now_ms: i64, rank: usize) -> Value {
         "description": description,
         "badge": badge,
         "icon": icon,
+        "actions": [
+            { "id": "reveal", "label": "打开所在文件夹", "accel": "ctrl+enter" },
+            { "id": "copy-path", "label": "复制路径", "accel": "shift+enter" },
+        ],
         "metadata": {
             "path": r.path,
             "name": name,
@@ -147,7 +155,13 @@ pub fn build_row(r: &Row, now_ms: i64, rank: usize) -> Value {
 }
 
 /// 面板底部统计条：让用户知道「总共多少、只显示了前多少」
-pub fn build_footer(total: u64, shown: usize, elapsed_ms: f64, extra: Option<&str>, source: &str) -> Value {
+pub fn build_footer(
+    total: u64,
+    shown: usize,
+    elapsed_ms: f64,
+    extra: Option<&str>,
+    source: &str,
+) -> Value {
     let mut label = if total > shown as u64 {
         format!("共 {total} 项，显示前 {shown} 项")
     } else {
@@ -165,6 +179,7 @@ pub fn build_footer(total: u64, shown: usize, elapsed_ms: f64, extra: Option<&st
         "description": source,
         "badge": "统计",
         "icon": "📊",
+        "kind": "info",
         "metadata": { "footer": true, "total": total, "shown": shown },
     })
 }
@@ -178,6 +193,7 @@ pub fn build_unavailable(reason: &str, hint: &str) -> Value {
             "description": hint,
             "badge": "不可用",
             "icon": "⚠️",
+            "kind": "info",
             "metadata": { "unavailable": true },
         }],
         "emptyText": "文件索引不可用",
@@ -192,6 +208,7 @@ pub fn build_usage(hints: &[&str], syntax: &str) -> Value {
         "description": syntax,
         "badge": "用法",
         "icon": "🔍",
+        "kind": "info",
         "metadata": { "usage": true },
     })];
     for (i, hint) in hints.iter().enumerate() {
@@ -201,6 +218,7 @@ pub fn build_usage(hints: &[&str], syntax: &str) -> Value {
             "description": syntax,
             "badge": "示例",
             "icon": "·",
+            "kind": "info",
             "metadata": { "usage": true, "example": hint },
         }));
     }
@@ -267,10 +285,16 @@ mod tests {
 
     #[test]
     fn long_parent_is_shortened_by_segment() {
-        let long = format!("C:\\{}\\file.txt", vec!["averylongdirectoryname"; 8].join("\\"));
+        let long = format!(
+            "C:\\{}\\file.txt",
+            vec!["averylongdirectoryname"; 8].join("\\")
+        );
         let parent = &long[..long.rfind('\\').expect("构造里有分隔符")];
         let row = file_row(&long, "file.txt", parent, 1);
-        let desc = build_row(&row, NOW, 1)["description"].as_str().unwrap().to_string();
+        let desc = build_row(&row, NOW, 1)["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert!(desc.contains("\\...\\"), "{desc}");
         // 目录名必须完整出现，不能出现被截断的半个词
         for seg in desc.replace("\\...\\", "\\").split('\\') {
@@ -278,7 +302,10 @@ mod tests {
                 assert_eq!(seg, "averylongdirectoryname", "{desc}");
             }
         }
-        assert!(desc.trim_end().ends_with("averylongdirectoryname"), "{desc}");
+        assert!(
+            desc.trim_end().ends_with("averylongdirectoryname"),
+            "{desc}"
+        );
     }
 
     #[test]
@@ -316,14 +343,21 @@ mod tests {
 
     #[test]
     fn rank_zero_dir_uses_text_badge() {
-        let row = Row { is_dir: true, ..file_row("D:\\x", "x", "D:\\", 0) };
+        let row = Row {
+            is_dir: true,
+            ..file_row("D:\\x", "x", "D:\\", 0)
+        };
         assert_eq!(build_row(&row, NOW, 0)["badge"], "目录");
     }
 
     #[test]
     fn hidden_and_system_use_ghost_icon() {
         for (hidden, system) in [(true, false), (false, true)] {
-            let row = Row { hidden, system, ..file_row("C:\\x", "x", "C:\\", 1) };
+            let row = Row {
+                hidden,
+                system,
+                ..file_row("C:\\x", "x", "C:\\", 1)
+            };
             assert_eq!(build_row(&row, NOW, 1)["icon"], "👻");
         }
     }
@@ -357,7 +391,12 @@ mod tests {
     fn unavailable_panel_always_has_hint() {
         let r = build_unavailable("未检测到 Everything", "请安装并运行 Everything");
         assert_eq!(r["items"].as_array().unwrap().len(), 1);
-        assert!(r["items"][0]["title"].as_str().unwrap().contains("Everything"));
+        assert!(
+            r["items"][0]["title"]
+                .as_str()
+                .unwrap()
+                .contains("Everything")
+        );
         assert!(!r["items"][0]["description"].as_str().unwrap().is_empty());
         assert_eq!(r["items"][0]["metadata"]["unavailable"], true);
     }
@@ -366,10 +405,12 @@ mod tests {
     fn usage_panel_lists_hints() {
         let r = build_usage(&["a.md", "ext:rs"], "支持 Everything 原生语法");
         assert_eq!(r["items"].as_array().unwrap().len(), 3); // 1 条主提示 + 2 条示例
-        assert!(r["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|i| i["metadata"]["usage"] == true));
+        assert!(
+            r["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|i| i["metadata"]["usage"] == true)
+        );
     }
 }

@@ -1,0 +1,9 @@
+{
+  "name": "@ll/plugin-pwd",
+  "version": "0.2.0",
+  "private": true,
+  "description": "密码生成（纯前端）：逻辑全在 fe/src/pwd.ts",
+  "type": "module",
+  "main": "src/index.ts",
+  "llplugin": true
+}

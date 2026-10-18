@@ -1,14 +1,13 @@
 {
   "id": "cidr",
   "name": "CIDR / 网段计算",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "api_version": "^1",
   "trigger": "/cidr",
-  "description": "网段计算：/cidr 192.168.1.0/24 输出网络地址、广播地址、掩码、可用主机范围与数量；/cidr 10.0.0.0/24 4 拆分子网。支持 IPv6。回车复制。",
+  "description": "网段计算：/cidr 192.168.1.0/24 输出网络地址、广播地址、掩码、可用主机范围与数量；/cidr 10.0.0.0/24 4 拆分子网。支持 IPv6。纯前端，无需 Python。",
   "permissions": [],
   "backend": {
-    "kind": "llp",
-    "entry": ["python3", "cidr.py"]
+    "kind": "none"
   },
   "command": {
     "icon": "🌐",

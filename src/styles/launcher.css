@@ -230,7 +230,8 @@ html.ll-transparent #root {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 0;
+  /* 底部动作条高 34px：溢出提示要落在它上面，不能压住按键说明 */
+  bottom: 34px;
   height: 46px;
   display: flex;
   align-items: flex-end;
@@ -259,6 +260,15 @@ html.ll-transparent #root {
   white-space: nowrap;
 }
 
+/* 空状态的分组标题（常用应用 / 最近使用 / 推荐指令）。
+   只做视觉分组，不响应 hover，也不进入键盘选中序列。 */
+.panel-group {
+  padding: 8px 12px 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
 .panel-item {
   display: flex;
   align-items: center;
@@ -278,6 +288,164 @@ html.ll-transparent #root {
   border-left: 3px solid var(--accent-color);
 }
 
+/* 说明项：可读但不可执行，不参与键盘导航 */
+.panel-item.info {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.panel-item.info:hover {
+  background-color: transparent;
+}
+
+/* 底部动作条：让"回车做什么、还支持什么"始终可见 */
+.panel-footer {
+  height: 34px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.panel-footer-hints {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.panel-footer-hints span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.panel-footer-hints kbd {
+  padding: 1px 5px;
+  font-family: var(--font-family);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  background: var(--keyhint-bg);
+  border: 1px solid var(--keyhint-border);
+  border-radius: 4px;
+}
+
+.panel-footer-count {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* 慢查询提示：8s 仍未返回时压在列表上方，不改变窗口高度 */
+.panel-slow-hint {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--item-bg-hover);
+}
+
+/* 首次结果返回前的骨架：只有 150ms 后才出现，纯计算插件不会闪 */
+.panel-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 8px;
+}
+
+.skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+}
+
+.skeleton-icon {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--item-bg-hover);
+  animation: skeleton-pulse 1.1s ease-in-out infinite;
+}
+
+.skeleton-lines {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.skeleton-line {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--item-bg-hover);
+  animation: skeleton-pulse 1.1s ease-in-out infinite;
+}
+
+.skeleton-line.w60 {
+  width: 60%;
+}
+
+.skeleton-line.w40 {
+  width: 40%;
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+/* 查询失败：说清原因并给一个可点的重试，而不是留空面板 */
+.panel-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 26px 20px;
+  text-align: center;
+}
+
+.panel-error-icon {
+  font-size: 22px;
+}
+
+.panel-error-text {
+  max-width: 460px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.panel-retry {
+  margin-top: 2px;
+  padding: 5px 16px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--accent-color);
+  background: transparent;
+  border: 1px solid var(--accent-color);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.panel-retry:hover {
+  background: var(--accent-light);
+}
+
 .item-icon {
   width: 28px;
   height: 28px;
@@ -287,6 +455,15 @@ html.ll-transparent #root {
   font-size: 17px;
   margin-right: 12px;
   flex-shrink: 0;
+}
+
+/* 真实应用图标（ll-icon://）：26px 内容盒，留 1px 呼吸避免贴边被裁 */
+.item-icon img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  border-radius: 5px;
+  display: block;
 }
 
 .item-content {

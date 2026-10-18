@@ -43,10 +43,16 @@ pub struct PluginError {
 
 impl PluginError {
     pub fn new(code: PluginErrorCode, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self {
+            code,
+            message: message.into(),
+        }
     }
     pub fn unknown_method(method: &str) -> Self {
-        Self::new(PluginErrorCode::UnknownMethod, format!("未知方法: {}", method))
+        Self::new(
+            PluginErrorCode::UnknownMethod,
+            format!("未知方法: {}", method),
+        )
     }
     pub fn bad_params(message: impl Into<String>) -> Self {
         Self::new(PluginErrorCode::BadParams, message)
@@ -114,6 +120,94 @@ pub struct PluginManifest {
     /// 外部插件（kind=llp）的命令声明：宿主据此生成通用前端指令插件
     #[serde(default)]
     pub command: Option<ExternalCommandSpec>,
+    /// 全局热键声明（默认值随插件分发；用户覆盖存宿主设置）
+    #[serde(default)]
+    pub hotkeys: Vec<HotkeySpec>,
+}
+
+/// 插件声明的全局热键
+///
+/// manifest 只存**默认值 + 语义**：用户改键写宿主 `app_settings`，
+/// 升级插件不会覆盖用户偏好。`default` 必须同时出现在
+/// `permissions` 的 `shortcut:<accel>` 中（最小权限），用户覆盖不受此限。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotkeySpec {
+    /// 插件内唯一、发布后不可改；设置键与事件路由都用它
+    pub id: String,
+    /// 默认加速键；空串表示"不注册默认键，仅允许用户在设置里绑定"
+    #[serde(default)]
+    pub default: String,
+    /// 人类可读名称（设置页与 /hotkey 展示）
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    /// `main`（默认，只在启动器主窗响应）| `any`（任意窗口）
+    #[serde(default = "default_hotkey_scope")]
+    pub scope: String,
+    /// 是否允许用户改键
+    #[serde(default = "default_true")]
+    pub editable: bool,
+    /// 是否默认启用（可发布"默认关闭"的热键）
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_hotkey_scope() -> String {
+    "main".to_string()
+}
+
+/// 归一化加速键：去空白、小写、统一 `+` 分隔（"Alt + P" → "alt+p"）
+pub fn normalize_accel(raw: &str) -> String {
+    raw.split('+')
+        .map(|part| part.trim().to_ascii_lowercase())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+impl PluginManifest {
+    /// 过滤出可用的热键声明：
+    /// - id 合法且插件内唯一
+    /// - `default` 非空时必须落在 `shortcut:<accel>` 权限白名单内
+    /// - scope 只认 main/any，其余回落 main
+    ///
+    /// 非法条目**静默跳过**而不是拒载插件：一个热键写错不该让整个插件消失，
+    /// 宿主会把跳过原因写进生命周期日志（调用方负责）。
+    pub fn valid_hotkeys(&self) -> Vec<HotkeySpec> {
+        let mut out: Vec<HotkeySpec> = Vec::new();
+        for raw in &self.hotkeys {
+            let id = raw.id.trim().to_ascii_lowercase();
+            let id_ok = !id.is_empty()
+                && id.len() <= 32
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            if !id_ok || out.iter().any(|h| h.id == id) {
+                continue;
+            }
+
+            let mut spec = raw.clone();
+            spec.id = id;
+            spec.default = normalize_accel(&spec.default);
+            if !spec.default.is_empty() {
+                let perm = format!("shortcut:{}", spec.default);
+                if !self.permissions.iter().any(|p| p == &perm) {
+                    continue;
+                }
+            }
+            spec.scope = if spec.scope.eq_ignore_ascii_case("any") {
+                "any".to_string()
+            } else {
+                "main".to_string()
+            };
+            if spec.label.trim().is_empty() {
+                spec.label = spec.id.clone();
+            }
+            out.push(spec);
+        }
+        out
+    }
 }
 
 /// 后端形态声明（M6 LLP：宿主按 entry 启动 sidecar 子进程并经 stdio JSON-RPC 分发）
@@ -167,7 +261,11 @@ impl BackendSpec {
 
 impl Default for BackendSpec {
     fn default() -> Self {
-        Self { kind: default_backend_kind(), entry: Vec::new(), integrity: None }
+        Self {
+            kind: default_backend_kind(),
+            entry: Vec::new(),
+            integrity: None,
+        }
     }
 }
 
@@ -414,7 +512,12 @@ pub fn popup_rect_after_size(
         WindowPosition::BottomRight => cy + ch - h,
         _ => cy,
     };
-    (keep_in_screen(x, w, mon_w), keep_in_screen(y, h, mon_h), w, h)
+    (
+        keep_in_screen(x, w, mon_w),
+        keep_in_screen(y, h, mon_h),
+        w,
+        h,
+    )
 }
 
 /// 把窗口的一条轴夹回 `[CORNER_MARGIN, 屏 - 尺寸 - CORNER_MARGIN]`。
@@ -461,9 +564,7 @@ pub enum DesktopAttachStatus {
         reason: String,
     },
     /// 注入失败（外部命令缺失、窗口句柄拿不到等）
-    Failed {
-        reason: String,
-    },
+    Failed { reason: String },
 }
 
 /// 桌面层挂载的完整结果。
@@ -737,6 +838,8 @@ pub struct ClipEntry {
     pub text: String,
     /// 毫秒时间戳
     pub ts: i64,
+    /// 来源进程 exe 名（小写；旧数据可能为空）
+    pub source_app: Option<String>,
 }
 
 /// 剪贴板历史的隐私策略（默认值偏保守）
@@ -790,14 +893,15 @@ pub fn looks_like_secret(text: &str) -> Option<String> {
         return Some("私钥内容".into());
     }
     let lower = t.to_ascii_lowercase();
-    for key in ["password", "passwd", "secret", "api_key", "apikey", "token", "pwd"] {
+    for key in [
+        "password", "passwd", "secret", "api_key", "apikey", "token", "pwd",
+    ] {
         if lower.contains(&format!("{}=", key)) || lower.contains(&format!("{}:", key)) {
             return Some(format!("疑似 {} 凭据", key));
         }
     }
     // 长随机串：连续 24+ 位字母数字，典型 API key / JWT 片段形态
-    if t
-        .split(|c: char| !c.is_ascii_alphanumeric())
+    if t.split(|c: char| !c.is_ascii_alphanumeric())
         .any(|seg| seg.len() >= 24)
     {
         return Some("疑似长随机串（可能是 API Key / Token）".into());
@@ -1043,7 +1147,7 @@ pub trait ScreenApi: Send + Sync {
 // 由前端 `ctx.shortcuts.on(accel, handler)` 接收——插件拿不到原始按键流。
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 全局热键（注册 / 注销 / 查询）
+/// 全局热键（注册 / 注销 / 查询 / manifest 声明）
 pub trait ShortcutApi: Send + Sync {
     /// 注册全局热键（accel 形如 `alt+p`；幂等：同一插件重复注册返回 Ok）。
     /// 未在 manifest 声明、或已被其他插件占用 → Err
@@ -1052,6 +1156,31 @@ pub trait ShortcutApi: Send + Sync {
     fn unregister(&self, accel: &str) -> Result<(), PluginError>;
     /// 本插件当前已注册的加速键（规范小写形式）
     fn list(&self) -> Vec<String>;
+
+    /// manifest 声明的热键目录（含 effective accel / 注册状态），供 `/hotkey` 读取。
+    ///
+    /// 默认实现返回空：老宿主/扩展实现不必立刻跟进；壳层会回退到插件自报。
+    fn catalog(&self) -> Vec<PluginHotkeyInfo> {
+        Vec::new()
+    }
+
+    /// 某个 manifest 热键的 effective accel（用户覆盖 > 默认值）。
+    fn effective(&self, _hotkey_id: &str) -> Result<String, PluginError> {
+        Err(PluginError::unknown_method("shortcut.effective"))
+    }
+}
+
+/// `/hotkey` 与设置页共用的一行热键信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginHotkeyInfo {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub default: String,
+    pub accel: String,
+    pub scope: String,
+    pub enabled: bool,
+    pub registered: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1109,15 +1238,8 @@ mod tests {
 
     #[test]
     fn bottom_right_sticks_to_corner() {
-        let (x, y) = corner_origin(
-            WindowPosition::BottomRight,
-            MON_W,
-            MON_H,
-            WIN_W,
-            WIN_H,
-            0.0,
-        )
-        .expect("bottom-right 应参与定位");
+        let (x, y) = corner_origin(WindowPosition::BottomRight, MON_W, MON_H, WIN_W, WIN_H, 0.0)
+            .expect("bottom-right 应参与定位");
         // 右边留 16px 边距，下边留 16px
         assert_eq!(x, MON_W - WIN_W - CORNER_MARGIN);
         assert_eq!(y, MON_H - WIN_H - CORNER_MARGIN);
@@ -1125,9 +1247,8 @@ mod tests {
 
     #[test]
     fn top_right_sticks_to_top() {
-        let (x, y) =
-            corner_origin(WindowPosition::TopRight, MON_W, MON_H, WIN_W, WIN_H, 0.0)
-                .expect("top-right 应参与定位");
+        let (x, y) = corner_origin(WindowPosition::TopRight, MON_W, MON_H, WIN_W, WIN_H, 0.0)
+            .expect("top-right 应参与定位");
         assert_eq!(x, MON_W - WIN_W - CORNER_MARGIN, "右侧仍应留边距");
         assert_eq!(y, CORNER_MARGIN, "顶部应留边距");
     }
@@ -1148,15 +1269,8 @@ mod tests {
     fn stack_offset_moves_down_from_top_and_up_from_bottom() {
         let step = WIN_H + 8.0;
 
-        let (_, top1) = corner_origin(
-            WindowPosition::TopRight,
-            MON_W,
-            MON_H,
-            WIN_W,
-            WIN_H,
-            step,
-        )
-        .unwrap();
+        let (_, top1) =
+            corner_origin(WindowPosition::TopRight, MON_W, MON_H, WIN_W, WIN_H, step).unwrap();
         let (_, top2) = corner_origin(
             WindowPosition::TopRight,
             MON_W,
@@ -1214,8 +1328,7 @@ mod tests {
         let bare: WindowPosition = serde_json::from_str("\"fullscreen\"").unwrap();
         assert_eq!(bare, WindowPosition::Fullscreen(MonitorSelector::Cursor));
 
-        let tagged: WindowPosition =
-            serde_json::from_str(r#"{"fullscreen":"primary"}"#).unwrap();
+        let tagged: WindowPosition = serde_json::from_str(r#"{"fullscreen":"primary"}"#).unwrap();
         assert_eq!(tagged, WindowPosition::Fullscreen(MonitorSelector::Primary));
     }
 
@@ -1247,7 +1360,11 @@ mod tests {
             }
         }
 
-        assert!(bad.is_empty(), "以下 manifest 解析失败:\n{}", bad.join("\n"));
+        assert!(
+            bad.is_empty(),
+            "以下 manifest 解析失败:\n{}",
+            bad.join("\n")
+        );
     }
 
     /// 按平台挑动态库：双平台 manifest 各自选各的，单平台老 manifest 行为不变。
@@ -1258,24 +1375,34 @@ mod tests {
             entry: entries.iter().map(|s| s.to_string()).collect(),
             integrity: None,
         };
-        let exists = |names: &'static [&'static str]| {
-            move |e: &str| names.contains(&e)
-        };
+        let exists = |names: &'static [&'static str]| move |e: &str| names.contains(&e);
 
         // Windows：只拷了 dll
         let dual = spec(&["find.dll", "libfind.so"]);
-        assert_eq!(dual.pick_library(".dll", exists(&["find.dll"])), Some("find.dll"));
+        assert_eq!(
+            dual.pick_library(".dll", exists(&["find.dll"])),
+            Some("find.dll")
+        );
         // Linux：只拷了 so
-        assert_eq!(dual.pick_library(".so", exists(&["libfind.so"])), Some("libfind.so"));
+        assert_eq!(
+            dual.pick_library(".so", exists(&["libfind.so"])),
+            Some("libfind.so")
+        );
         // 两个都在：各取各的，不靠顺序
         let both = exists(&["find.dll", "libfind.so"]);
         assert_eq!(dual.pick_library(".so", both), Some("libfind.so"));
         assert_eq!(dual.pick_library(".dll", both), Some("find.dll"));
         // 单平台老 manifest
         let old = spec(&["find.dll"]);
-        assert_eq!(old.pick_library(".dll", exists(&["find.dll"])), Some("find.dll"));
+        assert_eq!(
+            old.pick_library(".dll", exists(&["find.dll"])),
+            Some("find.dll")
+        );
         // 后缀不匹配但确实有产物（开发者跨平台手拷）：不拦着
-        assert_eq!(old.pick_library(".so", exists(&["find.dll"])), Some("find.dll"));
+        assert_eq!(
+            old.pick_library(".so", exists(&["find.dll"])),
+            Some("find.dll")
+        );
         // 一个都没有
         assert_eq!(dual.pick_library(".dll", exists(&[])), None);
         assert_eq!(spec(&[]).pick_library(".dll", exists(&[])), None);
@@ -1320,9 +1447,7 @@ mod tests {
         assert_eq!((p.min_h, p.max_h), (160.0, 720.0));
 
         // 未声明 max_height：取默认上限；小屏时以屏高为准，别长出屏幕
-        let small = view(
-            r#"{"id":"a","title":"t","width":100,"height":100,"auto_height":true}"#,
-        );
+        let small = view(r#"{"id":"a","title":"t","width":100,"height":100,"auto_height":true}"#);
         let p = popup_policy(&small, MON_H).unwrap().unwrap();
         assert_eq!((p.min_h, p.max_h), (POPUP_MIN_H_FLOOR, POPUP_MAX_H_DEFAULT));
         let p = popup_policy(&small, 500.0).unwrap().unwrap();
@@ -1355,10 +1480,19 @@ mod tests {
 
     #[test]
     fn center_and_top_right_pin_top_edge() {
-        let p = PopupPolicy { min_h: 96.0, max_h: 720.0 };
+        let p = PopupPolicy {
+            min_h: 96.0,
+            max_h: 720.0,
+        };
         for pos in [WindowPosition::Center, WindowPosition::TopRight] {
-            let (_, y, _, h) =
-                popup_rect_after_size(pos, MON_W, MON_H, (400.0, 200.0, 488.0, 300.0), (488.0, 460.0), p);
+            let (_, y, _, h) = popup_rect_after_size(
+                pos,
+                MON_W,
+                MON_H,
+                (400.0, 200.0, 488.0, 300.0),
+                (488.0, 460.0),
+                p,
+            );
             assert_eq!(y, 200.0, "{pos:?} 长高时顶边（= 拖拽区）不能跑");
             assert_eq!(h, 460.0);
         }
@@ -1366,7 +1500,10 @@ mod tests {
 
     #[test]
     fn bottom_right_pins_bottom_edge() {
-        let p = PopupPolicy { min_h: 96.0, max_h: 720.0 };
+        let p = PopupPolicy {
+            min_h: 96.0,
+            max_h: 720.0,
+        };
         let (x, y, w, h) = popup_rect_after_size(
             WindowPosition::BottomRight,
             MON_W,
@@ -1382,7 +1519,10 @@ mod tests {
     #[test]
     fn top_right_width_growth_pins_right_edge() {
         // pomo 挂件悬停加宽：右边缘距屏边只有 CORNER_MARGIN，向左生长才不出屏
-        let p = PopupPolicy { min_h: 88.0, max_h: 88.0 };
+        let p = PopupPolicy {
+            min_h: 88.0,
+            max_h: 88.0,
+        };
         let (x, _, w, h) = popup_rect_after_size(
             WindowPosition::TopRight,
             MON_W,
@@ -1397,7 +1537,10 @@ mod tests {
 
     #[test]
     fn rect_stays_on_screen_when_growing_downward() {
-        let p = PopupPolicy { min_h: 96.0, max_h: 720.0 };
+        let p = PopupPolicy {
+            min_h: 96.0,
+            max_h: 720.0,
+        };
         // 顶边钉住一路长到贴底：越界时整块回收到边距内，而不是留半个窗口在外
         let (_, y, _, h) = popup_rect_after_size(
             WindowPosition::Center,
@@ -1412,22 +1555,42 @@ mod tests {
 
     #[test]
     fn non_finite_input_is_a_noop() {
-        let p = PopupPolicy { min_h: 96.0, max_h: 720.0 };
+        let p = PopupPolicy {
+            min_h: 96.0,
+            max_h: 720.0,
+        };
         let cur = (400.0, 200.0, 488.0, 300.0);
         // NaN 进 set_size 会留下畸形矩形，必须在算之前就挡掉
         assert_eq!(
-            popup_rect_after_size(WindowPosition::Center, MON_W, MON_H, cur, (f64::NAN, 400.0), p),
+            popup_rect_after_size(
+                WindowPosition::Center,
+                MON_W,
+                MON_H,
+                cur,
+                (f64::NAN, 400.0),
+                p
+            ),
             cur
         );
         assert_eq!(
-            popup_rect_after_size(WindowPosition::Center, MON_W, MON_H, cur, (488.0, f64::INFINITY), p),
+            popup_rect_after_size(
+                WindowPosition::Center,
+                MON_W,
+                MON_H,
+                cur,
+                (488.0, f64::INFINITY),
+                p
+            ),
             cur
         );
     }
 
     #[test]
     fn height_is_clamped_to_policy() {
-        let p = PopupPolicy { min_h: 160.0, max_h: 720.0 };
+        let p = PopupPolicy {
+            min_h: 160.0,
+            max_h: 720.0,
+        };
         let (_, _, _, h) = popup_rect_after_size(
             WindowPosition::Center,
             MON_W,
@@ -1441,21 +1604,86 @@ mod tests {
 
     #[test]
     fn window_label_roundtrips_with_label_matches_view() {
-        let spec = view(
-            r#"{"id":"detail","title":"t","width":100,"height":100,"unique_by":"event"}"#,
-        );
+        let spec =
+            view(r#"{"id":"detail","title":"t","width":100,"height":100,"unique_by":"event"}"#);
         let plain = window_label("todo", "detail", None);
         assert_eq!(plain, "todo-detail");
-        assert_eq!(window_label("todo", "detail", Some("abc123")), "todo-detail-abc123");
+        assert_eq!(
+            window_label("todo", "detail", Some("abc123")),
+            "todo-detail-abc123"
+        );
         assert!(label_matches_view("todo", &spec, &plain));
-        assert!(label_matches_view("todo", &spec, &window_label("todo", "detail", Some("abc123"))));
+        assert!(label_matches_view(
+            "todo",
+            &spec,
+            &window_label("todo", "detail", Some("abc123"))
+        ));
         // 前缀相邻但不同视图的标签必须被拒——这是"改到别人窗口"的唯一入口
         assert!(!label_matches_view("todo", &spec, "todo-detailx"));
-        assert!(!label_matches_view("todo", &spec, "todo-detail-"), "空实例后缀不算");
+        assert!(
+            !label_matches_view("todo", &spec, "todo-detail-"),
+            "空实例后缀不算"
+        );
         assert!(!label_matches_view("notes", &spec, "todo-detail"));
         // 没声明 unique_by 的视图不接受任何带后缀的标签
         let single = view(r#"{"id":"panel","title":"t","width":100,"height":100}"#);
         assert!(label_matches_view("pick", &single, "pick-panel"));
         assert!(!label_matches_view("pick", &single, "pick-panel-1"));
+    }
+
+    #[test]
+    fn manifest_hotkeys_are_normalized_and_permission_gated() {
+        let manifest: PluginManifest = serde_json::from_str(
+            r#"{
+                "id": "pick",
+                "name": "取色器",
+                "version": "0.1.0",
+                "api_version": "^1",
+                "trigger": "/pick",
+                "permissions": ["shortcut:alt+p"],
+                "hotkeys": [
+                    { "id": "pick", "default": "Alt + P", "label": "光标处取色" },
+                    { "id": "hidden", "default": "ctrl+q", "label": "没声明权限" },
+                    { "id": "bad id", "default": "alt+x" },
+                    { "id": "pick", "default": "alt+o", "label": "重复 id" }
+                ],
+                "backend": { "kind": "none" }
+            }"#,
+        )
+        .expect("manifest 解析");
+
+        let valid = manifest.valid_hotkeys();
+        assert_eq!(valid.len(), 1, "只保留 id 合法、唯一且权限声明的条目");
+        assert_eq!(valid[0].id, "pick");
+        assert_eq!(valid[0].default, "alt+p", "默认值必须归一化");
+        assert_eq!(valid[0].scope, "main");
+        assert!(valid[0].editable);
+        assert!(valid[0].enabled);
+    }
+
+    #[test]
+    fn manifest_hotkey_allows_empty_default_and_scope_fallback() {
+        let manifest: PluginManifest = serde_json::from_str(
+            r#"{
+                "id": "clip",
+                "name": "剪贴板",
+                "version": "0.1.0",
+                "api_version": "^1",
+                "trigger": "/clip",
+                "hotkeys": [
+                    { "id": "open", "default": "", "label": "打开历史", "scope": "weird" }
+                ],
+                "backend": { "kind": "none" }
+            }"#,
+        )
+        .expect("manifest 解析");
+
+        let valid = manifest.valid_hotkeys();
+        assert_eq!(valid.len(), 1);
+        assert!(
+            valid[0].default.is_empty(),
+            "空默认值合法（只允许用户绑定）"
+        );
+        assert_eq!(valid[0].scope, "main", "未知 scope 回落 main");
     }
 }
