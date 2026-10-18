@@ -102,7 +102,13 @@ fi
 # ── 依赖安装（首次/依赖变更后自动补齐）─────────────────────
 # node_modules/ 目录可能存在但内容残缺（安装中断、网盘同步跳过了深层路径、
 # 从其他机器拷贝不完整）。在信任目录前先探测前端实际会 import 的包。
-if [[ ! -f node_modules/@kobalte/core/package.json ]]; then
+# 探测清单 = 前端真实 import 的关键包（src/core/updater.ts 用到 plugin-updater/plugin-process），
+# 只探一个包探不出"部分安装"——残缺可能正好落在别处。
+node_modules_incomplete=0
+for dep_pkg in @kobalte/core @tauri-apps/plugin-updater @tauri-apps/plugin-process; do
+    [[ -f "node_modules/$dep_pkg/package.json" ]] || node_modules_incomplete=1
+done
+if (( node_modules_incomplete )); then
     echo "[依赖] 依赖缺失或不完整，执行 npm install..."
     npm install
 fi
