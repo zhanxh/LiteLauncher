@@ -1,0 +1,74 @@
+# 意图路由表（Agent 第一入口）
+#
+# 用法：收到需求后先按 triggers 匹配；命中就读 target 全文并按其中流程执行。
+# 未命中 → 走 default（标准计划工作流）。复合意图按"主意图"先匹配，其余顺序处理。
+#
+# 字段：
+#   id       路由标识
+#   triggers 触发词（子串匹配，大小写不敏感）
+#   target   必读文档（相对仓库根）
+#   note     一句话说明（可选）
+
+version: 1
+default: docs/standards/basic/plan-workflow.md
+
+routes:
+  - id: lifecycle
+    triggers: [开工, 新需求, 做个功能, 加个功能, 实现一下, 开始做, 任务流程, 建档]
+    target: docs/workflows/00-lifecycle.md
+    note: 一次改动的完整闭环：检查 → 建档 → 设计 → 实施 → 验证 → 归档 → 提交
+
+  - id: plan-standard
+    triggers: [计划, 任务文档, 归档, task:auto, task:archive, 门禁, gate]
+    target: docs/standards/basic/plan-workflow.md
+    note: 命名、模板、六步闭环、上下文命令与降级方式
+
+  - id: design
+    triggers: [设计, 方案, 架构, 重构, 新插件, 新指令, 契约, abi, 数据模型, 迁移, 发布链路]
+    target: docs/standards/basic/design-workflow.md
+    note: 新增即需设计；设计文档入库 docs/design/
+
+  - id: build-verify
+    triggers: [构建, 编译, 打包, 自检, 验证, 报错, 白屏, 起不来, 崩溃, build, cargo, npm run, 环境]
+    target: docs/workflows/01-build-verify.md
+    note: 四档验证、构建顺序、常见故障与日志
+
+  - id: frontend
+    triggers: [前端, 界面, ui, 交互, 样式, 主题, 搜索框, 结果面板, 窗口, solid, tsx, 键盘]
+    target: docs/workflows/02-frontend.md
+    note: 壳层边界、Solid 响应性、插件注册表、手测清单
+
+  - id: rust-host
+    triggers: [宿主, rust, crate, ipc, 命令, svc, 权限门控, 数据库, schema, sqlite, 热键, 窗口管理]
+    target: docs/workflows/03-rust-host.md
+    note: 分层与依赖方向、契约变更路径、错误与 panic 约束
+
+  - id: plugin-dev
+    triggers: [插件, plugin, manifest, 指令, 斜杠, /cal, /todo, 面板, 视图, llp, native dll]
+    target: docs/workflows/04-plugin-dev.md
+    note: 选形态 → 骨架 → manifest → query/onSelect → 测试
+
+  - id: plugin-acceptance
+    triggers: [插件交付, 插件验收, 上架, 发布插件, 权限审查]
+    target: docs/standards/business/plugin-acceptance.md
+    note: 交付前逐条核对 manifest、权限、视图、测试
+
+  - id: release
+    triggers: [发版, 发布, 版本, tag, 更新, updater, 签名, 安装包, nsis, latest.json]
+    target: docs/workflows/05-release.md
+    note: 版本同步 → 验证 → tag → CI → 抽查 → 回滚
+
+  - id: docs-placement
+    triggers: [写文档, 文档放哪, 命名, 目录, 归档文档, 输出位置]
+    target: docs/standards/basic/output-placement.md
+    note: 产物落位、命名规则、脚本生命周期
+
+  - id: code-style
+    triggers: [代码规范, 风格, 提交信息, commit, changelog, 依赖方向]
+    target: docs/standards/basic/coding-conventions.md
+    note: TS/Solid、Rust、插件、提交与变更日志
+
+  - id: knowledge
+    triggers: [复盘, 经验, 踩坑, 沉淀, 为什么会这样]
+    target: docs/knowledge/README.md
+    note: 一条一文件，现象 → 根因 → 判据 → 处理

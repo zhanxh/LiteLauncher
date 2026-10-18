@@ -1,6 +1,6 @@
 # LiteLauncher 常用插件规划（Plugin Roadmap）
 
->配套：[plugin-architecture-design.md](./plugin-architecture-design.md)（架构）、[plugin-development-guide.md](./plugin-development-guide.md)（开发指南）
+>配套：[plugin-architecture-design.md](../design/plugin-architecture-design.md)（架构）、[plugin-development-guide.md](../guides/plugin-development-guide.md)（开发指南）
 > 目标：盘点"还有哪些常用插件值得做"，并按**当前宿主能力**区分"现在就能落地"与"要先扩宿主能力"。
 
 ---
@@ -334,11 +334,12 @@ LLP sidecar ──stdio 反向请求──┐
 ```jsonc
 {"method": "svc.http.send",
  "params": {"method": "POST", "url": "https://api.x.com/v1/y",
-            "headers": {"Authorization": "Bearer …"}, "body": "{\"q\":1}"}}
+            "headers": {"Content-Type": "application/json"}, "body": "{\"q\":1}"}}
 // 响应：{"status": 200, "body": "…"}
 ```
 
 - 仍走 `HttpApi` + `net:<host>` 域名白名单（逐域名精确匹配），可审计可限流；
+- 需要鉴权的接口由插件自己在 `headers` 中携带鉴权头；token 从插件设置读取，不写进 manifest、不进日志；
 - `headers` 同时接受 `{"K":"V"}` 与 `[["K","V"]]` 两种写法（Python/JS 各自顺手的形式）；
 - 实现上借道 `send_stream` 收集全文，**顺带拿到状态码**（`HttpApi::send` 只回响应体）。
 

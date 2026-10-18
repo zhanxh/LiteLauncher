@@ -114,7 +114,7 @@ target-dir = "target"
 
   "native/src/lib.rs": `//! ${name} —— LiteLauncher native 动态库插件
 //!
-//! 与宿主的全部交互（详见 docs/native-plugin-guide.md）：
+//! 与宿主的全部交互（详见 docs/guides/native-plugin-guide.md）：
 //! 1. 导出 ll_plugin_load：校验宿主 ABI → 保存宿主 API → 回吐描述符；
 //! 2. vtable.call：search/execute/select（通用命令面板契约）；
 //!    需要宿主能力（db/窗口/剪贴板/...）时经 call_host_service("svc.*")；
@@ -342,4 +342,4 @@ console.log("  下一步：");
 console.log(`  1. 编辑 plugins/${id}/native/src/lib.rs 的 handle()`);
 console.log(`  2. cd plugins/${id}/native && build.cmd`);
 console.log("  3. 重启 LiteLauncher，或在设置面板启用后重扫");
-console.log(`  指南：docs/native-plugin-guide.md`);
+console.log(`  指南：docs/guides/native-plugin-guide.md`);

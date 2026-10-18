@@ -21,7 +21,16 @@
     "check": "cargo check --workspace && tsc --noEmit",
     "version:sync": "node tools/sync-version.mjs",
     "version:check": "node tools/sync-version.mjs --check",
-    "plugin:deploy": "node tools/deploy-portable-plugins.mjs"
+    "plugin:deploy": "node tools/deploy-portable-plugins.mjs",
+    "docs:check": "node tools/agent/check-docs.mjs",
+    "task:list": "node tools/agent/task-context.mjs list",
+    "task:current": "node tools/agent/task-context.mjs current",
+    "task:auto": "node tools/agent/task-context.mjs auto",
+    "task:switch": "node tools/agent/task-context.mjs switch",
+    "task:close": "node tools/agent/task-context.mjs close",
+    "task:archive": "node tools/agent/task-context.mjs archive",
+    "gate": "node tools/agent/gate-check.mjs",
+    "hooks:install": "git config core.hooksPath .githooks"
   },
   "license": "MIT",
   "engines": {

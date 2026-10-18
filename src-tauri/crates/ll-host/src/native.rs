@@ -1,4 +1,4 @@
-//! native 动态库插件后端（M1，方案见 docs/plugin-native-dylib-design.md）
+//! native 动态库插件后端（M1，方案见 docs/design/plugin-native-dylib-design.md）
 //!
 //! 参照 DeaDBeeF 的加载模型（`src/plugins.c` 的 load_plugin / plug_init_plugin）：
 //! - 扫描阶段由 `llp.rs::register_external_plugins` 统一驱动（manifest 已解析、

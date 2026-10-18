@@ -1,6 +1,6 @@
 //! `ll-plugin://` 自定义协议（M2）：把插件目录的 `fe/` 静态资产作为窗口页面提供。
 //!
-//! 这是 native/llp 插件「自带前端」的承载通道（方案 docs/plugin-native-dylib-design.md §6.2）：
+//! 这是 native/llp 插件「自带前端」的承载通道（方案 docs/design/plugin-native-dylib-design.md §6.2）：
 //! - 插件 manifest 的视图声明 `frontend: "assets"` → 宿主建窗时导航到
 //!   `ll-plugin://localhost/<pluginId>/index.html?view=...&<params>`；
 //! - 本模块按 URL 解析出插件 id 与相对路径，在各插件根目录（extplugins → 便携 → 开发期仓库）

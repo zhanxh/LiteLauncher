@@ -1,0 +1,10 @@
+#!/bin/sh
+# LiteLauncher pre-push 门禁：确认仍有一个进行中的任务绑定。
+# 只查绑定，不查设计文档（设计门禁在 pre-commit 已经拦过）。
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "[gate] 未找到 node，跳过门禁"
+  exit 0
+fi
+
+exec node tools/agent/gate-check.mjs --check-active

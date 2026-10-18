@@ -302,7 +302,7 @@ some-third-party/
 > **落地状态（M1–M5 已实施）**：M1 全部落地（ll-plugin-abi + native loader + echo 示例 + native-smoke）；
 > M2 全部落地（`ll-plugin://` 协议 + llBridge + capabilities 通配 + echo fe 面板 + notes native 化试点，
 > 经 ll-native-shell 适配器零改动复用 be 逻辑）；M3 全部落地（`plugin:create` 脚手架 +
-> native-smoke 即 ll-test-host 雏形 + install/deploy 扩展 + [native-plugin-guide.md](./native-plugin-guide.md)）；
+> native-smoke 即 ll-test-host 雏形 + install/deploy 扩展 + [native-plugin-guide.md](../guides/native-plugin-guide.md)）；
 > M4 落地完整性 sha256 校验（声明即强制）；M5 把剩余 three builtin（todo/apps/ai）全部迁为 native，
 > 并为 /ai 的 SSE 聊天把 ABI 升到 1.1（`LlHostApi.http_stream`：同进程逐块回调），
 > 新增 `svc.secret.get/set/delete`；随后把唯一常驻型 sidecar（`/pomo`，Python 里 `while True` 计时线程）

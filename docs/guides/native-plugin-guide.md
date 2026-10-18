@@ -3,7 +3,7 @@
 > native 是 LiteLauncher 的第四种插件形态：后端编译为**独立动态库**（`.dll`/`.so`），
 > 宿主启动时扫描 `plugins/` 目录 dlopen 加载，**不改主程序、不重编译**即可安装。
 > 性能与内置（builtin）等同、分发与外部脚本（llp）同等。\r\n> **M5 起 LiteLauncher 自身也不再有内置插件**：`/todo` `/app` `/ai` `/note` 全部是 native，\r\n> 主程序里剩下的只有宿主核心服务——你写的插件和官方插件走的是同一条加载路径。
-> 设计依据与取舍：[plugin-native-dylib-design.md](./plugin-native-dylib-design.md)。
+> 设计依据与取舍：[plugin-native-dylib-design.md](../design/plugin-native-dylib-design.md)。
 
 ---
 

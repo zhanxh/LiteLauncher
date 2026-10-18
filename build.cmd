@@ -16,7 +16,7 @@ REM    build.cmd          full build: frontend + main exe + portable plugin depl
 REM    build.cmd check    quick gate: cargo check + frontend type check (no binary)
 REM    build.cmd ship     OFFICIAL RELEASE build: fat LTO + 1 codegen unit,
 REM                       NSIS installer + updater artifacts (needs signing key;
-REM                       see docs/distribution.md), separate target-ship dir
+REM                       see docs/guides/distribution.md), separate target-ship dir
 REM ============================================================
 
 REM -- Toolchain check ----------------------------------------

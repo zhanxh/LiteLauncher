@@ -2,9 +2,9 @@
 
 > **历史快照（2026-10-13）**：本文记录当时的问题与对标，不随实现实时更新。
 > 当前能力以 `CHANGELOG.md` 与代码为准；优化执行记录见
-> [optimization-plan.md](optimization-plan.md)。
+> [optimization-plan.md](../design/optimization-plan.md)。
 
-> 评审对象：`docs/plugin-roadmap.md` 所列 A/B/C/D 组功能
+> 评审对象：`docs/records/plugin-roadmap.md` 所列 A/B/C/D 组功能
 > 评审方式：路线图与实际代码逐条核对（`src/App.tsx`、`plugins/*/fe`、`plugins/*/*.py`）+ 主流同类软件公开资料对标
 > 结论口径：问题均标注代码位置或来源；未实现能力标注为"缺口"，不臆测已实现
 
@@ -136,7 +136,7 @@
 
 ## 3. 文档自身的问题（评审发现）
 
-**`docs/plugin-roadmap.md` 内部状态自相矛盾**，会误导后续决策：
+**`docs/records/plugin-roadmap.md` 内部状态自相矛盾**，会误导后续决策：
 
 | 位置 | 内容 | 矛盾点 |
 |---|---|---|

@@ -3,7 +3,7 @@
 > **基于 Tauri 2 + SolidJS + SQLite (FTS5) 的下一代生产力启动器（Launcher）**
 > **核心理念：** Command-First, Window-as-Context, Plugin-Driven
 >
-> 文档入口：[docs/README.md](docs/README.md)（状态以 `CHANGELOG.md` 与代码为准）
+> 文档入口：[docs/README.md](docs/README.md) ｜ Agent 入口：[AGENT.md](AGENT.md)（状态以 `CHANGELOG.md` 与代码为准）
 
 ---
 
@@ -163,7 +163,7 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 物理/逻辑像素换算与四角锚定**只在宿主做**并有单测——插件不再手工量屏幕、拼坐标。
 日历窗口与设置窗口也走同一套壳（`fill` 定尺寸模式：窗口大小归用户，标题/状态栏照样钉死，长内容只滚内容区）。
 两处平台例外写进了指南（Linux/GTK 会忽略不可 resize 窗口的 `set_size`；`index.html` 的 `#root` 是 ID 权重，底色与字色要重写到它上面）。
-用法与代价见 `docs/plugin-development-guide.md` §5.6。
+用法与代价见 `docs/guides/plugin-development-guide.md` §5.6。
 
 ### 已实现插件
 
@@ -194,7 +194,7 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 
 **纯前端 · 桌面能力（`kind: none` + `screen` / `shortcut:<accel>`）· 2 个**
 
-截图与取色都不需要任何平台代码——抓屏、多屏定位、窗口避让、PNG 落盘全在宿主（D 组能力包，见 `docs/plugin-roadmap.md` §11）。
+截图与取色都不需要任何平台代码——抓屏、多屏定位、窗口避让、PNG 落盘全在宿主（D 组能力包，见 `docs/records/plugin-roadmap.md` §11）。
 
 | 指令 | 名称 | 说明 |
 | :--- | :--- | :--- |
@@ -268,7 +268,7 @@ build.cmd ship
 
 产物在 `src-tauri\target-ship\release\bundle\nsis\`，插件会随包安装到
 `$INSTDIR\plugins`。便携版仍可直接用 `release\LiteLauncher.exe` + `release\plugins\`。
-签名、更新源与自动更新配置见 [docs/distribution.md](docs/distribution.md)。
+签名、更新源与自动更新配置见 [docs/guides/distribution.md](docs/guides/distribution.md)。
 
 ```bash
 # 安装全部外部插件到用户目录（~/.local/share/LiteLauncher/extplugins/）

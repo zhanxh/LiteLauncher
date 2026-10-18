@@ -3,7 +3,8 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-> 规则：每个**用户可感知**的变更必须有一行；纯重构/注释不写。
+> 规则：**每次修改都要在 `[Unreleased]` 记一行**——包括重构、文档、构建脚本与依赖升级。
+> 用户可感知的进 `Added / Changed / Fixed / Removed`；其余进 `Internal`。发布时整段移到版本号下。
 
 ## [Unreleased]
 
@@ -34,7 +35,7 @@
 - API Key 在 Windows 上用 DPAPI 加密存储；旧明文首次读取自动迁移，换用户/换机解密失败时提示重填。
 - 文档索引 `docs/README.md`；历史评审标注快照，状态以 CHANGELOG 与代码为准。
 - `/hash`、`/cron`、`/cidr`、`/time`、`/pwd` 从 Python sidecar 迁为纯前端插件：干净 Windows 无需 Python，功能与输出保持兼容。
-- 新增 [docs/monetization.md](docs/monetization.md)：明确不做广告、不做功能阉割式会员，捐赠优先、云同步可选。
+- 新增 [docs/records/monetization.md](docs/records/monetization.md)：明确不做广告、不做功能阉割式会员，捐赠优先、云同步可选。
 - 工程基线：MIT LICENSE、版本号单一真相源脚本、GitHub Actions CI、本 CHANGELOG。
 
 ### Changed
@@ -46,6 +47,11 @@
 ### Fixed
 
 - 旧库搬迁失败（如核心库 `todos` 缺列）时，插件 schema 升级不再被一起跳过，避免 `apps.db` 永久停留在 v1。
+
+### Internal
+
+- 工程：文档按 `workflows/standards/design/guides/records/knowledge` 分层，新增根 `AGENT.md` 与开发工作流（六步闭环、方案设计前置、提交门禁、文档死链检查）。
+- 工程：提交门禁新增变更日志检查（`--check-changelog`），每次提交必须在 `[Unreleased]` 记一行。
 
 ## [0.1.0] - 2026-10-10
 

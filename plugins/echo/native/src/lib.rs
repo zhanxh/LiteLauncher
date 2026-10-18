@@ -1,6 +1,6 @@
 //! echo —— LiteLauncher native 动态库插件示例（M1 + M2 资产窗口）
 //!
-//! 与宿主的全部交互只有三个点（见 docs/native-plugin-guide.md）：
+//! 与宿主的全部交互只有三个点（见 docs/guides/native-plugin-guide.md）：
 //! 1. 导出 `ll_plugin_load`：校验宿主 ABI → 保存宿主 API 指针 → 回吐描述符；
 //! 2. 实现 `vtable.call`：search/execute/select（通用命令面板契约）+ `panel` 打开自带前端；
 //! 3. 实现 `vtable.shutdown`：停止活动（**不释放状态**——宿主可能重新启用）。

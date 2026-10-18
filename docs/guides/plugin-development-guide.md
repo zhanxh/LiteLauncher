@@ -1,6 +1,6 @@
 # LiteLauncher 插件开发指南（LPS-1）
 
-> 适用版本：M5 架构（插件独立编译、目录扫描加载）｜配套设计文档：[plugin-architecture-design.md](./plugin-architecture-design.md)
+> 适用版本：M5 架构（插件独立编译、目录扫描加载）｜配套设计文档：[plugin-architecture-design.md](../design/plugin-architecture-design.md)
 >
 > **状态（2026-10）**：插件分四种形态 `native`（推荐）/ `llp` / `none` / `builtin`（遗留）。
 > 全部由宿主**扫描 `plugins/` 目录**注册，**新增插件不改主程序任何源码**；

@@ -1,7 +1,7 @@
 # LiteLauncher 优化方案设计（P0 / P1 / P2）
 
 > 状态：设计稿 v1，待评审  
-> 依据：`docs/plugin-ux-review.md`、产品评审结论（2026-10-18）、源码核对与 release 包实机基线  
+> 依据：`docs/records/plugin-ux-review.md`、产品评审结论（2026-10-18）、源码核对与 release 包实机基线  
 > 范围：0.2.0 / 0.3.0 / 0.4.0 三个版本，共 18 个工作包（含补充的 WP-04b）  
 > 原则：**只做加法，不推翻现有架构；不改插件 ABI；不做账号与云**
 >
@@ -670,7 +670,7 @@ onSelect?(item: PanelItem, actionId?: string): Promise<AfterSelect | void>;
 
 ### WP-10 内存、日志与截图落盘治理（2 人日）
 
-**问题**：空闲 247 MB；`lifecycle.log` 无轮转且每次 IPC 都写；截图落盘无上限无清理（`docs/plugin-ux-review.md` RK-01 仍未关闭）。
+**问题**：空闲 247 MB；`lifecycle.log` 无轮转且每次 IPC 都写；截图落盘无上限无清理（`docs/records/plugin-ux-review.md` RK-01 仍未关闭）。
 
 **方案**
 
@@ -742,14 +742,14 @@ onSelect?(item: PanelItem, actionId?: string): Promise<AfterSelect | void>;
 
 ### WP-13 文档重构与单一真相源（2 人日）
 
-**问题**：README 391 行，开发架构与用户指南混在一起；`docs/plugin-ux-review.md` 里"已完成/未实现"并存；README 的"拼音简写""单实例"与实现不符。
+**问题**：README 391 行，开发架构与用户指南混在一起；`docs/records/plugin-ux-review.md` 里"已完成/未实现"并存；README 的"拼音简写""单实例"与实现不符。
 
 **方案**
 
 - `README.md` 重写为用户向：这是什么、60 秒上手、快捷键表、常见问题、如何反馈（≤ 150 行）；
 - `docs/architecture.md`：现有架构、插件体系、构建说明（搬走原 README 的开发内容）；
 - `docs/user-guide.md`：每个指令一页，含真实示例（从 `examples`/`argsHint` 生成，避免手写漂移）；
-- `docs/plugin-ux-review.md` 顶部加横幅："2026-10-13 的历史快照，状态以 CHANGELOG 与代码为准"；
+- `docs/records/plugin-ux-review.md` 顶部加横幅："2026-10-13 的历史快照，状态以 CHANGELOG 与代码为准"；
 - 所有文档加"最后核对日期 + 对应版本"；
 - CI 增加一条脚本：校验 README 快捷键表与 `setup()` 注册的热键一致（防再次漂移）。
 
@@ -808,7 +808,7 @@ onSelect?(item: PanelItem, actionId?: string): Promise<AfterSelect | void>;
 | 插件市场分成 | 低（近期） | 需审核、签名、结算体系，0.4 前不做 |
 | 广告 | **不做** | 与工具类产品信任模型冲突 |
 
-**交付**：`docs/monetization.md`，含定价假设、成本模型、对开源协议的影响、退出策略。代码层不做任何预埋。
+**交付**：`docs/records/monetization.md`，含定价假设、成本模型、对开源协议的影响、退出策略。代码层不做任何预埋。
 
 ---
 
