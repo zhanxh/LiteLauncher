@@ -11,7 +11,7 @@ use ll_host::{HostState, PluginDbRegistry};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{
-    AppHandle, LogicalSize, Manager,
+    AppHandle, LogicalSize, Manager, WindowSizeConstraints,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -83,16 +83,56 @@ pub fn log_debug(msg: &str) {
 }
 
 /// 动态调整启动器主窗口高度
+///
+/// 必须是 async 命令：同步命令在 Linux 上于 WebKitGTK 的 IPC 回调里执行，
+/// 在那个上下文里直接 gtk_window_resize 会打断 GDK 的窗口更新 freeze/thaw
+/// 记账——实测每次启动必触发
+/// `gdk_window_thaw_toplevel_updates: assertion ... failed`，之后窗口可能
+/// 整体停止重绘（进程存活、画面停在旧帧，表现为“卡死”）。async 命令跑在
+/// worker 线程，run_on_main_thread 把 resize 投回主循环的独立迭代，彻底
+/// 跳出 WebKit 回调上下文。
 #[tauri::command]
-fn set_main_window_height(app: AppHandle, height: f64) -> Result<(), String> {
+async fn set_main_window_height(app: AppHandle, height: f64) -> Result<(), String> {
     log_debug(&format!("IPC: set_main_window_height height={}", height));
-    if let Some(window) = app.get_webview_window("main") {
-        let clamped_height = height.clamp(70.0, 640.0);
-        window
-            .set_size(LogicalSize::new(680.0, clamped_height))
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    let clamped_height = height.clamp(70.0, 640.0);
+    LAST_REQUESTED_HEIGHT.store(clamped_height as u32, std::sync::atomic::Ordering::Relaxed);
+    let app_for_main = app.clone();
+    app.run_on_main_thread(move || {
+        if let Some(window) = app_for_main.get_webview_window("main") {
+            #[cfg(target_os = "linux")]
+            unlock_main_window_resizing(&window);
+            if let Err(e) = window.set_size(LogicalSize::new(680.0, clamped_height)) {
+                log_debug(&format!("IPC: set_main_window_height resize 失败: {}", e));
+            }
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// 前端最近一次请求的逻辑高度（0 = 尚未请求过）。
+/// Linux 上首次 resize 可能赶在 GTK 尺寸解锁生效之前被夹掉，靠 Resized
+/// 事件里的补发收敛（见 RunEvent::WindowEvent 分支）。
+static LAST_REQUESTED_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Linux：解锁主窗口的动态高度。
+///
+/// 主窗口以 `resizable: false` 创建（tauri.conf.json，Windows 上就该这样），
+/// 但 GTK 对不可缩放窗口会在首次 configure 把 WM 尺寸提示锁死成
+/// min=max=当前尺寸（实测 680×200），之后 gtk_window_resize 一律被 X 静默
+/// 夹回，前端报多少高度都不生效——面板永远只有一条小窗那么高。运行时
+/// `set_resizable(true)` 会被 GTK 首次 configure 的一次性回调竞态覆盖，
+/// 所以这里在每次改高、每次窗口 Resized 事件时都重申：放开 resizable 并
+/// 写入显式宽高约束（宽锁 680，高放开到前端本就夹取的 70..640）。
+/// 无边框窗没有系统缩放把手，用户日常拖不到，宽度也不会漂。
+#[cfg(target_os = "linux")]
+fn unlock_main_window_resizing(window: &tauri::WebviewWindow) {
+    let _ = window.set_resizable(true);
+    let _ = window.set_size_constraints(WindowSizeConstraints {
+        min_width: Some(tauri::LogicalUnit::new(680.0).into()),
+        min_height: Some(tauri::LogicalUnit::new(70.0).into()),
+        max_width: Some(tauri::LogicalUnit::new(680.0).into()),
+        max_height: Some(tauri::LogicalUnit::new(640.0).into()),
+    });
 }
 
 /// 接收前端控制台日志并写入生命周期文件
@@ -455,6 +495,26 @@ pub fn run() {
                         "RunEvent::WindowEvent label={} event={:?}",
                         label, event
                     ));
+                    // Linux：GTK 首次 configure 时可能把主窗口尺寸提示重新锁死
+                    // （resizable:false 的一次性回调，时序上可能晚于我们的解锁），
+                    // 每次窗口 Resized 后重申解锁；若高度与前端最近请求不一致
+                    // （首次 resize 被夹掉），补发一次直到收敛。
+                    #[cfg(target_os = "linux")]
+                    if label == "main" {
+                        if let tauri::WindowEvent::Resized(_) = event {
+                            if let Some(window) = _app_handle.get_webview_window("main") {
+                                unlock_main_window_resizing(&window);
+                                let last = LAST_REQUESTED_HEIGHT.load(std::sync::atomic::Ordering::Relaxed);
+                                if last > 0 {
+                                    let scale = window.scale_factor().unwrap_or(1.0);
+                                    let current = (window.inner_size().unwrap_or_default().height as f64 / scale).round() as i32;
+                                    if (current - last as i32).abs() > 1 {
+                                        let _ = window.set_size(LogicalSize::new(680.0, last as f64));
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 tauri::RunEvent::Ready => {
                     log_lifecycle("RunEvent::Ready");

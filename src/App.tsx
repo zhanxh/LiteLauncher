@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, onMount, onCleanup } from 'solid-js';
+import { Component, createSignal, createEffect, onMount, onCleanup, untrack } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { SearchBar } from './components/SearchBar';
@@ -158,8 +158,14 @@ export const App: Component = () => {
     setQueryError(null);
     setQuerySlow(false);
     setQueryLoading(false);
-    // 没有旧结果时才需要撑住高度；有旧结果就原地等新结果，避免列表跳动
-    if (panelItems().length === 0) {
+    // 没有旧结果时才需要撑住高度；有旧结果就原地等新结果，避免列表跳动。
+    // 这里必须 untrack：beginQuery 会在 createEffect 的同步作用域里被调用，
+    // 常规读取 panelItems 会把它注册成效果的依赖——查询完成后 setPanelItems
+    // 触发效果重跑 → 再查询 → 再写结果……纯 JS 插件（/time、/rand 等
+    // query 无 IPC）的 await 落在微任务里，整个循环饿死事件循环：窗口冻结
+    // 在最后一次绘制帧、进程满负荷空转。走 IPC 的插件（/app、/todo）每圈
+    // 让出事件循环，所以此前从未暴露。
+    if (untrack(() => panelItems().length) === 0) {
       updateWindowHeight(PANEL_LOADING_HEIGHT);
     }
     querySkeletonTimer = setTimeout(() => setQueryLoading(true), 150);

@@ -47,6 +47,9 @@
 
 ### Fixed
 
+- Linux 上输入 `/time`、`/rand` 等纯前端插件指令时程序冻结（窗口停在少一个字符的最后绘制帧、进程满负荷空转）：壳层查询效果经 `beginQuery` 常规读取 `panelItems` 把它注册成效果依赖，查询完成后 `setPanelItems` 触发效果重跑 → 再查询，形成死循环；纯 JS 插件的 await 落在微任务里，事件循环被饿死（走 IPC 的 `/app` 等每圈让出事件循环，因此从未暴露）。`beginQuery` 改用 `untrack` 读取切断反馈环。
+- Linux 上启动器动态高度从未生效，面板永远只有一条小窗：`resizable: false` 的窗口被 GTK 锁死尺寸提示（实测 min=max=680×200），所有 `set_size` 被 X 静默夹回且 Tauri 照样返回 Ok。运行时解锁 resizable 并写入显式宽高约束（宽锁 680，高 70..640），被夹掉的 resize 在窗口 Resized 事件里补发收敛；与 auto_height 弹窗的 Linux 处理同思路。
+- `set_main_window_height` 改为 async 命令并把 resize 派发到主循环独立迭代：同步命令在 Linux 上于 WebKitGTK 的 IPC 回调里执行，直接 gtk_window_resize 会打断 GDK 窗口更新 freeze/thaw 记账（每次启动触发 `gdk_window_thaw_toplevel_updates` 断言）。
 - native 插件 manifest 的 `backend.entry` 补齐双平台条目（ai/apps/echo/notes/pomo/todo 六个此前只声明 `.dll`）：Linux 构建时 integrity 才能回填到 `lib*.so`，便携包不再携带 Linux 上必然被宿主拒载的插件清单（表现为「未知插件 apps」）。
 - 旧库搬迁失败（如核心库 `todos` 缺列）时，插件 schema 升级不再被一起跳过，避免 `apps.db` 永久停留在 v1。
 
@@ -55,6 +58,7 @@
 - 修复：build.sh 的 node_modules 残缺探测覆盖前端实际引用的 `@tauri-apps/plugin-updater` / `plugin-process`，部分安装不再静默进入前端打包（Linux 实测曾在 vite 阶段报 import 解析失败）。
 - 工程：清理 ll-host 与 ll-icons 的 Linux 编译警告——删除未使用的 `Ordering` 导入与非 Windows 平台死代码（`drive_root_pythons` 空桩、`ICON_SIZE` 移入 Windows cfg）。
 - 工程：按 Linux 构建产物刷新 find / sysinfo 的 native 插件 `backend.integrity`。
+- 工程：按 Linux 构建产物刷新 ai / apps / find / notes / pomo / sysinfo / todo 的 native 插件 `backend.integrity`。
 - 工程：文档按 `workflows/standards/design/guides/records/knowledge` 分层，新增根 `AGENT.md` 与开发工作流（六步闭环、方案设计前置、提交门禁、文档死链检查）。
 - 工程：提交门禁新增变更日志检查（`--check-changelog`），每次提交必须在 `[Unreleased]` 记一行。
 
