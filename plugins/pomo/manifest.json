@@ -47,8 +47,9 @@
   "backend": {
     "kind": "native",
     "entry": [
-      "pomo.dll"
+      "pomo.dll",
+      "libpomo.so"
     ],
-    "integrity": "sha256:4a524070ba7ca8d2e55b54c78e9506fb15871258c2632db6a8dff0653fb632d8"
+    "integrity": "sha256:5dbc7b1a7bc38156e6e4077807731889ceb4c1a09140059c6c5e70a8ad2a4fb1"
   }
 }

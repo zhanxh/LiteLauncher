@@ -47,6 +47,7 @@
 
 ### Fixed
 
+- native 插件 manifest 的 `backend.entry` 补齐双平台条目（ai/apps/echo/notes/pomo/todo 六个此前只声明 `.dll`）：Linux 构建时 integrity 才能回填到 `lib*.so`，便携包不再携带 Linux 上必然被宿主拒载的插件清单（表现为「未知插件 apps」）。
 - 旧库搬迁失败（如核心库 `todos` 缺列）时，插件 schema 升级不再被一起跳过，避免 `apps.db` 永久停留在 v1。
 
 ### Internal

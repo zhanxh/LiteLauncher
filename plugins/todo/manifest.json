@@ -89,8 +89,9 @@
   "backend": {
     "kind": "native",
     "entry": [
-      "todo.dll"
+      "todo.dll",
+      "libtodo.so"
     ],
-    "integrity": "sha256:e7c2ef640dc81c8e6457bcd92e6a1e72406e4ffb4858a962a661fc40e360bfb1"
+    "integrity": "sha256:85c80a2e3a8af91250588facd6231f496a093148c13f9a1a524cf04a464da02d"
   }
 }

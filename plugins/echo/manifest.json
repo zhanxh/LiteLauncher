@@ -11,9 +11,10 @@
   "backend": {
     "kind": "native",
     "entry": [
-      "echo.dll"
+      "echo.dll",
+      "libecho.so"
     ],
-    "integrity": "sha256:37f7b9d74bbb8d786e5353e0b94289d927ab195015f1f96adb7b5a62751c351e"
+    "integrity": "sha256:fa393896b2b97c3c5a26b283b1afcfe3da09c0e42a71401484853446eaf8609e"
   },
   "views": [
     {

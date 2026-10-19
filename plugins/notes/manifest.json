@@ -15,9 +15,10 @@
   "backend": {
     "kind": "native",
     "entry": [
-      "notes.dll"
+      "notes.dll",
+      "libnotes.so"
     ],
-    "integrity": "sha256:69be6334db4ab1ee747cd4f98c6a87cea49a9249f7fc2003253ffb79082085b3"
+    "integrity": "sha256:720404e7fbe61e1c20b7d4d773e594f37fee5cc614d237f03fc222e07ea5b71e"
   },
   "views": [
     {

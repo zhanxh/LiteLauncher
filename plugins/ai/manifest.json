@@ -30,8 +30,9 @@
   "backend": {
     "kind": "native",
     "entry": [
-      "ai.dll"
+      "ai.dll",
+      "libai.so"
     ],
-    "integrity": "sha256:50a77a76e5ded3460479f9ff2142f34e3e022f43af77d82b474b930f9b5dc2d4"
+    "integrity": "sha256:437633afe4180c46ee19ea50d0fca8d19d76cb7f51fb9e910f1b1f0c9e7c1155"
   }
 }
