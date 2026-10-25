@@ -19,7 +19,7 @@ import '../styles/welcome.css';
 const STEPS = 3;
 
 const TRY_ITEMS: Array<{ text: string; label: string; hint: string }> = [
-  { text: 'wx', label: 'wx', hint: '打开微信' },
+  { text: '/app wx', label: '/app wx', hint: '打开微信' },
   { text: '/shot ', label: '/shot', hint: '区域截图' },
   { text: '/cal today ', label: '/cal today', hint: '今天的日程' },
 ];
@@ -137,7 +137,7 @@ export const WelcomePanel: Component = () => {
 
           <ul class="welcome-list">
             <li>
-              输入 <b>wx</b> 就能找到微信，<b>vsc</b> 对应 Visual Studio Code
+              输入 <b>/app wx</b> 就能找到微信，<b>/app vsc</b> 对应 Visual Studio Code
             </li>
             <li>
               输入 <b>/</b> 查看全部指令，例如 <b>/shot</b>、<b>/cal</b>、<b>/clip</b>

@@ -123,11 +123,8 @@ pub async fn open_welcome_window(app: AppHandle, apps: Option<u32>) -> Result<()
     };
     WebviewWindowBuilder::new(&app, "welcome", WebviewUrl::App(url.into()))
         .title("LiteLauncher - 欢迎")
-        .inner_size(800.0, 620.0)
-        .min_inner_size(720.0, 560.0)
-        // 可缩放：用户拉大窗口时布局自适应（内容列限宽居中，见 welcome.css）；
-        // 下限锁在原设计尺寸，避免缩得比内容还小
-        .resizable(true)
+        .inner_size(720.0, 560.0)
+        .resizable(false)
         .decorations(false)
         // 与 todo/pomo 一致：Win11 无边框窗默认带一圈白边，关掉阴影才干净
         .shadow(false)

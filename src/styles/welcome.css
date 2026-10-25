@@ -3,16 +3,10 @@
    与设置窗共用 PopupFrame 三段式：标题/状态栏固定，只有内容区滚动。
    ========================================================================== */
 
-/* 内容列：限宽居中——窗口被拉大后文字仍是一列舒适的阅读宽度，
-   不会横向铺满整窗；flex 容器高度随内容增长，垂直居中不会裁顶。 */
 .welcome-app {
   display: flex;
   flex-direction: column;
-  justify-content: center;
   gap: 20px;
-  width: 100%;
-  max-width: 640px;
-  margin: 0 auto;
   padding: 26px 30px 10px;
   box-sizing: border-box;
 }
@@ -137,7 +131,6 @@
   color: var(--text-muted);
 }
 
-/* 底部栏不限宽（区别于内容列）：步数贴左、按钮贴窗口右缘 */
 .welcome-foot {
   display: flex;
   align-items: center;
