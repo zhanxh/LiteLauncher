@@ -133,7 +133,12 @@ function accelFromEvent(e: KeyboardEvent): string | null {
 }
 
 export const SettingsPanel: Component = () => {
-  const [tab, setTab] = createSignal<SettingsTab>('general');
+  const urlParams = new URLSearchParams(window.location.search);
+  const initialTab = urlParams.get('tab') as SettingsTab | null;
+  const validTabs: SettingsTab[] = ['general', 'appearance', 'hotkeys', 'python', 'plugins', 'about'];
+  const [tab, setTab] = createSignal<SettingsTab>(
+    initialTab && validTabs.includes(initialTab) ? initialTab : 'general',
+  );
   const [theme, setThemeSignal] = createSignal<Theme>('dark');
   const [info, setInfo] = createSignal<AppInfo | null>(null);
   const [plugins, setPlugins] = createSignal<PluginInfo[]>([]);
@@ -142,6 +147,7 @@ export const SettingsPanel: Component = () => {
   const [mainHotkey, setMainHotkey] = createSignal<MainHotkeyState | null>(null);
   const [pluginHotkeys, setPluginHotkeys] = createSignal<PluginHotkeyRow[]>([]);
   const [autostart, setAutostart] = createSignal(false);
+  const [autostartBusy, setAutostartBusy] = createSignal(false);
   const [recording, setRecording] = createSignal<string | null>(null);
   const [hotkeyBusy, setHotkeyBusy] = createSignal(false);
   const [hotkeyMsg, setHotkeyMsg] = createSignal<{ kind: 'ok' | 'err'; text: string } | null>(null);
@@ -209,7 +215,8 @@ export const SettingsPanel: Component = () => {
   };
 
   const toggleAutostart = async () => {
-    if (!isTauri()) return;
+    if (!isTauri() || autostartBusy()) return;
+    setAutostartBusy(true);
     try {
       const next = !autostart();
       const state = await invoke<{ enabled: boolean }>('set_autostart', { enabled: next });
@@ -217,6 +224,8 @@ export const SettingsPanel: Component = () => {
       setHotkeyMsg({ kind: 'ok', text: state?.enabled ? '已开启开机自启' : '已关闭开机自启' });
     } catch (err) {
       setHotkeyMsg({ kind: 'err', text: String(err) });
+    } finally {
+      setAutostartBusy(false);
     }
   };
 
@@ -482,8 +491,13 @@ export const SettingsPanel: Component = () => {
                   <div class="setting-title">开机自启</div>
                   <div class="setting-desc">登录系统后自动在托盘常驻，不弹主窗口</div>
                 </div>
-                <button class="ll-btn ghost" onClick={() => void toggleAutostart()}>
-                  {autostart() ? '已开启' : '已关闭'}
+                <button
+                  class="ll-btn ghost plugin-toggle"
+                  classList={{ 'is-on': autostart() }}
+                  disabled={autostartBusy()}
+                  onClick={() => void toggleAutostart()}
+                >
+                  {autostartBusy() ? '设置中…' : autostart() ? '已开启' : '已关闭'}
                 </button>
               </div>
               <div class="setting-row">

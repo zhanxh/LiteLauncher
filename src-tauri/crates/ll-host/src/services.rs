@@ -17,7 +17,7 @@ use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{

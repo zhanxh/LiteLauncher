@@ -11,7 +11,7 @@ use ll_host::{HostState, PluginDbRegistry};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{
-    AppHandle, LogicalSize, Manager, WindowSizeConstraints,
+    AppHandle, LogicalSize, Manager,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -273,7 +273,7 @@ pub fn run() {
         // 开机自启：由设置页开关驱动，Windows 写 HKCU Run
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec!["--autostart"]),
         ))
         // M2：ll-plugin:// 自定义协议——插件自带前端（fe/ 静态资产）的承载通道，
         // 页面经建窗时注入的 window.__llBridge 调宿主（与 plugin_call 同一权限管线）
@@ -377,49 +377,58 @@ pub fn run() {
             hotkeys::init_plugin_hotkeys(&app_handle, &db_conn, host.hotkey_specs());
 
             // 2. 初始化系统托盘菜单（带安全容错，失败不阻断核心窗口运行）
-            if let Ok(show_item) = MenuItem::with_id(app, "show", "显示", true, None::<&str>) {
-                if let Ok(quit_item) = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)
-                {
-                    if let Ok(tray_menu) = Menu::with_items(app, &[&show_item, &quit_item]) {
-                        let mut tray_builder = TrayIconBuilder::new()
-                            .menu(&tray_menu)
-                            .show_menu_on_left_click(false);
+            let show_item = MenuItem::with_id(app, "show", "显示", true, None::<&str>);
+            let settings_item = MenuItem::with_id(app, "settings", "设置", true, None::<&str>);
+            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>);
 
-                        // 确保托盘图标存在，若 default_window_icon 为空则安全回退到内置图标
-                        let tray_icon = app.default_window_icon().cloned().or_else(|| {
-                            tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
-                                .ok()
-                        });
-                        if let Some(icon) = tray_icon {
-                            tray_builder = tray_builder.icon(icon);
-                        }
+            if let (Ok(show_item), Ok(settings_item), Ok(quit_item)) =
+                (show_item, settings_item, quit_item)
+            {
+                if let Ok(tray_menu) = Menu::with_items(app, &[&show_item, &settings_item, &quit_item]) {
+                    let mut tray_builder = TrayIconBuilder::new()
+                        .menu(&tray_menu)
+                        .show_menu_on_left_click(false);
 
-                        if let Ok(tray) = tray_builder
-                            .tooltip("LiteLauncher (快捷键 Alt+Space 或 Alt+X 唤起)")
-                            .on_menu_event(move |app, event| match event.id.as_ref() {
-                                "show" => {
-                                    let _ = show_main_window(app.clone());
-                                }
-                                "quit" => {
-                                    std::process::exit(0);
-                                }
-                                _ => {}
-                            })
-                            .on_tray_icon_event(|tray, event| {
-                                if let TrayIconEvent::Click {
-                                    button: MouseButton::Left,
-                                    button_state: MouseButtonState::Up,
-                                    ..
-                                } = event
-                                {
-                                    let app = tray.app_handle();
-                                    let _ = toggle_main_window(app.clone());
-                                }
-                            })
-                            .build(app)
-                        {
-                            app.manage(tray);
-                        }
+                    // 确保托盘图标存在，若 default_window_icon 为空则安全回退到内置图标
+                    let tray_icon = app.default_window_icon().cloned().or_else(|| {
+                        tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
+                            .ok()
+                    });
+                    if let Some(icon) = tray_icon {
+                        tray_builder = tray_builder.icon(icon);
+                    }
+
+                    if let Ok(tray) = tray_builder
+                        .tooltip("LiteLauncher (快捷键 Alt+Space 或 Alt+X 唤起)")
+                        .on_menu_event(move |app, event| match event.id.as_ref() {
+                            "show" => {
+                                let _ = show_main_window(app.clone());
+                            }
+                            "settings" => {
+                                let app_handle = app.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    let _ = settings::open_settings_window(app_handle).await;
+                                });
+                            }
+                            "quit" => {
+                                std::process::exit(0);
+                            }
+                            _ => {}
+                        })
+                        .on_tray_icon_event(|tray, event| {
+                            if let TrayIconEvent::Click {
+                                button: MouseButton::Left,
+                                button_state: MouseButtonState::Up,
+                                ..
+                            } = event
+                            {
+                                let app = tray.app_handle();
+                                let _ = toggle_main_window(app.clone());
+                            }
+                        })
+                        .build(app)
+                    {
+                        app.manage(tray);
                     }
                 }
             }
@@ -430,6 +439,13 @@ pub fn run() {
             // 4. DevTools 支持由 Cargo `devtools` feature 提供（按 F12 打开），不再启动时自动展开
 
             // 5. 提醒调度已随 todo 插件化：TodoPlugin::init 内部启动自己的扫描线程
+
+            // 6. 首启展示：非开机自启场景呼出主窗口；开机自启场景保持后台常驻
+            let is_autostart =
+                std::env::args().any(|arg| arg == "--autostart" || arg == "--silent");
+            if !is_autostart {
+                let _ = show_main_window(app.handle().clone());
+            }
 
             Ok(())
         })

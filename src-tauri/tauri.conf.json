@@ -22,6 +22,7 @@
         "alwaysOnTop": true,
         "center": true,
         "focus": true,
+        "visible": false,
         "resizable": false,
         "skipTaskbar": false,
         "shadow": false
@@ -63,7 +64,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/OWNER/LiteLauncher/releases/latest/download/latest.json"
+        "https://github.com/zhanxiaohai/LiteLauncher/releases/latest/download/latest.json"
       ],
       "pubkey": ""
     }
