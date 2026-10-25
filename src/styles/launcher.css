@@ -27,11 +27,25 @@ html, body, #root {
 
 /* 全屏遮罩视图（宿主给 `transparent: true` 的视图 URL 加了 transparent=1）：
    这类窗口必须**真的透出桌面**。全局底色是给普通窗口用的，照刷上去就会把
-   区域框选层盖成一整块纯色——底图还没抓好时尤其像死屏。 */
+   区域框选层盖成一整块纯色——底图还没抓好时尤其像死屏。
+   主启动器窗口也走同一条路（tauri.conf.json 的 main 同样 transparent:true +
+   transparent=1）：透明根底色 + .launcher-root 自绘圆角面板，四角才能露出桌面。 */
 html.ll-transparent,
 html.ll-transparent body,
 html.ll-transparent #root {
   background-color: transparent !important;
+}
+
+/* 圆角插件窗口（宿主按 rounded 声明位给视图 URL 加 rounded=1）：窗口透明，
+   由这层提供不透明底、var(--radius-window) 圆角裁切与描边，视图组件渲染在
+   内、无需各自适配。非圆角窗口（pomo、遮罩层）不带 ll-rounded，此层无样式。 */
+html.ll-rounded .plugin-window-root {
+  width: 100%;
+  height: 100%;
+  background-color: var(--bg-solid);
+  border: 1px solid var(--border-launcher);
+  border-radius: var(--radius-window);
+  overflow: hidden;
 }
 
 * {
@@ -45,7 +59,9 @@ html.ll-transparent #root {
   height: 0 !important;
 }
 
-/* 启动器主容器：无边框、圆角、实体深黑背景与精细内阴影 */
+/* 启动器主容器：无边框、圆角、实体深黑背景。窗口本身透明（圆角外透出桌面），
+   投影只能交给系统——box-shadow 会落在面板外的透明区里，只剩四个圆角缺口
+   内的一圈黑晕，必须去掉。 */
 .launcher-root {
   display: flex;
   flex-direction: column;
@@ -55,7 +71,6 @@ html.ll-transparent #root {
   background-color: var(--bg-solid) !important;
   border: 1px solid var(--border-launcher);
   border-radius: var(--radius-window);
-  box-shadow: var(--window-shadow);
   overflow: hidden;
 }
 

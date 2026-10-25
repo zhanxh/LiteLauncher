@@ -61,7 +61,7 @@
   --pop-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --radius-window: 14px;
+  --radius-window: 4px;
   --radius-item: 8px;
   --radius-pop: 12px;
 }

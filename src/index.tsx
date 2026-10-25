@@ -13,8 +13,14 @@ console.log("src/index.tsx executing render...");
 // 全屏遮罩视图（宿主给 `transparent: true` 的视图加了 ?transparent=1）：
 // 先摘掉全局不透明底色，否则遮罩层会盖成一整块纯色——这是截图框选层
 // "一片黑、看不到桌面"的直接原因。
-if (new URLSearchParams(window.location.search).get('transparent') === '1') {
+// 圆角插件窗口（?rounded=1，宿主按 rounded 声明位追加）：同样要透明根底色，
+// 另加 ll-rounded 让 App 里的 .plugin-window-root 包裹层画出圆角面板。
+const llUrlParams = new URLSearchParams(window.location.search);
+if (llUrlParams.get('transparent') === '1' || llUrlParams.get('rounded') === '1') {
   document.documentElement.classList.add('ll-transparent');
+}
+if (llUrlParams.get('rounded') === '1') {
+  document.documentElement.classList.add('ll-rounded');
 }
 
 registerShellPlugins();

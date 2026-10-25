@@ -661,6 +661,13 @@ fn open_on_main(
     if spec.transparent {
         url.push_str("&transparent=1");
     }
+    // 圆角窗口（`rounded` 声明位，默认 true；遮罩层自动排除）：与 main 启动器
+    // 同款机制——窗口透明、前端在 rounded=1 下用圆角面板填充窗口矩形，四角
+    // 透出桌面。直角常驻挂件（pomo）在 manifest 里声明 rounded:false 走原路。
+    let rounded = spec.rounded && !spec.transparent;
+    if rounded {
+        url.push_str("&rounded=1");
+    }
     for (k, v) in params {
         url.push_str(&format!("&{}={}", k, percent_encode(v)));
     }
@@ -740,6 +747,13 @@ fn open_on_main(
         // 注入 llBridge：薄封装宿主 IPC，全部调用走 plugin_call 应用命令（同一权限管线）
         builder = builder.initialization_script(&assets_bridge_script(plugin_id));
     }
+    // 圆角窗口必须去投影：系统投影沿着**矩形窗口**画，透明四角外会套一圈
+    // 方形阴影/Win11 白边，与圆角面板形状对不上（main 启动器同理用 shadow:false）。
+    let shadow = if rounded {
+        false
+    } else {
+        spec.shadow.unwrap_or(true)
+    };
     builder = builder
         .title(window_title.as_str())
         .inner_size(spec.width, spec.height)
@@ -749,7 +763,7 @@ fn open_on_main(
         //（桌面挂件上就是白边）。声明 shadow:false 的视图（如 pomo 挂件）彻底
         // 去掉非客户区：窗口矩形 = 客户区，白边与几何歧义一起消失，代价是
         // 没有系统投影与系统圆角。未声明时保持 Tauri 默认（true）。
-        .shadow(spec.shadow.unwrap_or(true))
+        .shadow(shadow)
         .always_on_top(spec.always_on_top)
         .skip_taskbar(spec.skip_taskbar)
         .focused(spec.focusable);
@@ -759,6 +773,9 @@ fn open_on_main(
     //   - 铺满目标显示器，用户才能在任意位置拖拽选区
     // 两者都要求 skip_taskbar + always_on_top，否则遮罩会出现在任务栏并被其他窗口盖住。
     if spec.transparent {
+        builder = builder.transparent(true);
+    }
+    if rounded {
         builder = builder.transparent(true);
     }
     if let WindowPosition::Fullscreen(sel) = spec.position {

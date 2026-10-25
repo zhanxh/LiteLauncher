@@ -14,6 +14,7 @@
     {
       "id": "widget",
       "title": "番茄钟",
+      "rounded": false,
       "width": 186,
       "height": 88,
       "min_width": 176,
@@ -50,6 +51,6 @@
       "pomo.dll",
       "libpomo.so"
     ],
-    "integrity": "sha256:6f43c7b013a6c304a18cc06702157c5a5f5bb9d42932c2293259dda022e4dc96"
+    "integrity": "sha256:8015ec019662ae7dc84d0592e494ec9fc82401dfdda03c0245ca488d2aa951cb"
   }
 }

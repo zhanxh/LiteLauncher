@@ -652,6 +652,14 @@ pub struct ViewSpec {
     /// `plugin_call` 被拒、表现为"死窗"。
     #[serde(default)]
     pub transparent: bool,
+    /// 圆角窗口（默认 true）：宿主把窗口设为透明、去掉系统投影，并在 URL 上
+    /// 加 `rounded=1`——前端据此用 `var(--radius-window)` 圆角面板填充窗口矩形，
+    /// 与 main 启动器同款观感（圆角外透出桌面）。自带前端的 assets 视图需要
+    /// 自己给根元素画圆角底（页面读不到宿主的 `rounded=1` 之外的任何约定）。
+    /// 全屏遮罩（`transparent: true`）自动忽略本位——铺满屏幕的遮罩圆角没有
+    /// 意义；直角常驻挂件（如 pomo）显式声明 `false` 保持整幅直角窗口。
+    #[serde(default = "default_true")]
+    pub rounded: bool,
     /// 多实例向上堆叠（配合 unique_by 的弹窗场景）
     #[serde(default)]
     pub stacked: bool,

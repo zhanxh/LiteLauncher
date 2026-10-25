@@ -14,11 +14,11 @@
       {
         "label": "main",
         "title": "LiteLauncher",
-        "url": "index.html",
+        "url": "index.html?transparent=1",
         "width": 680,
         "height": 70,
         "decorations": false,
-        "transparent": false,
+        "transparent": true,
         "alwaysOnTop": true,
         "center": true,
         "focus": true,

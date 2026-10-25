@@ -100,13 +100,16 @@ export const App: Component = () => {
   if (viewParam) {
     const ViewComponent = getView(viewParam);
     if (ViewComponent) {
-      return <ViewComponent />;
+      // 圆角插件窗口（rounded=1）：这层是透明窗口里的不透明圆角面板，视图组件
+      // 原样渲染在内；非圆角窗口（pomo 等）下无样式，不影响布局。
+      return <div class="plugin-window-root"><ViewComponent /></div>;
     }
   }
 
   // 应用设置面板窗口 (index.html?view=settings，核心设置中心)
   if (viewParam === 'settings') {
-    return <SettingsPanel />;
+    // 与插件窗口同一套圆角包裹层（rounded=1 时由 launcher.css 上样式）
+    return <div class="plugin-window-root"><SettingsPanel /></div>;
   }
 
   // 首启欢迎引导窗口 (index.html?view=welcome)

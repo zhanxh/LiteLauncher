@@ -82,7 +82,9 @@ pub async fn open_settings_window(app: AppHandle) -> Result<(), String> {
     WebviewWindowBuilder::new(
         &app,
         "app-settings",
-        WebviewUrl::App("index.html?view=settings".into()),
+        // rounded=1：与主窗/插件窗同款圆角机制——前端 App 用 .plugin-window-root
+        // 画 4px 圆角面板，四角透出桌面
+        WebviewUrl::App("index.html?view=settings&rounded=1".into()),
     )
     .title("LiteLauncher - 设置")
     // 横版布局：左侧竖排分类导航 + 右侧内容区，宽度大于高度才摆得下
@@ -92,6 +94,10 @@ pub async fn open_settings_window(app: AppHandle) -> Result<(), String> {
     // 无边框窗：标题栏/关闭按钮由前端的通用基窗（PopupFrame）提供，
     // 与日历、插件弹窗保持同一套窗口外观；拖拽走基窗标题栏的 drag-region
     .decorations(false)
+    // 圆角窗口：透明 + 去系统投影（投影沿矩形窗口画，会在透明圆角外套方形
+    // 阴影/Win11 白边，与插件窗口的处理一致）
+    .transparent(true)
+    .shadow(false)
     .center()
     .build()
     .map_err(|e| format!("创建设置窗口失败: {}", e))?;
