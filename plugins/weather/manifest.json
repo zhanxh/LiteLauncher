@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "api_version": "^1",
   "trigger": "/weather",
-  "description": "天气查询（纯前端）：/weather 北京 联网获取实况与今日预报（数据源 wttr.in，免密）。不带城市则按本机网络位置。",
+  "description": "天气查询（纯前端）：/weather 联网获取当前 IP 所在城市或指定城市实况与预报（数据源 wttr.in、ipwho.is，免密）。",
   "permissions": [
-    "net:wttr.in"
+    "net:wttr.in",
+    "net:ipwho.is"
   ],
   "backend": {
     "kind": "none"

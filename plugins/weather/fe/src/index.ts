@@ -1,13 +1,17 @@
 /**
  * @ll/plugin-weather —— /weather 天气查询（纯前端插件，backend.kind = "none"）
  *
- * 数据源 wttr.in（免费 / 免密 / 返回 JSON）。请求经宿主代理 `ctx.http`（即 `svc.http.send`），
- * 因此不受 webview 的 CORS 限制；manifest 需声明 `net:wttr.in`。
+ * 数据源：
+ * - 天气数据：wttr.in（免费 / 免密 / 返回 JSON）
+ * - 当前城市定位：ipwho.is（免费 / 免密 / HTTPS，同 /ip），默认按当前公网 IP 自动获取所在城市
+ *
+ * 请求经宿主代理 `ctx.http`（即 `svc.http.send`），不受 webview 的 CORS 限制；
+ * manifest 需声明 `net:wttr.in` 与 `net:ipwho.is`。
  *
  * 关键设计：壳层支持插件声明 `queryDebounceMs`，本插件设为 300ms——
  * 停止输入即自动联网出结果，用户不必再按一次回车。
- * 请求经宿主代理 `ctx.http`（即 `svc.http.send`），不受 webview 的 CORS 限制；
- * manifest 需声明 `net:wttr.in`。结果按查询位置缓存 5 分钟，避免逐键重复打 API。
+ * 默认不带城市参数时自动获取当前 IP 所在城市的天气，输入城市名则查询指定城市。
+ * 结果按查询位置缓存 5 分钟，避免重复打 API。
  * 抓取失败时给一条带 `metadata.fetch` 的重试项，由 onSelect 承接。
  */
 import {
@@ -24,7 +28,7 @@ const PLUGIN_ID = 'weather';
 const ctx = getPluginContext(PLUGIN_ID);
 const CACHE_TTL_MS = 5 * 60_000;
 
-/** 还原查询位置：`/weather new york` → "new york"；空输入 → ""（wttr.in 按本机 IP 定位） */
+/** 还原查询位置：`/weather new york` → "new york"；空输入 → ""（默认获取当前 IP 所在城市） */
 function locationOf(input: ParsedInput): string {
   const sub = (input.subcommand ?? '').trim();
   const args = (input.args ?? []).filter(Boolean);
@@ -150,8 +154,41 @@ interface WttrResponse {
   weather?: WttrDay[];
 }
 
-async function fetchWeather(loc: string): Promise<PanelItem[]> {
-  const url = `https://wttr.in/${encodeURIComponent(loc)}?format=j1&lang=zh`;
+interface IpWhoIs {
+  ip?: string;
+  success?: boolean;
+  message?: string;
+  city?: string;
+  region?: string;
+  country?: string;
+}
+
+let cachedIpCity: { at: number; city: string } | null = null;
+const IP_CITY_CACHE_TTL_MS = 10 * 60_000;
+
+async function fetchCurrentCity(): Promise<string> {
+  if (cachedIpCity && Date.now() - cachedIpCity.at < IP_CITY_CACHE_TTL_MS) {
+    return cachedIpCity.city;
+  }
+  try {
+    const d = await ctx.http.json<IpWhoIs>('https://ipwho.is/');
+    if (d && d.success !== false) {
+      const city = (d.city || d.region || d.country || '').trim();
+      if (city) {
+        cachedIpCity = { at: Date.now(), city };
+        return city;
+      }
+    }
+  } catch {
+    // ipwho.is 异常时静默降级，让 wttr.in 按出口 IP 自动定位
+  }
+  return '';
+}
+
+async function fetchWeather(loc: string, isDefaultCity = false): Promise<PanelItem[]> {
+  const url = loc
+    ? `https://wttr.in/${encodeURIComponent(loc)}?format=j1&lang=zh`
+    : `https://wttr.in/?format=j1&lang=zh`;
   const data = await ctx.http.json<WttrResponse>(url);
   const cur = data.current_condition?.[0];
   if (!cur) throw new Error('响应缺少 current_condition');
@@ -220,10 +257,31 @@ async function fetchWeather(loc: string): Promise<PanelItem[]> {
   }
 
   if (place) {
-    items.push(makeItem('place', place, '解析到的位置', '位置', place, '📍'));
+    items.push(
+      makeItem(
+        'place',
+        place,
+        isDefaultCity ? '当前 IP 所在位置（输入城市名可查其他地区）' : '解析到的位置',
+        isDefaultCity ? '当前位置' : '位置',
+        place,
+        '📍',
+      ),
+    );
   }
   if (cur.observation_time) {
     items.push(makeItem('obs', `观测时间 ${cur.observation_time}`, 'wttr.in 观测时刻', '观测'));
+  }
+  if (isDefaultCity) {
+    items.push(
+      makeItem(
+        'tip',
+        '输入城市名可查询指定地区天气',
+        '/weather 北京 · /weather Tokyo · /weather New York',
+        '提示',
+        undefined,
+        '💡',
+      ),
+    );
   }
 
   return items;
@@ -237,10 +295,10 @@ export const weatherPlugin: CommandPlugin = {
   trigger: '/weather',
   name: '天气查询',
   description:
-    '天气查询：联网获取实况与今日预报（数据源 wttr.in）。不带城市用本机网络位置，停止输入即自动出结果。',
+    '天气查询：联网获取实况与今日预报（数据源 wttr.in、ipwho.is）。默认获取当前 IP 所在城市天气，停止输入即自动出结果。',
   icon: '🌤️',
-  argsHint: '<城市名>',
-  examples: ['/weather 北京', '/weather Tokyo', '/weather New York'],
+  argsHint: '[城市名]',
+  examples: ['/weather', '/weather 北京', '/weather Tokyo', '/weather New York'],
 
   isAction: () => false,
 
@@ -258,27 +316,19 @@ export const weatherPlugin: CommandPlugin = {
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
       return { items: hit.items, emptyText: '无结果' };
     }
-    const label = loc || '当前位置';
-    // 还没输入城市名：只给用法提示，不联网
-    if (!loc) {
-      return {
-        items: [
-          makeItem('help', '输入城市名即可查询天气', '/weather 上海 · /weather Tokyo', '用法', undefined, '💡'),
-        ],
-        emptyText: '请输入城市名',
-      };
-    }
-
+    const label = loc || '当前城市';
     try {
-      const items = await fetchWeather(loc);
+      const queryLoc = loc || (await fetchCurrentCity());
+      const items = await fetchWeather(queryLoc, !loc);
       cache.set(loc, { at: Date.now(), items });
       return { items, emptyText: '无结果' };
     } catch (err) {
       return {
         items: [
-          makeItem('retry', `查询「${label}」失败：${errText(err)}`, '回车重试', '失败', undefined, '⚠️', {
+          makeItem('retry', `查询「${label}」天气失败：${errText(err)}`, '回车重试', '失败', undefined, '⚠️', {
             fetch: loc,
           }),
+          makeItem('help', '/weather · /weather 北京 · /weather Tokyo', '不带城市查询当前 IP 所在城市，带参数查指定城市', '用法', undefined, '💡'),
         ],
         emptyText: '查询失败',
       };
@@ -290,12 +340,16 @@ export const weatherPlugin: CommandPlugin = {
     if (typeof loc === 'string') {
       // 仅用于"失败后重试"这条路径（成功结果已由 query 直接给出）
       try {
-        const items = await fetchWeather(loc);
+        const queryLoc = loc || (await fetchCurrentCity());
+        const items = await fetchWeather(queryLoc, !loc);
         cache.set(loc, { at: Date.now(), items });
         return { refresh: true, toast: '天气已更新' };
       } catch (err) {
         return { toast: `查询失败：${errText(err)}` };
       }
+    }
+    if (item.badge === '用法' || item.badge === '提示') {
+      return { toast: '输入城市名可查询指定地区天气' };
     }
     const value = item.metadata?.value;
     if (typeof value === 'string' && value) {

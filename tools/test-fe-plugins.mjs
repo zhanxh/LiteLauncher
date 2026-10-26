@@ -800,10 +800,15 @@ const CASES = {
       },
     },
     {
-      // 空输入：只给用法提示，绝不联网（否则每次开面板都白打一次 API）
+      // 空输入：默认获取当前 IP 所在城市的天气（参考 /ip 经 ipwho.is 获取城市，再经 wttr.in 查询实况）
       tokens: [],
+      queryDebounceMs: 300,
       expect: (items) => {
-        assert(items[0].badge === '用法', `weather 空输入应给用法提示，实得 ${items[0].badge}`);
+        const summary = items.find((i) => i.badge === '摘要');
+        assert(summary?.metadata?.value?.includes('20°C'), 'weather 默认摘要应含 20°C');
+        assert(items.some((i) => i.badge === '当前位置'), 'weather 默认应标识当前位置');
+        assert(items.some((i) => i.badge === '提示'), 'weather 默认应提供输入其他城市提示');
+        assert(!items.some((i) => i.metadata?.fetch), 'weather 成功后不应再有 fetch 中间项');
       },
     },
   ],

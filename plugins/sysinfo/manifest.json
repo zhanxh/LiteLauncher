@@ -15,7 +15,7 @@
       "sysinfo.dll",
       "libsysinfo.so"
     ],
-    "integrity": "sha256:f84e191dab80d252dcb549f475c6ec0e746e6c73a88f3cffc76d729c2c4165f1"
+    "integrity": "sha256:8760f46a9d7ee68a0ce1ae3a0ab62e526ab94e6141b2392ab6f58354ac9a6611"
   },
   "command": {
     "icon": "🖥️",

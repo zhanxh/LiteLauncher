@@ -47,6 +47,7 @@
 
 ### Changed
 
+- `/weather` 天气查询优化：默认不带城市参数时自动通过 `ipwho.is`（与 `/ip` 同口径）获取当前公网 IP 所在城市并查询该城市天气；仍支持输入指定城市名；manifest 相应补充 `net:ipwho.is` 白名单权限。
 - `/cal` 面板默认第一行为「打开日程管理」，回车直接打开日程窗口（等同 `/cal app`），不再要求用户先记住这条子命令——与 `/note` 首项「打开笔记管理面板」对齐。带关键词检索时入口同样在首位，过滤只作用于日程本体；该入口的回车走 `open_manager`，不会被当成日程去 `toggle`。
 - 启动器、插件窗口与设置中心统一圆角：改为透明窗口 + 4px 圆角面板（四角透出桌面，系统投影改为随圆角关闭）。插件窗口新增 `rounded` 声明位（默认开启），pomo 挂件声明 `rounded: false` 保持直角，全屏遮罩类（截图框选）不受影响。
 - `apps.db` schema v2：新增 `source/pinyin/initials/launch_count/last_used_at/hidden/last_seen_at` 列与索引；迁移前自动备份、幂等可重跑。

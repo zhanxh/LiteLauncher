@@ -184,7 +184,7 @@ await ctx.shortcuts.on('alt+p', () => { /* 任意界面按下都会到这里 */ 
 
 | 指令 | 名称 | 说明 |
 | :--- | :--- | :--- |
-| `/weather` | 天气查询 | `/weather 北京` 实况 + 今日预报，英文天气词自动映射为中文（数据源 wttr.in） |
+| `/weather` | 天气查询 | `/weather` 默认获取当前 IP 所在城市实况与今日预报，或 `/weather 北京` 查指定城市（数据源 wttr.in、ipwho.is） |
 | `/fx` | 汇率换算 | `/fx 100 usd cny` 精确换算、`/fx usd cny` 看汇率、`/fx usd` 列主要货币（数据源 open.er-api.com） |
 | `/ip` | IP 查询 | `/ip` 本机公网 IP 与归属地，`/ip 8.8.8.8` 查指定 IP 的运营商/ASN/时区（数据源 ipwho.is） |
 | `/dict` | 英文词典 | `/dict hello` 音标、词性、释义、例句，回车打开发音（数据源 dictionaryapi.dev） |
