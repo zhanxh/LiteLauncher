@@ -15,7 +15,7 @@
       "find.dll",
       "libfind.so"
     ],
-    "integrity": "sha256:4729d8c887be090d1d6994a6cd76c3b19622229bfc2ab202f4a744e153026a59"
+    "integrity": "sha256:d5f1c69b18c14a1f2f61cc953ab9d3d72e51d3d337126207bd0ef0abcb2a8538"
   },
   "command": {
     "icon": "🔍",
