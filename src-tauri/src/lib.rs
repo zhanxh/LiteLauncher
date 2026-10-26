@@ -127,7 +127,7 @@ static LAST_REQUESTED_HEIGHT: std::sync::atomic::AtomicU32 = std::sync::atomic::
 #[cfg(target_os = "linux")]
 fn unlock_main_window_resizing(window: &tauri::WebviewWindow) {
     let _ = window.set_resizable(true);
-    let _ = window.set_size_constraints(WindowSizeConstraints {
+    let _ = window.set_size_constraints(tauri::WindowSizeConstraints {
         min_width: Some(tauri::LogicalUnit::new(680.0).into()),
         min_height: Some(tauri::LogicalUnit::new(70.0).into()),
         max_width: Some(tauri::LogicalUnit::new(680.0).into()),
