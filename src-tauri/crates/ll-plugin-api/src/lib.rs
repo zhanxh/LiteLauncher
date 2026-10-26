@@ -678,6 +678,15 @@ pub struct ViewSpec {
     /// 兜底关闭的额外宽限秒数
     #[serde(default)]
     pub fallback_close_grace_secs: Option<u64>,
+    /// 窗口几何由本次 open 的参数决定（截图钉图这类"每实例位置大小都不同"的视图）。
+    ///
+    /// 声明后，open 时若带齐 `x`/`y`/`w`/`h` 四个参数（**桌面全局物理像素**，与
+    /// `svc.screen.*` 统一坐标系一致），宿主按落点显示器缩放因子换算成逻辑像素，
+    /// 在 builder 阶段一次定位定尺寸——窗口首帧就出现在正确位置，没有
+    /// "先按声明值露脸再挪过去"的闪跳。缺参或参数非法时回退声明值。
+    /// 只影响几何，不放宽其他任何声明位。
+    #[serde(default)]
+    pub geometry_from_params: bool,
 }
 
 fn default_true() -> bool {
@@ -1003,6 +1012,14 @@ pub struct CaptureRequest {
     /// 为真时宿主先隐藏全部 LiteLauncher 窗口再捕获，收工后复原
     /// （否则启动器自己会被拍进画面——截图工具的基本要求）
     pub hide_windows: bool,
+    /// hide_windows 避让时**跳过**的窗口标签（由 IPC 层填成发起调用的窗口自身）。
+    ///
+    /// 为什么需要：全屏遮罩层（区域框选）从建窗起就是全透明的，抓底图时
+    /// 它留在屏幕上也不会进画面；反而不能动它——X11 上 unmap→remap 会让
+    /// mutter 重新收敛窗口，全屏尺寸的遮罩会被**重新最大化**到工作区
+    /// （真机实测：首帧 (0,0) 铺满，一次 hide→restore 后挪进工作区并缩小，
+    /// 框选坐标系随之整体错位）。所以遮罩层抓底图必须把自己排除在避让之外。
+    pub skip_window: Option<String>,
     /// 隐藏后、捕获前的等待毫秒数（让用户收起菜单/移开鼠标），宿主上限 10s
     pub delay_ms: u32,
     /// 区域框选：(x, y) 为**桌面全局物理**坐标的左上角，(w, h) 为宽高。
@@ -1144,6 +1161,11 @@ pub trait ScreenApi: Send + Sync {
     ///
     /// `to_clipboard` 为真时同时把图片本体写进剪贴板（用户可直接粘贴）。
     fn save_png(&self, png: &[u8], to_clipboard: bool) -> Result<SavedImage, PluginError>;
+    /// 把本插件截图目录里的一张 PNG 直接写入图片剪贴板（不重复落盘）。
+    ///
+    /// 用途：截图钉图的"右键复制"——图早已落盘，再次入剪贴板不该再生成副本文件。
+    /// 路径越界（截图目录之外）按权限错误拒绝；未声明 `clipboard:write` 时报权限错误。
+    fn copy_png_to_clipboard(&self, path: &str) -> Result<(), PluginError>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

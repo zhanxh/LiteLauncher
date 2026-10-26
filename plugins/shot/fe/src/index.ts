@@ -3,11 +3,12 @@
  *
  * 插件本身不含任何平台代码：截图、多屏定位、窗口避让、区域裁剪、PNG 落盘、
  * 图片入剪贴板全在宿主侧（`svc.screen.*`，manifest 声明 `screen` 权限）。
- * 插件只做四件事：
+ * 插件只做五件事：
  *   1. 把"哪块屏 × 延时几秒 × 整屏还是框选"表达成可选条目；
- *   2. 开全屏透明遮罩层做区域框选（view: select）；
- *   3. 把结果交给剪贴板（图片本体）/ 系统查看器（打开、打开文件夹）；
- *   4. 用全局热键把"免开启动器直接区域框选"接上（`svc.shortcut.*`）。
+ *   2. 触发截图前**先隐藏启动器**（flameshot 原则：自家窗口不许进画面）；
+ *   3. 开全屏遮罩层冻结整屏置顶供框选，确认时前端裁剪（不二次抓屏）；
+ *   4. 选区**原位钉图**置顶（右键复制/关闭），或进标注层画箭头/马赛克/文字；
+ *   5. 用全局热键把"免开启动器直接区域框选"接上（`svc.shortcut.*`）。
  */
 import {
   getPluginContext,
@@ -23,6 +24,7 @@ import {
 } from '@ll/sdk';
 import { ShotSelect } from './select';
 import { ShotAnnotate } from './annotate-view';
+import { ShotPin } from './pin';
 
 const PLUGIN_ID = 'shot';
 const ctx = getPluginContext(PLUGIN_ID);
@@ -31,6 +33,8 @@ const ctx = getPluginContext(PLUGIN_ID);
 const VIEW_SELECT = 'select';
 /** 标注视图（区域框选后画箭头/马赛克/文字） */
 const VIEW_ANNOTATE = 'annotate';
+/** 钉图视图（选区原位置顶，右键复制/关闭） */
+const VIEW_PIN = 'pin';
 
 /** 全局热键 id：具体 accel 由 manifest 声明、宿主注册（用户可在设置里改） */
 const HOTKEY_ID = 'capture';
@@ -125,31 +129,52 @@ function monitorLabel(list: MonitorInfo[], index: number): string {
   return `显示器 ${index}（${found.width}×${found.height}${found.primary ? ' 主屏' : ''}）`;
 }
 
-/** 截图：隐藏壳层 → 捕获 → 记住最近一次 → 刷新面板
- *
- * `toClipboard: true` 让**图片本体**进剪贴板——这是桌面截图工具的默认交付物
- * （用户要的是"看到就粘"，而不是"拿到一个路径再去文件夹里找图"）。
- * 同时仍落盘，供"打开/打开文件夹"兜底。
- */
+/** 隐藏启动器主窗口（触发截图前必须做：自家窗口不许进画面，也不许回闪） */
+async function hideMainWindow(): Promise<void> {
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    await getCurrentWindow().hide();
+  } catch {
+    // 隐藏失败不阻断截图；宿主抓屏时还会对可见窗口做一次避让
+  }
+}
+
+/** 重新显示主窗口（截图失败时把面板还回来，错误 toast 才有处可显示） */
+async function showMainWindow(): Promise<void> {
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    await getCurrentWindow().show();
+  } catch {
+    // 显示失败无兜底手段，保持静默
+  }
+}
+
+/** 区域框选：先隐藏壳层 → 开全屏遮罩层（接管后续流程）→ 关掉主窗口 */
 async function openRegion(
   monitor = -1,
   delayMs = 0,
   annotate = false,
 ): Promise<AfterSelect> {
+  // 先把启动器收起来（对齐 flameshot：自家窗口不许进画面）。hide 即时生效，
+  // 随后的 close 由 AfterSelect 收尾——用户全程看不到"面板回闪"。
+  await hideMainWindow();
   try {
     await ctx.windows.open(VIEW_SELECT, {
       monitor: String(monitor),
       delayMs: String(delayMs),
       ...(annotate ? { annotate: '1' } : {}),
     });
-    // 遮罩层接管后续流程，主窗口必须关掉，否则遮罩层底图里会拍到启动器自己
     return { close: true };
   } catch (err) {
+    // 遮罩层没开成：把面板还回来，让错误 toast 有处显示
+    await showMainWindow();
     return { toast: `无法打开框选层：${messageOf(err)}` };
   }
 }
 
+/** 整屏截图：隐藏壳层 → 捕获 → 面板带着结果回来 */
 async function capture(target: number, delayMs: number): Promise<AfterSelect> {
+  await hideMainWindow();
   try {
     const shot = await ctx.screen.capture({ monitor: target, hideWindows: true, delayMs, toClipboard: true });
     lastShot = { path: shot.path, width: shot.width, height: shot.height };
@@ -159,6 +184,7 @@ async function capture(target: number, delayMs: number): Promise<AfterSelect> {
     if (!shot.clipboardImage) {
       await ctx.clipboard.write(shot.path).catch(() => undefined);
     }
+    await showMainWindow();
     return {
       refresh: true,
       toast: shot.clipboardImage
@@ -166,6 +192,7 @@ async function capture(target: number, delayMs: number): Promise<AfterSelect> {
         : `已截图 ${shot.width}×${shot.height}，路径已复制`,
     };
   } catch (err) {
+    await showMainWindow();
     return { toast: `截图失败：${messageOf(err)}` };
   }
 }
@@ -175,7 +202,7 @@ export const shotPlugin: CommandPlugin = {
   trigger: '/shot',
   name: '屏幕截图',
   description:
-    '屏幕截图：回车区域框选（推荐）；也可指定显示器整屏截图、延时截图。图片本体自动进剪贴板可直接粘贴。',
+    '屏幕截图（flameshot 式）：回车区域框选，选区外虚化，松手即时作画（画笔/矩形/圆形/箭头/马赛克），确认后原位钉图，右键复制/关闭；也可整屏截图、延时截图或进标注层。图片本体自动进剪贴板。',
   icon: '📸',
   argsHint: '[屏序号] [-d秒]',
   examples: ['/shot', '/shot 2', '/shot -d3', '/hotkey 查全部全局热键'],
@@ -196,7 +223,7 @@ export const shotPlugin: CommandPlugin = {
     items.push({
       id: `${PLUGIN_ID}:region`,
       title: delayMs > 0 ? `${delayMs / 1000} 秒后框选区域截图` : '框选区域截图',
-      description: '拖拽选择范围，回车确认，Esc 取消；图片直接进剪贴板',
+      description: '拖拽框选（选区外虚化），松手后可即时作画：画笔/矩形/圆形/箭头/马赛克',
       icon: '✂️',
       badge: delayMs > 0 ? `延时 ${delayMs / 1000}s` : '推荐',
       metadata: { action: 'region', monitor: target, delayMs },
@@ -295,7 +322,8 @@ export const shotPlugin: CommandPlugin = {
     const meta = item.metadata ?? {};
     const action = String(meta.action ?? '');
 
-    // 区域框选：关掉主窗口 → 开全屏透明遮罩层 → 用户拖拽 → 遮罩层自行截图并关闭
+    // 区域框选：隐藏主窗口 → 开全屏遮罩层冻结整屏 → 用户拖拽 → 前端裁剪 →
+    // 选区原位钉图（或进标注层）→ 遮罩层自行关闭
     if (action === 'region') {
       const monitor = typeof meta.monitor === 'number' ? meta.monitor : -1;
       const delayMs = typeof meta.delayMs === 'number' ? meta.delayMs : 0;
@@ -359,14 +387,8 @@ async function setupHotkey(): Promise<void> {
   await ctx.shortcuts.onHotkey(HOTKEY_ID, () => {
     void (async () => {
       // 热键直达区域框选：不再静默整屏存盘，用户按下后直接拖拽选范围。
-      // 先把主窗口收起来（热键可能在启动器可见时按下），再开全屏遮罩层；
-      // 启动器不可见时靠遮罩层自己截图，成功后由遮罩层处理剪贴板与通知。
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        await getCurrentWindow().hide();
-      } catch {
-        // 隐藏失败不阻断框选；遮罩层截图时还会再隐藏一次应用窗口
-      }
+      // openRegion 自己会先隐藏主窗口（热键可能在启动器可见时按下），
+      // 成功后由遮罩层完成冻结/框选/钉图，失败时面板带回错误 toast。
       const res = await openRegion(-1, 0);
       if (res.toast) {
         await ctx.notify.send('截图失败', res.toast).catch(() => undefined);
@@ -384,5 +406,6 @@ export function setup(): void {
   pluginRegistry.register(shotPlugin);
   registerView(VIEW_SELECT, ShotSelect);
   registerView(VIEW_ANNOTATE, ShotAnnotate);
+  registerView(VIEW_PIN, ShotPin);
   void setupHotkey();
 }

@@ -200,6 +200,13 @@ export interface PluginScreen {
    * 传 data URL 或裸 base64 都行，宿主会剥掉 `data:image/png;base64,` 前缀。
    */
   savePng(dataUrl: string, opts?: { toClipboard?: boolean }): Promise<SavedImage>;
+  /**
+   * 把本插件截图目录里已落盘的 PNG 直接写进图片剪贴板（不重复落盘）。
+   *
+   * 用途：截图钉图的"右键复制"——图早已在磁盘上，再次复制不该再生成副本文件。
+   * 路径越界（截图目录之外）会按权限错误拒绝。
+   */
+  copyPng(path: string): Promise<void>;
 }
 
 /** `screen.savePng` 的回执 */
@@ -567,6 +574,10 @@ export function getPluginContext(pluginId: string): PluginContext {
         });
         if (!res?.path) throw new Error('保存图片失败：宿主未返回文件路径');
         return res;
+      },
+      copyPng: async (path) => {
+        if (!path) throw new Error('copyPng: 缺少截图路径');
+        await svc<void | null>('screen.copyPng', { path });
       },
     },
     shortcuts: {

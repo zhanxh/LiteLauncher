@@ -1664,6 +1664,120 @@ function testGeometryModule() {
 }
 
 /**
+ * 纯函数模块测试：/shot 框选层即时绘图（drawings.ts）。
+ *
+ * 覆盖两层：
+ *   1. 纯几何——两点形状的包围盒归一化、工具线宽、工具栏摆位（贴下方右对齐、
+ *      放不下翻到上方、贴边夹回视口）。摆位算错工具栏会伸出屏幕外。
+ *   2. 渲染开关——用记录调用的 mock 2D 上下文跑 renderShapes，验证变换/裁剪/
+ *      各形状分支的落笔顺序；马赛克在缺"像素化源"时必须降级成可见的灰笔，
+ *      绝不能静默不画（用户会以为已经打上码了）。
+ */
+function testDrawingsModule() {
+  const failures = [];
+  const file = path.join(pluginsDir, 'shot', 'fe', 'src', 'drawings.ts');
+  if (!existsSync(file)) return ['shot/fe/src/drawings.ts 不存在'];
+
+  let d;
+  try {
+    moduleCache.clear();
+    d = loadPluginModule(file);
+  } catch (err) {
+    return [`加载失败: ${err.message}`];
+  }
+
+  /** 记录调用的 mock 2D 上下文：只实现 renderShapes 会用到的方法 */
+  function mockCtx() {
+    const calls = [];
+    const rec = (name) => (...args) => calls.push([name, ...args]);
+    return {
+      calls,
+      save: rec('save'), restore: rec('restore'), beginPath: rec('beginPath'),
+      rect: rec('rect'), clip: rec('clip'), moveTo: rec('moveTo'), lineTo: rec('lineTo'),
+      arc: rec('arc'), fill: rec('fill'), stroke: rec('stroke'), strokeRect: rec('strokeRect'),
+      ellipse: rec('ellipse'), drawImage: rec('drawImage'),
+      setTransform: rec('setTransform'), clearRect: rec('clearRect'), scale: rec('scale'),
+      lineCap: '', lineJoin: '', strokeStyle: '', fillStyle: '', lineWidth: 0,
+    };
+  }
+
+  try {
+    // ── 纯几何 ──
+    // 1) 两点形状反向拖拽必须归一化（右下→左上）
+    const b = d.pointsBox([{ x: 800, y: 600 }, { x: 200, y: 100 }]);
+    assert(b.x === 200 && b.y === 100 && b.w === 600 && b.h === 500,
+      `反向两点应归一化，实得 ${JSON.stringify(b)}`);
+
+    // 2) 工具线宽：马赛克笔刷要粗，其余 3px 细描边
+    assert(d.toolWidth('mosaic') === 14, '马赛克笔刷应为 14');
+    assert(d.toolWidth('pen') === 3 && d.toolWidth('rect') === 3, '画笔/矩形应为 3');
+
+    // 3) 工具栏摆位：右对齐贴选区下方 8px
+    const o1 = d.toolbarOrigin({ x: 100, y: 100, width: 600, height: 400 }, 2560, 1600, 392, 36);
+    assert(o1.x === 308 && o1.y === 508, `应贴下方右对齐，实得 ${JSON.stringify(o1)}`);
+
+    // 4) 下方放不下 → 翻到选区上方
+    const o2 = d.toolbarOrigin({ x: 100, y: 1560, width: 600, height: 30 }, 2560, 1600, 392, 36);
+    assert(o2.y === 1560 - 36 - 8, `下方放不下应翻到上方，实得 ${JSON.stringify(o2)}`);
+
+    // 5) 贴左边缘 → 水平夹回视口内（至少 8px 边距）
+    const o3 = d.toolbarOrigin({ x: 0, y: 100, width: 100, height: 400 }, 2560, 1600, 392, 36);
+    assert(o3.x === 8, `贴左边应夹回 8px，实得 ${JSON.stringify(o3)}`);
+
+    // 6) 上下都放不下（选区顶到顶、视口极矮）→ 垂直夹回 8px
+    const o4 = d.toolbarOrigin({ x: 100, y: 0, width: 600, height: 30 }, 800, 80, 392, 36);
+    assert(o4.y === 8, `上下都放不下应夹回 8px，实得 ${JSON.stringify(o4)}`);
+
+    // ── 渲染开关（mock 上下文）──
+    // 7) 变换与裁剪：scale 交给 setTransform，clip 落成 rect+clip
+    const g1 = mockCtx();
+    d.renderShapes(g1, [], {
+      scale: 1.5,
+      clip: { x: 10, y: 20, w: 300, h: 200 },
+    });
+    assert(g1.calls.some((c) => c[0] === 'setTransform' && c[1] === 1.5 && c[4] === 1.5),
+      '应设置 scale 变换');
+    assert(g1.calls.some((c) => c[0] === 'clip'), '有 clip 时应调用 clip()');
+
+    // 8) 矩形：反向两点 → 归一化后的 strokeRect
+    const g2 = mockCtx();
+    d.renderShapes(g2, [{ kind: 'rect', color: '#EF4444', size: 3, points: [{ x: 100, y: 100 }, { x: 40, y: 60 }] }], { scale: 1 });
+    const sr = g2.calls.find((c) => c[0] === 'strokeRect');
+    assert(sr && sr[1] === 40 && sr[2] === 60 && sr[3] === 60 && sr[4] === 40,
+      `矩形应归一化落笔，实得 ${JSON.stringify(sr)}`);
+
+    // 9) 椭圆零尺寸护栏：半径必须 ≥ 0.5（NaN/0 会让 canvas 静默不画）
+    const g3 = mockCtx();
+    d.renderShapes(g3, [{ kind: 'ellipse', color: '#EF4444', size: 3, points: [{ x: 50, y: 50 }, { x: 50, y: 50 }] }], { scale: 1 });
+    const el = g3.calls.find((c) => c[0] === 'ellipse');
+    assert(el && el[3] >= 0.5 && el[4] >= 0.5, `零尺寸椭圆半径应夹到 0.5，实得 ${JSON.stringify(el)}`);
+
+    // 10) 画笔：路径点按序落笔
+    const g4 = mockCtx();
+    d.renderShapes(g4, [{ kind: 'pen', color: '#FFFFFF', size: 3, points: [{ x: 1, y: 1 }, { x: 5, y: 5 }, { x: 9, y: 2 }] }], { scale: 1 });
+    const moves = g4.calls.filter((c) => c[0] === 'lineTo');
+    assert(moves.length === 2, `三点画笔应两次 lineTo，实得 ${moves.length}`);
+
+    // 11) 马赛克降级：缺像素化源时也要画出可见灰笔
+    const g5 = mockCtx();
+    d.renderShapes(g5, [{ kind: 'mosaic', color: '#EF4444', size: 14, points: [{ x: 0, y: 0 }, { x: 30, y: 30 }] }], { scale: 1, mosaic: null });
+    assert(g5.strokeStyle.includes('rgba'), '缺马赛克源应降级为半透明灰笔');
+
+    // 12) 马赛克合成：有 scratch 时必须走 drawImage 贴回
+    const g6 = mockCtx();
+    const scratch = { width: 100, height: 100, getContext: () => mockCtx() };
+    d.renderShapes(g6, [{ kind: 'mosaic', color: '#EF4444', size: 14, points: [{ x: 0, y: 0 }, { x: 30, y: 30 }] }], {
+      scale: 1,
+      mosaic: { src: {}, scratch, cssW: 100, cssH: 100 },
+    });
+    assert(g6.calls.filter((c) => c[0] === 'drawImage').length >= 1, '马赛克应贴复合成结果');
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
+/**
  * 纯函数模块测试：`/pomo` 桌面挂件的倒计时推导与进度环。
  *
  * 这块是挂件最容易出错的地方，而且错得**很显眼**（用户盯着桌面看）：
@@ -3016,6 +3130,16 @@ async function main() {
     failed += 1;
     console.log('\n  ✗ 纯函数：/shot geometry');
     for (const f of geoFailures) console.log(`      - ${f}`);
+  }
+
+  // 纯函数模块：框选层即时绘图（两点归一化 · 工具栏摆位 · 渲染分支 · 马赛克降级）
+  const drawFailures = testDrawingsModule();
+  if (drawFailures.length === 0) {
+    console.log('\n  ✓ 纯函数：/shot 框选层即时绘图（形状归一化 · 工具栏摆位 · 马赛克降级）');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ 纯函数：/shot drawings');
+    for (const f of drawFailures) console.log(`      - ${f}`);
   }
 
   // 纯函数模块：/pomo 挂件的倒计时推导（ceil 取整 / 已过比例 / 到点终态）

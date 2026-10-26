@@ -818,6 +818,28 @@ fn open_on_main(
         }
     }
 
+    // 参数几何（geometry_from_params 视图，如截图钉图）：x/y/w/h 为桌面全局
+    // 物理像素，按落点显示器的缩放因子换算成逻辑像素，在 builder 阶段一次
+    // 定位定尺寸——首帧即正确位置，没有"先露脸再挪过去"的闪跳。
+    let mut effective_size = (spec.width, spec.height);
+    if spec.geometry_from_params {
+        let num = |k: &str| {
+            params
+                .iter()
+                .find(|(pk, _)| pk == k)
+                .and_then(|(_, v)| v.parse::<f64>().ok())
+        };
+        if let (Some(x), Some(y), Some(w), Some(h)) = (num("x"), num("y"), num("w"), num("h")) {
+            if w > 0.0 && h > 0.0 {
+                let scale = monitor_scale_at(app, x, y);
+                effective_size = (w / scale, h / scale);
+                builder = builder
+                    .inner_size(effective_size.0, effective_size.1)
+                    .position(x / scale, y / scale);
+            }
+        }
+    }
+
     if let (Some(mw), Some(mh)) = (spec.min_width, spec.min_height) {
         builder = builder.min_inner_size(mw, mh);
     }
@@ -848,7 +870,7 @@ fn open_on_main(
     // GTK 的建窗下限修正必须发生在角落定位之前：定位按 spec 尺寸算，
     // 窗口实际被撑大时两者就对不上了
     #[cfg(target_os = "linux")]
-    clamp_gtk_child_min_size(&window, spec);
+    clamp_gtk_child_min_size(&window, spec, effective_size);
 
     if corner_position {
         if let Ok(Some(monitor)) = app.primary_monitor() {
@@ -927,27 +949,37 @@ fn open_on_main(
 /// （Windows 无此下限，所以两边形状不一样）。把子控件的请求压回视图声明的
 /// 最小尺寸即可；只压到 min_* 而不是 spec，是因为挂件悬停时会加宽窗口，
 /// 下限取最小值才不会挡住后续 resize。
+///
+/// `effective` 是本次实际生效的内容尺寸（逻辑像素）：geometry_from_params
+/// 视图（截图钉图）的尺寸来自 open 参数，声明值只是缺省回退——还按声明值
+/// 压下限，小尺寸钉图会被 GTK 撑回声明大小。
 #[cfg(target_os = "linux")]
-fn clamp_gtk_child_min_size(window: &WebviewWindow, spec: &ViewSpec) {
+fn clamp_gtk_child_min_size(window: &WebviewWindow, spec: &ViewSpec, effective: (f64, f64)) {
     use gtk::prelude::ContainerExt;
     use tauri::LogicalSize;
 
     let Some(gtk_window) = window.gtk_window().ok() else {
         return;
     };
-    let w = spec.min_width.unwrap_or(spec.width).max(1.0) as i32;
+    let w = if spec.geometry_from_params {
+        effective.0
+    } else {
+        spec.min_width.unwrap_or(spec.width)
+    }
+    .max(1.0) as i32;
     // auto_height 的下限绝不能回退到 spec.height：那是内容高度的**初值**，
     // 拿它当 GTK 子控件下限等于告诉 GTK"不许缩到这么小"，
     // 于是短内容的弹窗在 Linux 上永远缩不回去（症状是卡片下面一块窗口底色）。
-    let h = match (spec.auto_height, spec.min_height) {
-        (true, None) => ll_plugin_api::POPUP_MIN_H_FLOOR,
-        _ => spec.min_height.unwrap_or(spec.height),
+    let h = match (spec.geometry_from_params, spec.auto_height, spec.min_height) {
+        (true, _, _) => effective.1,
+        (false, true, None) => ll_plugin_api::POPUP_MIN_H_FLOOR,
+        (false, _, _) => spec.min_height.unwrap_or(spec.height),
     }
     .max(1.0) as i32;
     for child in gtk_window.children() {
         set_size_request_recursive(&child, w, h);
     }
-    let _ = window.set_size(LogicalSize::new(spec.width, spec.height));
+    let _ = window.set_size(LogicalSize::new(effective.0, effective.1));
 }
 
 #[cfg(target_os = "linux")]
@@ -1617,6 +1649,23 @@ fn pick_fullscreen_monitor(app: &AppHandle, sel: MonitorSelector) -> Option<taur
     }
 }
 
+/// 定位 (x, y)（全局物理像素）所在显示器的缩放因子；定位不到回退主屏，再退 1.0。
+///
+/// 参数几何（geometry_from_params）把物理像素换算成逻辑像素时要除以**落点
+/// 显示器**的缩放因子——多屏混合 DPI 下副屏常常和主屏不一样，用主屏的换算
+/// 钉图就会错位。
+fn monitor_scale_at(app: &AppHandle, x: f64, y: f64) -> f64 {
+    let monitor = app
+        .monitor_from_point(x, y)
+        .ok()
+        .flatten()
+        .or_else(|| app.primary_monitor().ok().flatten());
+    monitor
+        .map(|m| m.scale_factor())
+        .filter(|s| *s > 0.01)
+        .unwrap_or(1.0)
+}
+
 impl HostScreenApi {
     fn all_monitors() -> Result<Vec<xcap::Monitor>, PluginError> {
         let monitors = xcap::Monitor::all().map_err(screen_err)?;
@@ -1669,13 +1718,16 @@ impl HostScreenApi {
             .ok_or_else(|| PluginError::internal(format!("坐标 ({}, {}) 不在任何显示器内", x, y)))
     }
 
-    /// 隐藏全部可见窗口，返回被隐藏的窗口以便复原
-    fn hide_visible_windows(&self) -> Vec<WebviewWindow> {
+    /// 隐藏全部可见窗口（`skip` 除外），返回被隐藏的窗口以便复原
+    fn hide_visible_windows(&self, skip: Option<&str>) -> Vec<WebviewWindow> {
         let Some(app) = self.app.as_ref() else {
             return Vec::new();
         };
         let mut hidden = Vec::new();
-        for window in app.webview_windows().into_values() {
+        for (label, window) in app.webview_windows() {
+            if Some(label.as_str()) == skip {
+                continue;
+            }
             if window.is_visible().unwrap_or(false) && window.hide().is_ok() {
                 hidden.push(window);
             }
@@ -1928,9 +1980,11 @@ impl ScreenApi for HostScreenApi {
     }
 
     fn capture(&self, req: &CaptureRequest) -> Result<CaptureResult, PluginError> {
-        // 避让启动器自身：否则截出来的图里永远有 LiteLauncher 本体
+        // 避让启动器自身：否则截出来的图里永远有 LiteLauncher 本体。
+        // skip_window（= 发起调用的遮罩层自身）除外：它全透明、拍不进画面，
+        // 而动它（hide→restore）会让 mutter 重新最大化全屏窗口，框选坐标错位。
         let hidden = if req.hide_windows {
-            let hidden = self.hide_visible_windows();
+            let hidden = self.hide_visible_windows(req.skip_window.as_deref());
             if !hidden.is_empty() {
                 // 隐藏是异步生效的，给合成器一点时间把窗口从画面上摘掉
                 std::thread::sleep(Duration::from_millis(160));
@@ -2050,6 +2104,29 @@ impl ScreenApi for HostScreenApi {
         let bytes = std::fs::read(&canon)
             .map_err(|e| PluginError::internal(format!("读取截图文件失败: {}", e)))?;
         Ok(png_data_url(&bytes))
+    }
+
+    fn copy_png_to_clipboard(&self, path: &str) -> Result<(), PluginError> {
+        // 与 read_png_data_url 同一条路径护栏：只能碰本插件截图目录里的文件
+        let dir = ScreenApi::default_screenshot_dir(self);
+        let dir = dir.canonicalize().unwrap_or(dir);
+        let canon = std::path::Path::new(path)
+            .canonicalize()
+            .map_err(|e| PluginError::bad_params(format!("截图文件不可读: {}", e)))?;
+        if !canon.starts_with(&dir) {
+            return Err(PluginError::new(
+                ll_plugin_api::PluginErrorCode::PermissionDenied,
+                "只能复制本插件截图目录下的文件",
+            ));
+        }
+        let Some(cb) = self.clipboard.as_deref() else {
+            return Err(PluginError::permission_denied("clipboard:write"));
+        };
+        let decoded = image::open(&canon)
+            .map_err(|e| PluginError::bad_params(format!("图片无法解码: {}", e)))?;
+        let rgba = decoded.to_rgba8();
+        cb.write_image(rgba.as_raw(), rgba.width(), rgba.height())
+            .map_err(|e| PluginError::internal(format!("写剪贴板失败: {}", e)))
     }
 
     fn save_png(&self, png: &[u8], to_clipboard: bool) -> Result<SavedImage, PluginError> {
@@ -3366,6 +3443,9 @@ pub fn dispatch_svc(
                 monitor: p_i32("monitor"),
                 path,
                 hide_windows: p_bool("hideWindows"),
+                // 遮罩层抓底图时把自己排除在避让外（见 CaptureRequest::skip_window）：
+                // IPC 层给的是发起调用的窗口标签，插件改不了也冒充不了
+                skip_window: caller.map(String::from),
                 delay_ms: p_u32("delayMs").unwrap_or(0),
                 region,
                 to_clipboard: p_bool("toClipboard"),
@@ -3409,6 +3489,17 @@ pub fn dispatch_svc(
                 p_str("pngBase64").ok_or_else(|| PluginError::bad_params("缺少 pngBase64"))?;
             let png = decode_base64(&b64)?;
             to_json(&screen.save_png(&png, p_bool("toClipboard"))?)
+        }
+        // 把截图目录里已落盘的 PNG 直接写进图片剪贴板（截图钉图的"右键复制"）。
+        // 不重复落盘——图早就在磁盘上，再次复制不该再生成一个副本文件。
+        "svc.screen.copyPng" => {
+            let screen = ctx
+                .screen
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("screen"))?;
+            let path = p_str("path").ok_or_else(|| PluginError::bad_params("缺少 path"))?;
+            screen.copy_png_to_clipboard(&path)?;
+            Ok(JsonValue::Null)
         }
 
         // ── 全局热键（D 组，manifest 逐条声明 shortcut:<accel>）──────────────

@@ -1,10 +1,10 @@
 {
   "id": "shot",
   "name": "屏幕截图",
-  "version": "0.3.2",
+  "version": "0.5.0",
   "api_version": "^1",
   "trigger": "/shot",
-  "description": "屏幕截图：回车区域框选（推荐）、整屏截图，或框选后进标注层画箭头/马赛克/文字；/shot -d3 延时 3 秒。全局热键 Alt+Shift+S 直达区域框选，图片本体自动进剪贴板。",
+  "description": "屏幕截图（flameshot 式流程）：先隐藏启动器，冻结整屏置顶、选区外虚化供框选；松手后可在冻结画面上即时作画（画笔/矩形/圆形/箭头/马赛克，支持配色与撤销），确认后选区原位钉图置顶（右键复制/关闭）；也可进标注层画箭头/马赛克/文字；/shot -d3 延时 3 秒。全局热键 Alt+Shift+S 直达区域框选，图片本体自动进剪贴板。",
   "permissions": [
     "screen",
     "clipboard:write",
@@ -19,7 +19,7 @@
       "id": "capture",
       "default": "alt+shift+s",
       "label": "区域截图",
-      "description": "按热键直接拖拽框选区域，图片进剪贴板",
+      "description": "按热键直接拖拽框选区域，图片进剪贴板并原位钉图",
       "scope": "main",
       "editable": true,
       "enabled": true
@@ -54,6 +54,24 @@
       "focusable": true,
       "position": "center",
       "on_existing": "replace"
+    },
+    {
+      "id": "pin",
+      "title": "LiteLauncher - 截图钉图",
+      "width": 320.0,
+      "height": 240.0,
+      "resizable": false,
+      "decorated": false,
+      "always_on_top": true,
+      "skip_taskbar": true,
+      "focusable": true,
+      "shadow": false,
+      "transparent": true,
+      "rounded": false,
+      "position": "center",
+      "unique_by": "pinId",
+      "geometry_from_params": true,
+      "on_existing": "replace"
     }
   ],
   "backend": {
@@ -62,6 +80,6 @@
   "command": {
     "icon": "📸",
     "action_subcommands": [],
-    "hint": "回车区域框选；Alt+Shift+S 免开启动器整屏截图；/hotkey 查全部全局热键"
+    "hint": "回车区域框选，松手可作画（画笔/矩形/圆形/箭头/马赛克），确认后原位钉图（右键复制/关闭）；Alt+Shift+S 免开启动器框选；/hotkey 查全部全局热键"
   }
 }
