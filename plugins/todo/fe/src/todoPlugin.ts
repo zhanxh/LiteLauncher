@@ -111,10 +111,11 @@ export const todoPlugin: CommandPlugin = {
   trigger: '/cal',
   name: '日程管理',
   description:
-    '日程与待办：/cal app 打开日程窗口；/cal new "评审" 10-15 14:00-15:30 --al 10,30 到点弹窗+系统通知',
+    '日程与待办：/cal 首行直达日程窗口（/cal app 同义）；/cal new "评审" 10-15 14:00-15:30 --al 10,30 到点弹窗+系统通知',
   icon: '🗓',
   argsHint: 'new|list|today|week|open|del|done|cal|import|export',
   examples: [
+    '/cal —— 列出日程，首行「打开日程管理」回车即开窗口',
     '/cal app —— 打开日程窗口（月/周/日三视图）',
     '/cal new 明天下午三点 项目评审 —— 自然语言时间，剩余文本自动作标题',
     '/cal new "需求评审" 10-15 14:00-15:30 —— 指定区间，默认提前 0 分钟提醒',
@@ -358,6 +359,16 @@ export const todoPlugin: CommandPlugin = {
 
   async query(input: ParsedInput): Promise<PanelData> {
     const keyword = (input.queryText ?? '').trim();
+    // 固定入口：第一行直达日程窗口，用户不必先记住 `/cal app` 这条子命令
+    // （与 /note 的「打开笔记管理面板」同款）
+    const managerItem: PanelItem = {
+      id: '__cal_open_manager__',
+      title: '打开日程管理',
+      description: '月/周/日三视图 · 拖拽建改 · 分类日历与 .ics 导入导出',
+      icon: '📅',
+      badge: '面板',
+      metadata: { openManager: true },
+    };
 
     if (isTauri()) {
       try {
@@ -376,7 +387,7 @@ export const todoPlugin: CommandPlugin = {
           };
         });
         return {
-          items,
+          items: [managerItem, ...items],
           emptyText: '暂无日程，输入 /cal new "内容" 14:00-15:30 可快速添加',
         };
       } catch (err) {
@@ -390,19 +401,28 @@ export const todoPlugin: CommandPlugin = {
     });
 
     return {
-      items: filtered.map((item) => ({
-        id: item.id,
-        title: item.content,
-        description: item.remind_at ? `提醒: ${item.remind_at}` : '无提醒',
-        badge: item.completed ? '已完成' : '待办',
-        icon: item.completed ? '☑️' : '🔘',
-        metadata: item,
-      })),
+      items: [
+        managerItem,
+        ...filtered.map((item) => ({
+          id: item.id,
+          title: item.content,
+          description: item.remind_at ? `提醒: ${item.remind_at}` : '无提醒',
+          badge: item.completed ? '已完成' : '待办',
+          icon: item.completed ? '☑️' : '🔘',
+          metadata: item,
+        })),
+      ],
       emptyText: '暂无日程',
     };
   },
 
   async onSelect(item: PanelItem) {
+    // 固定入口：打开日程窗口（等同 /cal app）。必须排在 toggle 之前——
+    // 它的 id 不是日程 id，落到 toggle 会是一次无意义的写库
+    if (item.metadata?.openManager) {
+      const r = await openCalendar('', '');
+      return { toast: r.message, close: r.success } as const;
+    }
     if (isTauri()) {
       try {
         const newState = await ctx.call<boolean>('toggle', { id: item.id });

@@ -220,6 +220,16 @@ function looksLikeSecret(text) {
   return t.split((c) => !/[a-zA-Z0-9]/.test(c)).some((seg) => seg.length >= 24);
 }
 
+// ── 日程后端桩（/cal，后端 id 仍是 todo）──────────────────────────────────────
+// 只有 query/onSelect 真正会用到的两个方法：list（列表 + 关键词过滤）与
+// open_manager（开窗，返回 null 即可，调用记录在 svcCalls 里断言）。
+const calStore = {
+  todos: [
+    { id: 't1', content: '团队下午技术周会', remind_at: '2026-10-26 14:30', repeat_rule: null, completed: false, raw_input: '', created_at: 1 },
+    { id: 't2', content: '提交代码到版本控制仓库', remind_at: null, repeat_rule: null, completed: true, raw_input: '', created_at: 2 },
+  ],
+};
+
 // ── 壳层依赖桩 ────────────────────────────────────────────────────────────────
 const registered = [];
 const svcCalls = [];
@@ -243,6 +253,12 @@ const sdkStub = {
   getPluginContext(pluginId) {
     const call = async (method, params) => {
       svcCalls.push({ pluginId, method, params });
+      // /cal（后端 id 仍是 todo）：list 与 open_manager 由 fixture 应答，
+      // 让"面板首行直达日程窗口"这条入口能被真实断言
+      if (pluginId === 'todo' && method === 'list') {
+        const kw = String(params?.keyword ?? '').toLowerCase();
+        return calStore.todos.filter((t) => !kw || t.content.toLowerCase().includes(kw));
+      }
       // 剪贴板历史按方法分派，让插件侧的策略展示与开关切换能被真实断言
       if (method === 'svc.clipboard.history.ingest') {
         if (!looksLikeSecret(clipStore.text) && clipStore.text && clipStore.text !== clipStore.entries[0]?.text) {
@@ -2903,6 +2919,74 @@ function testCalDslModule() {
   return failures;
 }
 
+/**
+ * /cal 面板的固定入口：默认第一行就是「打开日程管理」，不需要用户先记住
+ * `/cal app` 这条子命令（对照 /note 的首项）。
+ * 断言两件事：① 入口恒在首位且有关键词过滤时也在首位；② 回车打的是
+ * open_manager，而不是把这条伪 id 当日程去 toggle 写库。
+ */
+async function testCalPanelManagerEntry() {
+  const failures = [];
+  const file = path.join(pluginsDir, 'todo', 'fe', 'src', 'todoPlugin.ts');
+  if (!existsSync(file)) return ['todo/fe/src/todoPlugin.ts 不存在'];
+
+  const hadWindow = 'window' in globalThis;
+  let mod;
+  try {
+    // isTauri() 认 window.__TAURI_INTERNALS__：不给它就走浏览器回退，测不到真分支
+    globalThis.window = { __TAURI_INTERNALS__: {} };
+    moduleCache.clear();
+    mod = loadPluginModule(file);
+  } catch (err) {
+    if (!hadWindow) delete globalThis.window;
+    return [`加载失败: ${err.message}`];
+  }
+
+  try {
+    const plugin = mod.todoPlugin;
+    const parsed = (text) => ({
+      raw: text,
+      trigger: '/cal',
+      subcommand: undefined,
+      args: [],
+      namedArgs: {},
+      queryText: text,
+    });
+
+    // ① 无关键词：首项是入口，其后才是日程本体
+    const all = await plugin.query(parsed(''));
+    assert(all.items[0]?.metadata?.openManager === true,
+      `/cal 首行应是「打开日程管理」，实得 ${JSON.stringify(all.items[0]?.title)}`);
+    assert(all.items[1]?.id === 't1', `第二条应为真实日程 t1，实得 ${all.items[1]?.id}`);
+
+    // ② 带关键词：过滤作用于日程，入口仍在首位
+    const hit = await plugin.query(parsed('技术周会'));
+    assert(hit.items[0]?.metadata?.openManager === true, '带关键词时入口应仍在首位');
+    assert(hit.items.length === 2, `关键词「技术周会」应只剩 1 条日程 + 入口，实得 ${hit.items.length}`);
+
+    // ③ 选中入口 → 打 open_manager，且声明关窗归还焦点
+    // 只看本段新增的调用记录：svcCalls 是全测试共享的，清空会把别的用例证据抹掉
+    const beforeOpen = svcCalls.length;
+    const r = await plugin.onSelect(all.items[0]);
+    const openedAt = svcCalls.slice(beforeOpen);
+    const opened = openedAt.find((c) => c.method === 'open_manager');
+    assert(opened, `选中入口应调用 open_manager，实得 ${JSON.stringify(openedAt.map((c) => c.method))}`);
+    assert(r?.close === true, `打开日程窗口后应关启动器窗，实得 ${JSON.stringify(r)}`);
+
+    // ④ 真实日程仍走 toggle，别被入口分支抢走
+    const beforeToggle = svcCalls.length;
+    await plugin.onSelect(all.items[1]);
+    const toggledAt = svcCalls.slice(beforeToggle);
+    assert(toggledAt.some((c) => c.method === 'toggle'),
+      `选中真实日程应调用 toggle，实得 ${JSON.stringify(toggledAt.map((c) => c.method))}`);
+  } catch (err) {
+    failures.push(err.message);
+  } finally {
+    if (!hadWindow) delete globalThis.window;
+  }
+  return failures;
+}
+
 async function main() {
   const plugins = listFrontendPlugins();
   console.log(`[plugin:test:fe] 发现 ${plugins.length} 个纯前端插件\n`);
@@ -3027,6 +3111,16 @@ async function main() {
     failed += 1;
     console.log('\n  ✗ 纯函数：/cal dsl');
     for (const f of dslFailures) console.log(`      - ${f}`);
+  }
+
+  // /cal 面板固定入口：默认第一行直达日程窗口（对照 /note 的「打开笔记管理面板」）
+  const calEntryFailures = await testCalPanelManagerEntry();
+  if (calEntryFailures.length === 0) {
+    console.log('\n  ✓ /cal 面板首行「打开日程管理」（入口恒首位 · 回车走 open_manager 而非 toggle）');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ /cal 面板首行入口');
+    for (const f of calEntryFailures) console.log(`      - ${f}`);
   }
 
   // svc 桥接抽查：qr 打开二维码走 process.launch；网络插件应覆盖全部声明的域名
