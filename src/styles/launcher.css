@@ -36,12 +36,20 @@ html.ll-transparent #root {
   background-color: transparent !important;
 }
 
-/* 圆角插件窗口（宿主按 rounded 声明位给视图 URL 加 rounded=1）：窗口透明，
-   由这层提供不透明底、var(--radius-window) 圆角裁切与描边，视图组件渲染在
-   内、无需各自适配。非圆角窗口（pomo、遮罩层）不带 ll-rounded，此层无样式。 */
-html.ll-rounded .plugin-window-root {
+/* 插件视图的包裹层：先把尺寸钉成整窗，再谈外观。
+   少了这一条，非圆角视图（rounded:false，如 pomo 挂件）拿到的是一张
+   无尺寸的白纸——视图自己的 `height:100%` 逐级落空，内容只长到自然高，
+   窗口底下剩一条同色空白带，看上去像挂件凭空多了个状态栏
+   （2026-10-26 /time 桌面时钟同款坑，它当时在插件 CSS 里用 fixed 自救）。 */
+.plugin-window-root {
   width: 100%;
   height: 100%;
+}
+
+/* 圆角插件窗口（宿主按 rounded 声明位给视图 URL 加 rounded=1）：窗口透明，
+   由这层提供不透明底、var(--radius-window) 圆角裁切与描边，视图组件渲染在
+   内、无需各自适配。非圆角窗口（pomo、遮罩层）不带 ll-rounded，只吃上面的尺寸。 */
+html.ll-rounded .plugin-window-root {
   background-color: var(--bg-solid);
   border: 1px solid var(--border-launcher);
   border-radius: var(--radius-window);

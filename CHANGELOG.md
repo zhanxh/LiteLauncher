@@ -54,6 +54,7 @@
 
 ### Fixed
 
+- `/pomo` 桌面挂件底部凭空多出一条空白"状态栏"：统一 4px 圆角那轮改动给插件视图加了 `.plugin-window-root` 包裹层，但它的尺寸样式只写在 `html.ll-rounded` 下，`rounded:false` 的挂件于是拿到一张无尺寸的白纸，视图自己的 `height:100%` 逐级落空、卡片只长到内容高，剩下的窗口高度露成一条同色空白带。现把尺寸（铺满整窗）与外观（不透明底/圆角/描边）拆开，非圆角视图同样吃满整窗；`/time` 桌面时钟当初是在插件 CSS 里用 `position:fixed` 自救的，这次修在共享层，后续任何 `rounded:false` 视图不再重犯。
 - Linux 上输入 `/time`、`/rand` 等纯前端插件指令时程序冻结（窗口停在少一个字符的最后绘制帧、进程满负荷空转）：壳层查询效果经 `beginQuery` 常规读取 `panelItems` 把它注册成效果依赖，查询完成后 `setPanelItems` 触发效果重跑 → 再查询，形成死循环；纯 JS 插件的 await 落在微任务里，事件循环被饿死（走 IPC 的 `/app` 等每圈让出事件循环，因此从未暴露）。`beginQuery` 改用 `untrack` 读取切断反馈环。
 - Linux 上启动器动态高度从未生效，面板永远只有一条小窗：`resizable: false` 的窗口被 GTK 锁死尺寸提示（实测 min=max=680×200），所有 `set_size` 被 X 静默夹回且 Tauri 照样返回 Ok。运行时解锁 resizable 并写入显式宽高约束（宽锁 680，高 70..640），被夹掉的 resize 在窗口 Resized 事件里补发收敛；与 auto_height 弹窗的 Linux 处理同思路。
 - `set_main_window_height` 改为 async 命令并把 resize 派发到主循环独立迭代：同步命令在 Linux 上于 WebKitGTK 的 IPC 回调里执行，直接 gtk_window_resize 会打断 GDK 窗口更新 freeze/thaw 记账（每次启动触发 `gdk_window_thaw_toplevel_updates` 断言）。
@@ -62,6 +63,7 @@
 
 ### Internal
 
+- 修复 Linux 编译：主窗解锁尺寸用的 `WindowSizeConstraints` 未导入（改完整路径 `tauri::WindowSizeConstraints`）；`ll-host` 的 `Ordering` 只在 `#[cfg(windows)]` 分支引用，改为按平台导入，消除 unused_imports 告警。
 - 修复：build.sh 的 node_modules 残缺探测覆盖前端实际引用的 `@tauri-apps/plugin-updater` / `plugin-process`，部分安装不再静默进入前端打包（Linux 实测曾在 vite 阶段报 import 解析失败）。
 - 工程：清理 ll-host 与 ll-icons 的 Linux 编译警告——删除未使用的 `Ordering` 导入与非 Windows 平台死代码（`drive_root_pythons` 空桩、`ICON_SIZE` 移入 Windows cfg）。
 - 工程：按 Linux 构建产物刷新 find / sysinfo 的 native 插件 `backend.integrity`。
