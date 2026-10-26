@@ -10,6 +10,9 @@
 
 ### Added
 
+- `/time` 世界时钟升级：面板秒级实时刷新（新增 PanelData.live 声明位，壳层在面板停留期间定时重跑 query，按 id 保住选中项、窗口隐藏即停、回焦即补刷）；回车把该城市的墙面时钟弹到桌面——SVG 表盘 + 数字读数，可同时弹出多个（每个时区一枚、右上角向下堆叠），首帧渲染完成后自动贴到壁纸层（Wayland 降级为置顶浮窗并如实标注），Ctrl+Enter 仍复制时间。
+- 修复 `/time` 桌面时钟“一闪即逝 / 主程序崩溃退出”的三处根因：① `svc.window.attachDesktop` 在 async 命令线程（tokio worker）里 `block_on`，宿主 panic=abort 下直接静默杀进程（pomo 的 native 桥接线程上下文不同所以未暴露）→ 改为独立 OS 线程执行；② 新版 Win11 上 Progman 兄弟链里已无 WorkerW，回退到 Progman 后子窗塌缩成 0×0 隐形子窗 → WorkerW 候选改为“兄弟链 + 全局 EnumWindows 补扫”，只接受可见且覆盖全虚拟桌面者；③ SetParent 后未重申矩形 → 显式换算父坐标系并顶回原尺寸；④ SetParent 会重置创建时设置的 DWM 无边框属性，系统重新画上一圈主题色边框（用户看到的“下巴/状态栏”）→ 挂载完成后再次 remove_window_border。附带：运行期 svc 调用接入 lifecycle.log（此前 svc_context 用空 logger，运行期诊断日志全被吞）；SetParent 返回 NULL（顶层窗原无父）不再误报为失败（补 GetParent 反查）。
+
 - 系统托盘菜单新增「设置」选项，点击可快速呼出或前置聚焦设置面板窗口。
 - 完善开机自动启动机制：开机自启注册 `--autostart` 参数并在系统登录时静默常驻托盘不弹窗；设置面板提供开机自启开关与即时状态反馈。
 - 自动更新端点配置校正：默认更新源指向 `zhanxiaohai/LiteLauncher`，联动设置面板「检查更新」与启动期静默检测。

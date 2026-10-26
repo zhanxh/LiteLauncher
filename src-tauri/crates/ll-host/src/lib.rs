@@ -74,6 +74,10 @@ pub struct HostState {
     pub(crate) db_registry: RwLock<Option<Arc<PluginDbRegistry>>>,
     pub(crate) core_db: RwLock<Option<Arc<Mutex<Connection>>>>,
     pub(crate) app: RwLock<Option<AppHandle>>,
+    /// 运行期 svc 调用的日志通道（setup 时由主程序注入；注入前为 None → 静默）。
+    /// 之前 svc_context 用空 logger，运行期 svc 的诊断日志（如 attachDesktop）
+    /// 全部被吞，排障时完全瞎眼——2026-10-26 时钟排障的教训。
+    pub(crate) runtime_log: RwLock<Option<LogFn>>,
     /// 剪贴板监听是否允许继续（插件禁用/暂停时置 false；线程本身不销毁）
     clip_watch_enabled: Arc<AtomicBool>,
     /// 监听线程是否已启动，避免重复 spawn
@@ -91,6 +95,11 @@ impl HostState {
 
     pub fn set_app(&self, app: AppHandle) {
         *self.app.write().unwrap() = Some(app);
+    }
+
+    /// 注入运行期 svc 日志通道（setup 阶段调用；见 runtime_log 字段说明）
+    pub fn set_runtime_log(&self, log: LogFn) {
+        *self.runtime_log.write().unwrap() = Some(log);
     }
 
     /// 启动期热键注册所需：每个插件的启用状态与可用热键声明
@@ -488,7 +497,12 @@ impl HostState {
         };
 
         let app = self.app.read().unwrap().clone();
-        let log: LogFn = Arc::new(|_, _| {});
+        let log = self
+            .runtime_log
+            .read()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| Arc::new(|_, _| {}));
         Ok(build_context_from_parts(
             app.as_ref(),
             &manifest,

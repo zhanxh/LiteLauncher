@@ -78,10 +78,15 @@ pub fn detect_session() -> SessionKind {
 ///
 /// 窗口可能正在创建（`window.open` 走主线程异步建窗），故给一段重试窗口期；
 /// 拿不到就返回 Failed 并附明确原因，让插件能提示用户而不是静默失败。
-pub fn attach_window(app: &tauri::AppHandle, label: &str) -> Result<DesktopAttachResult, String> {
+pub fn attach_window(
+    app: &tauri::AppHandle,
+    label: &str,
+    log: &dyn Fn(&str),
+) -> Result<DesktopAttachResult, String> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use tauri::Manager;
 
+    log("attach_window: begin");
     // 最多等 ~1.2s 让窗口就绪：20 次 × 60ms。
     // 用 std::thread::sleep 而非 tokio：svc 分发器是同步的，
     // 引入 async 只会让调用链多一层 Future 却拿不到任何收益。
@@ -94,9 +99,11 @@ pub fn attach_window(app: &tauri::AppHandle, label: &str) -> Result<DesktopAttac
                     // 不带生命周期的 RawWindowHandle 才能带出循环
                     let raw: RawWindowHandle = h.as_raw();
                     handle = Some(raw);
+                    log("attach_window: window handle acquired");
                     break;
                 }
                 Err(e) => {
+                    log("attach_window: window_handle() failed");
                     return Ok(DesktopAttachResult {
                         status: DesktopAttach::Failed {
                             reason: format!("取窗口句柄失败: {e}"),
@@ -140,7 +147,7 @@ pub fn attach_window(app: &tauri::AppHandle, label: &str) -> Result<DesktopAttac
         }
     };
 
-    Ok(attach_to_desktop(&native_id))
+    Ok(attach_to_desktop(&native_id, log))
 }
 
 /// 当前会话是否支持桌面层。插件可在打开挂件前先问一次，避免白跑一趟。
@@ -151,10 +158,11 @@ pub fn session_supported() -> bool {
 #[cfg(target_os = "windows")]
 mod platform {
     use super::DesktopAttachResult;
-    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, SetParent, SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
-        SWP_SHOWWINDOW,
+        EnumWindows, FindWindowW, GetSystemMetrics, GetWindowRect, IsWindowVisible, SetParent,
+        SetWindowPos, HWND_TOP, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_SHOWWINDOW,
     };
 
     /// Progman 与 WorkerW 的窗口类名（Unicode 版）
@@ -191,44 +199,117 @@ mod platform {
 
     /// 找承载壁纸的 WorkerW 窗口。
     ///
-    /// 机制：Explorer 启动时会创建若干 WorkerW，其中一个被设为壁纸宿主；
-    /// 但具体是哪个不可预测。社区通行的做法是**先向 Progman 发送注册消息
-    /// `0x052C`**，Explorer 会把壁纸 WorkerW 挪到 Progman 之后，
-    /// 此时 `FindWindowW("Progman")` 的下一个兄弟窗口就是要找的那个。
-    fn find_wallpaper_workerw() -> Option<HWND> {
+    /// 经典机制（Win10 / 早期 Win11）：向 Progman 发送注册消息 `0x052C`，
+    /// Explorer 会把壁纸 WorkerW 挪到 Progman 的兄弟位置，沿 GW_HWNDNEXT
+    /// 走兄弟链第一个 WorkerW 就是它。
+    ///
+    /// ⚠️ 新版 Win11 上这套假设会失效（2026-10-26 真机：Progman 是 Z 序最底、
+    /// 兄弟链里**没有** WorkerW；桌面上另有若干 202×56 的**隐形** WorkerW）。
+    /// 选错父窗口（尤其选中隐形小 WorkerW，或回退到 Progman）会让挂件在
+    /// SetParent 瞰间塌缩成 0×0 的隐形子窗——用户看到的就是"一闪即逝"。
+    /// 所以：① 兄弟链候选 + 全局 EnumWindows 补扫；② 只接受"可见且覆盖整个
+    /// 虚拟桌面"的候选；③ 找不到才退回 Progman（attach 里会重申矩形兜底）。
+    fn find_wallpaper_workerw(log: &dyn Fn(&str)) -> Option<HWND> {
         unsafe {
             let progman = FindWindowW(PROGMAN.as_ptr(), std::ptr::null());
             if progman.is_null() {
+                log("find: Progman not found");
                 return None;
             }
             // 向 Progman 发送 0x052C，使其生成一个新的 WorkerW 承载壁纸
             SendMessageTimeoutW_default(progman, 0x052C, 0, 0);
 
-            // 从 Progman 开始枚举兄弟窗口，取第一个 WorkerW
-            let mut found: HWND = std::ptr::null_mut();
+            let vsx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            let vsy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            let vsw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            let vsh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            log(&format!(
+                "find: virtual screen=({vsx},{vsy})+{vsw}x{vsh}"
+            ));
+
+            // 经典路径：Progman 的兄弟链
+            let mut candidates: Vec<HWND> = Vec::new();
             let mut hwnd = progman;
             loop {
                 let next = GetWindow(hwnd, GW_HWNDNEXT);
                 if next.is_null() {
                     break;
                 }
-                let mut buf = [0u16; 64];
-                let len = GetClassNameW(next, buf.as_mut_ptr(), buf.len() as i32);
-                if len > 0 && len as usize == WORKERW.len() - 1 {
-                    let name = String::from_utf16_lossy(&buf[..len as usize]);
-                    if name == "WorkerW" {
-                        found = next;
-                        break;
-                    }
+                if class_is_workerw(next) {
+                    candidates.push(next);
                 }
                 hwnd = next;
             }
-            if found.is_null() {
-                // 退化：直接用 Progman 本身（Win7 及部分 Win10 版本）
-                Some(progman)
-            } else {
-                Some(found)
+            log(&format!("find: sibling candidates={}", candidates.len()));
+
+            // 全局补扫：新版 Win11 的壁纸宿主 WorkerW 不在 Progman 的兄弟链里
+            let mut extra: Vec<HWND> = Vec::new();
+            let ctx = ScanCtx {
+                seen: &mut extra,
+                skip: &candidates,
+            };
+            EnumWindows(
+                Some(enum_workerw_cb),
+                &ctx as *const ScanCtx as LPARAM,
+            );
+            candidates.append(&mut extra);
+            log(&format!("find: total candidates={}", candidates.len()));
+
+            for c in &candidates {
+                let r = get_rect(*c);
+                let covers = r.left <= vsx
+                    && r.top <= vsy
+                    && r.right >= vsx + vsw
+                    && r.bottom >= vsy + vsh;
+                let vis = IsWindowVisible(*c) != 0;
+                log(&format!(
+                    "find: candidate hwnd={:p} vis={vis} rect=({},{})-({},{}) covers={covers}",
+                    *c, r.left, r.top, r.right, r.bottom
+                ));
+                if vis && covers {
+                    return Some(*c);
+                }
             }
+            log("find: no valid WorkerW, falling back to Progman");
+            Some(progman)
+        }
+    }
+
+    struct ScanCtx<'a> {
+        seen: *mut Vec<HWND>,
+        skip: &'a Vec<HWND>,
+    }
+
+    unsafe extern "system" fn enum_workerw_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        unsafe {
+            let ctx = &*(lparam as *const ScanCtx);
+            if class_is_workerw(hwnd) && !ctx.skip.contains(&hwnd) {
+                (*ctx.seen).push(hwnd);
+            }
+        }
+        1
+    }
+
+    fn class_is_workerw(hwnd: HWND) -> bool {
+        unsafe {
+            let mut buf = [0u16; 64];
+            let len = GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+            len > 0
+                && len as usize == WORKERW.len() - 1
+                && String::from_utf16_lossy(&buf[..len as usize]) == "WorkerW"
+        }
+    }
+
+    fn get_rect(hwnd: HWND) -> RECT {
+        unsafe {
+            let mut r = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            GetWindowRect(hwnd, &mut r);
+            r
         }
     }
 
@@ -254,6 +335,7 @@ mod platform {
     #[link(name = "user32")]
     unsafe extern "system" {
         fn GetWindow(hwnd: HWND, cmd: u32) -> HWND;
+        fn GetParent(hwnd: HWND) -> HWND;
         fn GetClassNameW(hwnd: HWND, buf: *mut u16, max: i32) -> i32;
     }
 
@@ -264,9 +346,10 @@ mod platform {
     ///
     /// `hwnd` 必须是**原生**窗口句柄。Tauri 的 WebviewWindow 在 Windows 上
     /// 有 `hwnd()` 方法可直接取到。
-    pub fn attach(hwnd: isize) -> DesktopAttachResult {
+    pub fn attach(hwnd: isize, log: &dyn Fn(&str)) -> DesktopAttachResult {
         use super::DesktopAttach;
         if hwnd == 0 {
+            log("attach: hwnd is 0");
             return DesktopAttachResult {
                 status: DesktopAttach::Failed {
                     reason: "窗口句柄为空".into(),
@@ -275,8 +358,10 @@ mod platform {
             };
         }
         let hwnd = hwnd as HWND;
+        log("attach: finding wallpaper WorkerW");
         unsafe {
-            let Some(parent) = find_wallpaper_workerw() else {
+            let Some(parent) = find_wallpaper_workerw(log) else {
+                log("attach: WorkerW not found");
                 return DesktopAttachResult {
                     status: DesktopAttach::Failed {
                         reason: "未找到 Explorer 的 WorkerW 壁纸窗口（桌面进程可能未运行）".into(),
@@ -284,33 +369,60 @@ mod platform {
                     on_wallpaper: false,
                 };
             };
+            log(&format!("attach: parent picked, hwnd={:p}", parent));
+            // SetParent 前先取屏幕矩形：之后坐标系变为父窗口相对，需要用它重申
+            let pre = get_rect(hwnd);
+            log(&format!(
+                "attach: pre-attach rect=({},{})-({},{})",
+                pre.left, pre.top, pre.right, pre.bottom
+            ));
             let old = SetParent(hwnd, parent);
-            // SetParent 成功后需要手动调整 Z 序与显示，否则窗口可能不可见。
-            //
-            // ⚠️ 必须带 SWP_NOMOVE：SetParent 会把窗口的坐标系从屏幕改为
-            // **相对于父窗口（WorkerW 壁纸层）**，此处的 (0,0) 若被应用就会把
-            // 窗口甩到壁纸层左上角。而窗口的期望位置（右上角/右下角）
-            // 是宿主按主显示器算好后用 set_position 设的，不该被这里覆盖。
+            log("attach: SetParent returned");
+            // SetParent 后**重申完整矩形**，两个原因：
+            //   1) 坐标系变为父窗口相对（原点 = GetWindowRect(parent).left/top），
+            //      必须把屏幕矩形平移进父坐标系，否则会甩到父窗口左上角；
+            //   2) 新版 Win11 上挂到 Progman/WorkerW 的瞬间窗口会塌缩成 0×0
+            //      （真机实测：GetWindowRect 变成零大小、挂件不可见），必须把
+            //      尺寸顶回来。旧实现只用 SWP_NOMOVE 防“甩位”，防不了塌缩。
+            let pr = get_rect(parent);
+            let w = pre.right - pre.left;
+            let h = pre.bottom - pre.top;
+            log(&format!(
+                "attach: reassert rect origin=({},{}) size={w}x{h}",
+                pr.left, pr.top
+            ));
             let _ = SetWindowPos(
                 hwnd,
                 HWND_TOP,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOMOVE | SWP_SHOWWINDOW,
+                pre.left - pr.left,
+                pre.top - pr.top,
+                w,
+                h,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
+            log("attach: SetWindowPos done");
+            // ⚠️ SetParent 会重置创建时设过的 DWM 无边框属性：挂完后系统
+            // 重新画上一圈 1-2px 的主题色边框（真机实测：上下左右蓝色线，
+            // 用户描述为"下巴/状态栏没隐藏"）。挂载完成后再去一次边。
+            remove_window_border(hwnd as isize);
+            log("attach: border removed again");
             if old.is_null() {
-                // old 为 NULL 可能是"原本没有父窗口"（正常）也可能是失败，
-                // 用 GetParent 反查确认
-                return DesktopAttachResult {
-                    status: DesktopAttach::Failed {
-                        reason: "SetParent 未生效".into(),
-                    },
-                    on_wallpaper: false,
-                };
+                // SetParent 对"原本没有父窗口"的顶层窗口成功时也返回 NULL，
+                // 不能凭 NULL 判失败——用 GetParent 反查确认真的挂上了没有。
+                // 只看返回值会把每次成功都报成失败，插件侧就会错误降级提示。
+                if GetParent(hwnd) != parent {
+                    log("attach: GetParent check failed → SetParent not effective");
+                    return DesktopAttachResult {
+                        status: DesktopAttach::Failed {
+                            reason: "SetParent 未生效".into(),
+                        },
+                        on_wallpaper: false,
+                    };
+                }
+                log("attach: old parent was NULL but GetParent confirms attached");
             }
         }
+        log("attach: done → attached");
         DesktopAttachResult {
             status: DesktopAttach::Attached,
             on_wallpaper: true,
@@ -356,7 +468,7 @@ mod platform {
         Ok(())
     }
 
-    pub fn attach(xid_hex: &str) -> DesktopAttachResult {
+    pub fn attach(xid_hex: &str, _log: &dyn Fn(&str)) -> DesktopAttachResult {
         let Some(xid) = x11_window_id(xid_hex) else {
             return DesktopAttachResult {
                 status: DesktopAttach::Failed {
@@ -384,7 +496,7 @@ mod platform {
 
     /// macOS 没有可用的"桌面层"概念（桌面由 Desktop/Dock 进程托管，
     /// 普通应用挂不进去），且本项目当前不作为主要目标平台。
-    pub fn attach(_xid_hex: &str) -> DesktopAttachResult {
+    pub fn attach(_xid_hex: &str, _log: &dyn Fn(&str)) -> DesktopAttachResult {
         DesktopAttachResult {
             status: DesktopAttach::Unsupported {
                 reason: "macOS 不支持将窗口挂到桌面层".into(),
@@ -412,16 +524,16 @@ pub fn remove_window_border(_hwnd: isize) {
 ///
 /// 各分支用 `cfg` 剔除而非运行时匹配：同一平台只会编译进对应的那一个 `platform::attach`
 /// 签名（Windows 收 isize、Linux 收 &str），不剔除会出现类型不匹配。
-pub fn attach_to_desktop(native_id: &str) -> DesktopAttachResult {
+pub fn attach_to_desktop(native_id: &str, log: &dyn Fn(&str)) -> DesktopAttachResult {
     #[cfg(target_os = "windows")]
     {
         let hwnd = native_id.trim().parse::<isize>().unwrap_or(0);
-        return platform::attach(hwnd);
+        return platform::attach(hwnd, log);
     }
     #[cfg(not(target_os = "windows"))]
     {
         match detect_session() {
-            SessionKind::X11 => platform::attach(native_id),
+            SessionKind::X11 => platform::attach(native_id, log),
             SessionKind::Wayland => DesktopAttachResult {
                 status: DesktopAttach::Unsupported {
                     reason: "Wayland 不允许应用指定窗口层级（z-order 完全由 compositor 独占管理），\

@@ -127,6 +127,19 @@ export const App: Component = () => {
   // 见 CommandPlugin.queryDebounceMs——网络类插件靠它把"两次回车"变回"输入即出结果"
   let pluginQueryTimer: ReturnType<typeof setTimeout> | null = null;
   let pluginQuerySeq = 0;
+  // 实时面板（PanelData.live）定时重跑时保存/恢复滚动位置用
+  let panelScroller: HTMLDivElement | undefined;
+
+  // 实时面板（PanelData.live）的定时重跑计时器；liveKick 供窗口重新聚焦时立即补刷一次
+  let pluginLiveTimer: ReturnType<typeof setTimeout> | null = null;
+  let liveKick: (() => void) | null = null;
+  const clearLiveTimer = () => {
+    if (pluginLiveTimer !== null) {
+      clearTimeout(pluginLiveTimer);
+      pluginLiveTimer = null;
+    }
+    liveKick = null;
+  };
   const [panelItems, setPanelItems] = createSignal<PanelItem[]>([]);
   const [emptyText, setEmptyText] = createSignal<string>('未检索到内容');
   const [actionCapsule, setActionCapsule] = createSignal<ActionPreviewCapsule | null>(null);
@@ -190,6 +203,8 @@ export const App: Component = () => {
   const resetQueryState = () => {
     endQuery();
     setQueryError(null);
+    // 输入变化/面板切换后旧面板的实时刷新必须停：新一轮 applyQuery 会重新安排
+    clearLiveTimer();
   };
 
   const retryQuery = () => {
@@ -232,6 +247,8 @@ export const App: Component = () => {
 
   // 隐藏窗口
   const hideWindow = async () => {
+    // 窗口不可见时实时面板没有意义，停下来；重新显示后由 focus 补刷
+    clearLiveTimer();
     if (!isTauriEnvironment()) return;
     try {
       await invoke('hide_main_window');
@@ -341,6 +358,9 @@ export const App: Component = () => {
         clearTimeout(blurTimer);
         blurTimer = null;
       }
+      // 窗口隐藏期间实时面板已停摆（hideWindow 清了计时器）；若面板还在，
+      // 回焦时立即补一次刷新，避免用户重新打开看到的是几秒前的读数
+      liveKick?.();
     };
 
     const handleBlur = () => {
@@ -468,8 +488,15 @@ export const App: Component = () => {
         const parsed = result.parsed;
         const queryId = ++pluginQuerySeq;
 
-        // 应用结果：序号校验保证陈旧响应被丢弃（防抖后并发窗口更大，必须查）
-        const applyQuery = async () => {
+        // 应用结果：序号校验保证陈旧响应被丢弃（防抖后并发窗口更大，必须查）。
+        // keepSelection：live 定时重跑时按 id 保住用户当前选中项，不每秒跳回第一行；
+        // 同理保住滚动位置——<For> 按对象引用重建行节点，scrollTop 会被浏览器
+        // 钳回 0，不同步救回来的话用户滚到列表中部会被每秒一次的刷新拽回顶部。
+        const applyQuery = async (keepSelection = false) => {
+          const keepId = keepSelection
+            ? untrack(() => panelItems()[selectedIndex()]?.id)
+            : undefined;
+          const savedScroll = keepSelection ? (panelScroller?.scrollTop ?? 0) : 0;
           beginQuery();
           try {
             const data = await plugin.query!(parsed);
@@ -479,22 +506,44 @@ export const App: Component = () => {
               setQueryError(toUserMessage(data.error));
               setPanelItems([]);
               setEmptyText('');
+              clearLiveTimer(); // 出错的面板不再定时重跑
               updateWindowHeight(PANEL_ERROR_HEIGHT);
               return;
             }
             setQueryError(null);
             setPanelItems(data.items);
             setEmptyText(data.emptyText || '未检索到内容');
-            setSelectedIndex(firstSelectableIndex(data.items));
+            const kept = keepId ? data.items.findIndex((item) => item.id === keepId) : -1;
+            setSelectedIndex(kept >= 0 ? kept : firstSelectableIndex(data.items));
+            // Solid 同步重建行节点时 scrollTop 已被钳回 0，这里同帧写回
+            if (keepSelection && panelScroller && savedScroll > 0) {
+              panelScroller.scrollTop = savedScroll;
+            }
             updateWindowHeight(
               data.items.length > 0 ? 420 + PANEL_FOOTER_HEIGHT : EMPTY_PANEL_HEIGHT,
             );
+            // 实时面板（PanelData.live）：面板停留期间定时重跑同一查询。
+            // 输入变化时 resetQueryState 清计时器，新一轮 applyQuery 重新安排；
+            // 最小间隔 500ms，防止插件声明过密把主窗口变成空转的死循环
+            const live =
+              typeof data.live === 'number' && Number.isFinite(data.live)
+                ? Math.max(500, data.live)
+                : 0;
+            clearLiveTimer();
+            if (live > 0) {
+              pluginLiveTimer = setTimeout(() => {
+                pluginLiveTimer = null;
+                void applyQuery(true);
+              }, live);
+              liveKick = () => void applyQuery(true);
+            }
           } catch (err) {
             if (queryId !== pluginQuerySeq) return; // 过时请求的异常不覆盖新查询
             console.error('插件查询异常:', rawError(err));
             setQueryError(toUserMessage(err));
             setPanelItems([]);
             setEmptyText('');
+            clearLiveTimer();
             updateWindowHeight(PANEL_ERROR_HEIGHT);
           } finally {
             if (queryId === pluginQuerySeq) endQuery();
@@ -854,6 +903,9 @@ export const App: Component = () => {
           error={queryError()}
           onRetry={retryQuery}
           onSelectItem={handleSelectItem}
+          onScrollerRef={(el) => {
+            panelScroller = el;
+          }}
           onHoverIndex={(index) => {
             const item = panelItems()[index];
             if (item && item.kind !== 'info') setSelectedIndex(index);

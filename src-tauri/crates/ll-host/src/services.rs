@@ -337,8 +337,32 @@ impl WindowApi for HostWindowApi {
     fn attach_desktop(&self, label: &str) -> Result<DesktopAttachResult, PluginError> {
         let app = self.app.clone();
         let label = label.to_string();
-        tauri::async_runtime::block_on(async move { crate::desktop::attach_window(&app, &label) })
-            .map_err(|e| PluginError::window(format!("挂载到桌面失败: {e}")))
+        let log = Arc::clone(&self.log);
+        let plugin = self.manifest.id.clone();
+        //
+        // ⚠️ 绝不能在调用线程上 `block_on`：svc 调用可能来自 async 命令
+        // （plugin_call → tokio 工作线程），在 runtime 工作线程里再
+        // `async_runtime::block_on` 会直接 panic（"Cannot block the current
+        // thread from within a runtime"）。宿主 profile 是 panic=abort，
+        // 那个 panic = 进程瞬间静默退出——真机表现即"时钟/挂件一闪即逝、
+        // 主程序没了"（2026-10-26 /time 桌面时钟两次复现；pomo 的 native
+        // 桥接恰好不在 tokio 线程上所以未暴露）。
+        //
+        // 挂载是用户手动触发的低频操作：丢到独立 OS 线程上同步执行，
+        // join 等结果。attach_window 内部最多 sleep 1.2s 等窗口就绪，
+        // 不需要 async。
+        (self.log)(&plugin, &format!("attachDesktop: begin label={label}"));
+        let result = std::thread::Builder::new()
+            .name("ll-attach-desktop".into())
+            .spawn(move || {
+                let lg = |msg: &str| log(&plugin, msg);
+                lg("attach: worker thread started");
+                crate::desktop::attach_window(&app, &label, &lg)
+            })
+            .map_err(|e| PluginError::window(format!("attach 线程启动失败: {e}")))?
+            .join()
+            .map_err(|_| PluginError::window("attach 线程 panic（已捕获，进程存活）"))?;
+        result.map_err(|e| PluginError::window(format!("挂载到桌面失败: {e}")))
     }
 
     fn desktop_supported(&self) -> bool {

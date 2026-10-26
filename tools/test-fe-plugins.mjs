@@ -1373,22 +1373,62 @@ const CASES = {
   time: [
     {
       tokens: [],
-      expect: (items) => {
+      // /time 的主动作已改为弹桌面时钟，不再适用“选中即复制”的通用契约
+      copyOnSelectOptOut: true,
+      expect: (items, data) => {
         assert(items[0].badge === '本地', '首个应是本地时间');
-        assert(items.filter((i) => i.metadata?.value).length === 14, '应列出 14 个城市');
+        assert(
+          items.filter((i) => i.metadata?.value && i.badge !== '本地').length === 14,
+          '应列出 14 个城市（本地行也可复制，不计入）',
+        );
+        assert(/^\d{2}:\d{2}:\d{2}$/.test(items[0].title), `本地时间应带秒: ${items[0].title}`);
+        assert(data.live === 1000, '面板应声明 live=1000（秒级实时刷新）');
       },
     },
     {
       tokens: ['纽约'],
+      // /time 的主动作已改为弹桌面时钟，不再适用"选中即复制"的通用契约
+      copyOnSelectOptOut: true,
       expect: (items) => {
         const city = items.find((i) => i.metadata?.label === '纽约');
-        assert(city && /^\d{2}:\d{2}$/.test(city.title), `纽约时间格式错: ${city?.title}`);
+        assert(city && /^\d{2}:\d{2}:\d{2}$/.test(city.title), `纽约时间格式错: ${city?.title}`);
         assert(city.metadata.value.startsWith('纽约 '), '复制值应以城市名开头');
+        assert(
+          city.metadata.tz === 'America/New_York' && city.metadata.fb === -5,
+          `弹窗参数应带 tz 与固定偏移: ${JSON.stringify(city.metadata)}`,
+        );
+      },
+      after: async (plugin) => {
+        // 回车弹桌面时钟：走 svc.window.open，参数必须带城市与 IANA 时区
+        const before = svcCalls.length;
+        const data = await plugin.query(toParsed(['纽约']));
+        await plugin.onSelect(data.items.find((i) => i.metadata?.label === '纽约'));
+        const open = svcCalls.slice(before).find((c) => c.method === 'svc.window.open');
+        assert(open, '回车应调用 svc.window.open 弹桌面时钟');
+        assert(
+          open.params.view === 'clock' &&
+            open.params.params.city === '纽约' &&
+            open.params.params.tz === 'America/New_York' &&
+            open.params.params.fallback === -5,
+          `弹窗参数错: ${JSON.stringify(open?.params)}`,
+        );
+        // Ctrl+Enter（actionId=copy）仍是复制路径
+        const copied = await plugin.onSelect(
+          data.items.find((i) => i.metadata?.label === '纽约'),
+          'copy',
+        );
+        assert(
+          typeof copied.copy === 'string' && copied.copy.startsWith('纽约 '),
+          'copy 动作应回传复制值',
+        );
       },
     },
     {
       tokens: ['不存在的城市'],
-      expect: (items) => assert(items[0].badge === '提示', '未知城市应给出提示'),
+      expect: (items, data) => {
+        assert(items[0].badge === '提示', '未知城市应给出提示');
+        assert(data.live === undefined, '错误提示是静态的，不应声明 live');
+      },
     },
   ],
   pwd: [
@@ -1512,11 +1552,15 @@ async function testPlugin({ id, entry }) {
       if (!validatePanel(data.items, `query(${label})`, failures)) continue;
       if (typeof testCase.expectFirst === 'function') testCase.expectFirst(data.items);
 
-      if (typeof testCase.expect === 'function') testCase.expect(data.items);
+      // expect 第二参拿到完整 PanelData：需要断言 live/emptyText 等容器级声明时用
+      if (typeof testCase.expect === 'function') testCase.expect(data.items, data);
       const lastItems = data.items;
 
-      // onSelect 复制契约：任一可复制项回传 copy
-      const copyable = lastItems.find((i) => typeof i.metadata?.value === 'string' && i.metadata.value);
+      // onSelect 复制契约：任一可复制项回传 copy。
+      // copyOnSelectOptOut：主动作不是复制的插件（如 /time 弹桌面时钟）显式豁免
+      const copyable =
+        !testCase.copyOnSelectOptOut &&
+        lastItems.find((i) => typeof i.metadata?.value === 'string' && i.metadata.value);
       if (copyable && typeof plugin.onSelect === 'function') {
         const after = await plugin.onSelect(copyable);
         if (after?.copy !== copyable.metadata.value) {

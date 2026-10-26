@@ -2,7 +2,11 @@
  * /time 世界时钟（WP-15：Python zoneinfo → Intl.DateTimeFormat）
  *
  * 时区数据由 WebView 的 Intl 提供；拿不到某个 IANA 时区时退回固定偏移，
- * 与旧 Python 版一样标注“夏令时可能不准”，不静默给错时间。
+ * 与旧 Python 版一样标注"夏令时可能不准"，不静默给错时间。
+ *
+ * 本文件同时是面板与桌面时钟视图（clock.tsx）的共享数据层：
+ * 时区换算（zoneParts/zoneOffsetMinutes）、UTC 偏移文案（utcOffsetLabel）、
+ * 本机时区名（localZoneName）都从这里出，保证两处口径一致。
  */
 
 export interface City {
@@ -30,7 +34,7 @@ export const CITIES: City[] = [
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
-interface ZoneParts {
+export interface ZoneParts {
   year: number;
   month: number;
   day: number;
@@ -39,7 +43,7 @@ interface ZoneParts {
   second: number;
 }
 
-function partsInZone(date: Date, iana: string): ZoneParts {
+export function zoneParts(date: Date, iana: string): ZoneParts {
   const fmt = new Intl.DateTimeFormat('en-GB', {
     timeZone: iana,
     year: 'numeric',
@@ -65,10 +69,20 @@ function partsInZone(date: Date, iana: string): ZoneParts {
   };
 }
 
-function offsetMinutes(date: Date, iana: string): number {
-  const p = partsInZone(date, iana);
+/** 指定 IANA 时区相对 UTC 的偏移分钟数（含夏令时） */
+export function zoneOffsetMinutes(date: Date, iana: string): number {
+  const p = zoneParts(date, iana);
   const asUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
   return Math.round((asUtc - date.getTime()) / 60_000);
+}
+
+/** "UTC+10" / "UTC+10:30" / "UTC-5" 形式的偏移文案（桌面时钟用） */
+export function utcOffsetLabel(diffMinutes: number): string {
+  const sign = diffMinutes < 0 ? '−' : '+';
+  const abs = Math.abs(diffMinutes);
+  const hours = Math.floor(abs / 60);
+  const mins = abs % 60;
+  return mins === 0 ? `UTC${sign}${hours}` : `UTC${sign}${hours}:${pad(mins)}`;
 }
 
 function offsetLabel(diffMinutes: number): string {
@@ -94,6 +108,10 @@ function fixedZoneParts(date: Date, fallbackHours: number): ZoneParts {
 
 export interface CityTime {
   name: string;
+  /** IANA 时区名（弹桌面时钟的 tz 参数） */
+  iana: string;
+  /** Intl 不认识 iana 时退回的固定偏移小时数（弹窗的 fb 参数） */
+  fallbackHours: number;
   time: string;
   date: string;
   offset: string;
@@ -106,8 +124,8 @@ function cityTime(now: Date, city: City): CityTime {
   let real = true;
   let offset = 0;
   try {
-    parts = partsInZone(now, city.iana);
-    offset = offsetMinutes(now, city.iana);
+    parts = zoneParts(now, city.iana);
+    offset = zoneOffsetMinutes(now, city.iana);
     // Intl 可能接受但返回错误的时区；用偏移是否接近 fallback 没法判断，只能信任
   } catch {
     real = false;
@@ -115,13 +133,16 @@ function cityTime(now: Date, city: City): CityTime {
     offset = city.fallback * 60;
   }
   const date = `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
-  const time = `${pad(parts.hour)}:${pad(parts.minute)}`;
+  // 面板实时刷新（PanelData.live）下带秒才有"活着"的感觉
+  const time = `${pad(parts.hour)}:${pad(parts.minute)}:${pad(parts.second)}`;
   return {
     name: city.name,
+    iana: city.iana,
+    fallbackHours: city.fallback,
     time,
     date,
     offset: offsetLabel(offset - -now.getTimezoneOffset()),
-    value: `${city.name} ${date} ${time}`,
+    value: `${city.name} ${date} ${pad(parts.hour)}:${pad(parts.minute)}`,
     fallback: !real,
   };
 }
@@ -130,6 +151,22 @@ export interface TimeSnapshot {
   localTime: string;
   localDate: string;
   cities: CityTime[];
+}
+
+/** 本机 IANA 时区名；拿不到（老 WebView）时退回按偏移伪造的 Etc/GMT 名 */
+export function localZoneName(now: Date = new Date()): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || fakeLocalZone(now);
+  } catch {
+    return fakeLocalZone(now);
+  }
+}
+
+function fakeLocalZone(now: Date): string {
+  const minutes = -now.getTimezoneOffset();
+  const sign = minutes < 0 ? '-' : '+';
+  const abs = Math.abs(minutes);
+  return `Etc/GMT${sign}${Math.floor(abs / 60) || 0}`;
 }
 
 export function worldTime(keyword: string, now: Date = new Date()): TimeSnapshot {

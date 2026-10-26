@@ -1,17 +1,39 @@
 {
   "id": "time",
   "name": "世界时钟",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "api_version": "^1",
   "trigger": "/time",
-  "description": "世界时钟：/time 列出主要城市当前时间与相对本地的时差；/time 纽约 只看指定城市；回车复制时间。纯前端，无需 Python。",
-  "permissions": [],
+  "description": "世界时钟：/time 列出主要城市当前时间与相对本地的时差（秒级实时刷新）；回车在桌面弹出该城市的墙面时钟（可弹出多个、自动贴壁纸层），Ctrl+Enter 复制时间。纯前端，无需 Python。",
+  "permissions": [
+    "windows"
+  ],
+  "views": [
+    {
+      "id": "clock",
+      "title": "桌面时钟",
+      "width": 232.0,
+      "height": 296.0,
+      "resizable": false,
+      "decorated": false,
+      "shadow": false,
+      "always_on_top": true,
+      "skip_taskbar": true,
+      "focusable": false,
+      "position": "top-right",
+      "stacked": true,
+      "unique_by": "tz",
+      "title_param": "city",
+      "on_existing": "focus",
+      "rounded": false
+    }
+  ],
   "backend": {
     "kind": "none"
   },
   "command": {
     "icon": "🌍",
     "action_subcommands": [],
-    "hint": "回车复制该城市时间"
+    "hint": "回车在桌面弹出该城市时钟（可多个）；Ctrl+Enter 复制时间"
   }
 }

@@ -328,6 +328,9 @@ pub fn run() {
             let plugin_log: ll_host::LogFn = Arc::new(|plugin_id, msg| {
                 log_lifecycle(&format!("[plugin:{}] {}", plugin_id, msg));
             });
+            // 运行期 svc 调用（含 attachDesktop 这类窗口操作）同样写入 lifecycle.log，
+            // 否则排障时运行期一条日志都看不到
+            host.set_runtime_log(Arc::clone(&plugin_log));
 
             // 1.8 扫描外部插件目录（LLP/1：拷入即安装，懒启动，与内置插件同注册表同契约）
             // 两级部署：用户安装目录（同名优先）> 便携目录（主程序旁 plugins/，随程序分发）

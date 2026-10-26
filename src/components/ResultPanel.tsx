@@ -13,6 +13,8 @@ interface ResultPanelProps {
   error?: string | null;
   onRetry?: () => void;
   onSelectItem: (item: PanelItem) => void;
+  /** 挂载滚动容器（App 侧在实时面板刷新时保存/恢复滚动位置用） */
+  onScrollerRef?: (el: HTMLDivElement | undefined) => void;
   /** 鼠标悬停某条时同步键盘选中项——否则 Enter 执行的不是眼前那条 */
   onHoverIndex?: (index: number) => void;
 }
@@ -138,7 +140,14 @@ export const ResultPanel: Component<ResultPanelProps> = (props) => {
           仍在查询（网络或 Python 环境较慢）… 按 Esc 可先收起
         </div>
       </Show>
-      <div class="panel-container" ref={scroller} onScroll={measure}>
+      <div
+        class="panel-container"
+        ref={(el) => {
+          scroller = el;
+          props.onScrollerRef?.(el);
+        }}
+        onScroll={measure}
+      >
         <Show
           when={props.items.length > 0}
           fallback={
