@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-27
+
 ### Internal
 
 - 修复 Windows CI `cargo test` 测试二进制启动即崩（0xC0000139 STATUS_ENTRYPOINT_NOT_FOUND）：测试二进制经 tauri→muda 静态导入 `comctl32!TaskDialogIndirect`（仅 comctl32 v6 有此导出），而 tauri-build 的清单只经 `link-arg-bins` 嵌入 bin 目标，无清单的测试进程绑定 System32 的 comctl32 v5 后入口点缺失。现在 `ll-host` 与 `tauri-app` 各自的 build.rs 在 Windows 目标用 `embed_resource::compile_for_everything` 把 Common-Controls v6 清单链进所有目标，`tauri-app` 同时关闭 tauri 内置的 bins-only 清单避免双 RT_MANIFEST；附带修正 rust-cache 的 workspace→target 映射（此前指向不存在的 `target/`，缓存空转每次全量编译）。
