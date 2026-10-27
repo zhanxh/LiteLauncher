@@ -71,6 +71,7 @@
 
 ### Internal
 
+- `/qr` 真实窗口冒烟留痕补进设计文档：本机无 `xdotool`/Playwright，改用 `gcc + libXtst` 的 XTEST 注入驱动真实 release 窗口，截图与剪贴板 PNG 均由独立解码器 `zxing-cpp` 解回原文（`hello!!` / `你好世界` / 232×232 PNG），"能扫"不靠人眼判断；暗色主题一项因一次点击落在启动器之外而中止注入，明确记为遗留。
 - `/qr` 编码器接入常驻回归：`tools/test-fe-plugins.mjs` 新增 `testQrcodeModule()`——29 条黄金 sha256 覆盖 v1–v20 每档装满长度与中文/emoji/URL/WiFi/vCard，加上定位/定时/对齐/暗模块的结构不变量、分块表与 ISO 字节容量的自洽校验、SVG 转义与留白检查；黄金摘要已与 python `qrcode`（等级 M、显式字节模式、强制同掩码）**逐格比对 201 例全部一致**。测试壳层配套：`sdkStub.screen` 补 `savePng`（解析 IHDR 回宽高），并加最小 canvas 桩以断言"回车确实画出了 PNG 且 `toClipboard=true`"。
 - 修复 Linux 编译：主窗解锁尺寸用的 `WindowSizeConstraints` 未导入（改完整路径 `tauri::WindowSizeConstraints`）；`ll-host` 的 `Ordering` 只在 `#[cfg(windows)]` 分支引用，改为按平台导入，消除 unused_imports 告警。
 - 修复：build.sh 的 node_modules 残缺探测覆盖前端实际引用的 `@tauri-apps/plugin-updater` / `plugin-process`，部分安装不再静默进入前端打包（Linux 实测曾在 vite 阶段报 import 解析失败）。
