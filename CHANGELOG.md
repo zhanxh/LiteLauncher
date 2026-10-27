@@ -10,6 +10,7 @@
 
 ### Internal
 
+- 修复 GitHub Actions windows CI：`cargo test --workspace` 会编译 `tauri-app`，其构建脚本校验 `bundle.resources` 里的 `../release/plugins`——该目录平时由 `build.cmd` 的部署步骤产出，CI 直接跑 cargo 时不存在，单测步骤必然失败。现在 ci.yml 在 cargo 测试前先执行 `tools/deploy-portable-plugins.mjs`。
 - 接入自动更新签名：生成 minisign 密钥对（私钥存于本机 `~/.tauri/`，不入仓库），`tauri.conf.json` 的 `plugins.updater.pubkey` 填入公钥，`v*` tag 流水线产物即可签名并生成可被客户端验证的 `latest.json`。
 
 ## [0.2.0] - 2026-10-27

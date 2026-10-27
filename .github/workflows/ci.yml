@@ -44,6 +44,9 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm run build
 
+      - name: 部署外部插件（tauri build script 校验 ../release/plugins 资源路径）
+        run: node tools/deploy-portable-plugins.mjs
+
       - name: Rust 单测（workspace）
         run: cargo test --workspace
 
