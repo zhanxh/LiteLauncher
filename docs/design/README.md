@@ -18,6 +18,12 @@
 - 模板与触发条件见 [方案设计工作流](../standards/basic/design-workflow.md)。
 - 完成后把本文件的表格补一行，避免出现"找不到的设计"。
 
+## 时间戳设计文档
+
+| 文档 | 内容 | 状态 |
+| :--- | :--- | :--- |
+| [20261027_191501_qr-live-preview.md](20261027_191501_qr-live-preview.md) | 结果面板大图标行契约（`PanelItem.iconSize`）与 `/qr` 离线二维码实时预览 | 🟡 实施中（2026-10-27） |
+
 ## 现状与历史
 
 - 架构以 `plugin-architecture-design.md` 为基线，实际实现以代码与 `CHANGELOG.md` 为准。

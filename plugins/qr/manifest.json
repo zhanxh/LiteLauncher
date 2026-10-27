@@ -1,12 +1,13 @@
 {
   "id": "qr",
   "name": "二维码",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "api_version": "^1",
   "trigger": "/qr",
-  "description": "二维码生成：/qr 文本 生成二维码，回车在默认浏览器打开图片（联网），也可复制二维码链接或原文。",
+  "description": "二维码生成：/qr 文本 立即在面板里生成可扫的大图，回车复制图片到剪贴板（全程离线）。",
   "permissions": [
-    "process"
+    "screen",
+    "clipboard:write"
   ],
   "backend": {
     "kind": "none"
@@ -14,6 +15,6 @@
   "command": {
     "icon": "🔳",
     "action_subcommands": [],
-    "hint": "回车打开二维码图片；或复制链接/原文"
+    "hint": "回车复制二维码图片；例：/qr https://example.com、/qr 你好世界"
   }
 }

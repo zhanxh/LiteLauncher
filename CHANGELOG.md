@@ -10,6 +10,9 @@
 
 ### Added
 
+- `/qr` 输入即预览：在本机生成二维码（字节模式 UTF-8、纠错 M、版本 1–20，纯 TS 实现 ISO/IEC 18004 子集），结果面板首行以 200px 大图实时刷新；回车把同一张图画成 PNG **复制进剪贴板**（同时落盘，路径回在 toast 里），中文/emoji/URL/WiFi/vCard 全部离线可用，超出上限时明确提示而不静默截断。
+- SDK 契约新增可选 `PanelItem.iconSize`：插件可请求把该行的**图片**图标放大到指定边长，壳层夹取 28–224px（上限归壳层，防止个别插件把主窗口撑破）；不声明的老条目渲染逐字节不变。
+
 - `/shot` 选区可调整 + 拖拽实时预览：四角/四边 8 个把手拖拽改选区大小（拖过对边自动翻转），选区外长按 0.26s 重新框选；拖拽全程实时显示边框、把手、尺寸标签与选区内清晰预览（视觉层改由"实时矩形"统一驱动，修复"松手才突然清晰"的突兀感）。
 - `/shot` 截图重做为 flameshot 式流程：触发即隐藏启动器，冻结整屏置顶、**选区外虚化**供框选；松手后可在冻结画面上**即时作画**——画笔/矩形框/圆形框/箭头/马赛克（笔刷式像素化），全部支持配色板，可撤销；确认时前端直接从冻结底图裁剪合成（不再二次抓屏，全程无闪烁），选区**原位钉图**置顶：钉图可拖动、右键复制到剪贴板/关闭、Esc 关闭，支持多张共存；图片本体自动进剪贴板。宿主配套：`ViewSpec.geometry_from_params`（open 参数以全局物理像素定位定尺寸，钉图窗首帧即正确位置）、`svc.screen.copyPng`（截图目录内 PNG 直进剪贴板不落副本）、`svc.screen.capture` 窗口避让跳过调用者自身（遮罩层全透明无需避让——X11 上 hide→restore 会让 mutter 把全屏窗口重新最大化，框选坐标错位）。
 - `/time` 世界时钟升级：面板秒级实时刷新（新增 PanelData.live 声明位，壳层在面板停留期间定时重跑 query，按 id 保住选中项、窗口隐藏即停、回焦即补刷）；回车把该城市的墙面时钟弹到桌面——SVG 表盘 + 数字读数，可同时弹出多个（每个时区一枚、右上角向下堆叠），首帧渲染完成后自动贴到壁纸层（Wayland 降级为置顶浮窗并如实标注），Ctrl+Enter 仍复制时间。
@@ -49,6 +52,7 @@
 
 ### Changed
 
+- `/qr` 不再借道 `api.qrserver.com` 取图：待编码内容不再发给第三方，断网也可用；权限随之从 `process` 改为 `screen` + `clipboard:write`（插件版本 0.1.0 → 0.2.0）。原「回车在浏览器打开远程大图 / 复制远程链接」两项行为被"面板内预览 + 复制图片"替代。
 - `/weather` 天气查询优化：默认不带城市参数时自动通过 `ipwho.is`（与 `/ip` 同口径）获取当前公网 IP 所在城市并查询该城市天气；仍支持输入指定城市名；manifest 相应补充 `net:ipwho.is` 白名单权限。
 - `/cal` 面板默认第一行为「打开日程管理」，回车直接打开日程窗口（等同 `/cal app`），不再要求用户先记住这条子命令——与 `/note` 首项「打开笔记管理面板」对齐。带关键词检索时入口同样在首位，过滤只作用于日程本体；该入口的回车走 `open_manager`，不会被当成日程去 `toggle`。
 - 启动器、插件窗口与设置中心统一圆角：改为透明窗口 + 4px 圆角面板（四角透出桌面，系统投影改为随圆角关闭）。插件窗口新增 `rounded` 声明位（默认开启），pomo 挂件声明 `rounded: false` 保持直角，全屏遮罩类（截图框选）不受影响。
@@ -67,6 +71,7 @@
 
 ### Internal
 
+- `/qr` 编码器接入常驻回归：`tools/test-fe-plugins.mjs` 新增 `testQrcodeModule()`——29 条黄金 sha256 覆盖 v1–v20 每档装满长度与中文/emoji/URL/WiFi/vCard，加上定位/定时/对齐/暗模块的结构不变量、分块表与 ISO 字节容量的自洽校验、SVG 转义与留白检查；黄金摘要已与 python `qrcode`（等级 M、显式字节模式、强制同掩码）**逐格比对 201 例全部一致**。测试壳层配套：`sdkStub.screen` 补 `savePng`（解析 IHDR 回宽高），并加最小 canvas 桩以断言"回车确实画出了 PNG 且 `toClipboard=true`"。
 - 修复 Linux 编译：主窗解锁尺寸用的 `WindowSizeConstraints` 未导入（改完整路径 `tauri::WindowSizeConstraints`）；`ll-host` 的 `Ordering` 只在 `#[cfg(windows)]` 分支引用，改为按平台导入，消除 unused_imports 告警。
 - 修复：build.sh 的 node_modules 残缺探测覆盖前端实际引用的 `@tauri-apps/plugin-updater` / `plugin-process`，部分安装不再静默进入前端打包（Linux 实测曾在 vite 阶段报 import 解析失败）。
 - 工程：清理 ll-host 与 ll-icons 的 Linux 编译警告——删除未使用的 `Ordering` 导入与非 Windows 平台死代码（`drive_root_pythons` 空桩、`ICON_SIZE` 移入 Windows cfg）。

@@ -38,6 +38,28 @@ function isImageIcon(icon?: string): boolean {
   );
 }
 
+/** 插件可声明的图标边长上限：超过这个值面板就装不下了 */
+const ICON_MAX_PX = 224;
+
+/**
+ * 插件声明的大图标边长（`PanelItem.iconSize`）。
+ *
+ * 只有图片图标才响应：emoji 图标放大盒子只会多出一圈空白。尺寸在这里夹取而不是
+ * 照插件给的值直接写进样式——上限握在壳层，插件才不能把主窗口撑破。
+ */
+function iconBoxPx(item: PanelItem): number | undefined {
+  if (!isImageIcon(item.icon)) return undefined;
+  const size = item.iconSize;
+  if (typeof size !== 'number' || !Number.isFinite(size)) return undefined;
+  return Math.min(ICON_MAX_PX, Math.max(28, Math.round(size)));
+}
+
+/** 未声明 iconSize 时返回 undefined：老条目的 DOM 必须与改动前一致（不出现空 style） */
+function iconBoxStyle(item: PanelItem): { width: string; height: string } | undefined {
+  const px = iconBoxPx(item);
+  return px === undefined ? undefined : { width: `${px}px`, height: `${px}px` };
+}
+
 /** 动作快捷键的展示文案 */
 function accelLabel(accel?: string): string {
   if (accel === 'ctrl+enter') return 'Ctrl+↵';
@@ -201,7 +223,10 @@ export const ResultPanel: Component<ResultPanelProps> = (props) => {
                 onClick={() => props.onSelectItem(item)}
                 onMouseEnter={() => item.kind !== 'info' && props.onHoverIndex?.(index())}
               >
-                <div class="item-icon">
+                <div
+                  class={`item-icon${iconBoxPx(item) ? ' sized' : ''}`}
+                  style={iconBoxStyle(item)}
+                >
                   <Show
                     when={isImageIcon(item.icon) && !iconFailed(item.id)}
                     fallback={<span>{isImageIcon(item.icon) ? '📌' : item.icon || '📌'}</span>}

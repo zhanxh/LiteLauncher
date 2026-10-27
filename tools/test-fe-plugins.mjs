@@ -13,6 +13,7 @@
 // 用法：npm run plugin:test:fe
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -387,6 +388,24 @@ const sdkStub = {
             clipboardImage: Boolean(opts.toClipboard),
           };
         },
+        // 前端合成 PNG 落盘 + 可选入剪贴板（/qr 的图片复制走这条）
+        savePng: async (dataUrl, opts = {}) => {
+          svcCalls.push({ pluginId, method: 'svc.screen.savePng', params: { toClipboard: opts.toClipboard } });
+          const base64 = String(dataUrl).replace(/^data:image\/png;base64,/, '');
+          if (!base64) throw new Error('savePng 需要 data:image/png;base64,… 或裸 base64');
+          const png = Buffer.from(base64, 'base64');
+          // PNG 头部：签名(8) + IHDR 块(4+4+13+4)，宽高是 IHDR 里的两个大端 u32
+          if (png.length < 24 || png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') {
+            throw new Error('savePng 收到非法 PNG');
+          }
+          return {
+            ...CAPTURE_FIXTURE,
+            width: png.readUInt32BE(16),
+            height: png.readUInt32BE(20),
+            bytes: png.length,
+            clipboardImage: Boolean(opts.toClipboard),
+          };
+        },
       },
       shortcuts: {
         register: async (accel) => {
@@ -594,8 +613,48 @@ function toParsed(tokens) {
   };
 }
 
-// 每个插件的用例：输入 token 数组 + 对产出条目的断言
-//   expect      → 断言 query 返回的面板
+/** 1×1 合法 PNG：够 savePng 桩解析出宽高，又不必在 Node 里真画像素 */
+const PNG_1X1_DATA_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+/**
+ * 最小 canvas 桩：测试跑在 Node 里没有 DOM，而"回车把矩阵画成 PNG"这段必须碰 canvas。
+ * 只实现该路径用到的成员，并把每次 fillRect 记下来，让用例能断言"确实按游程画过"。
+ */
+async function withCanvasStub(fn) {
+  const saved = globalThis.document;
+  const canvases = [];
+  globalThis.document = {
+    createElement(tag) {
+      const el = {
+        tag,
+        width: 0,
+        height: 0,
+        rects: [],
+        // toDataURL 挂在 canvas 元素上（与浏览器一致），不在 2D 上下文上
+        toDataURL: () => PNG_1X1_DATA_URL,
+        getContext() {
+          return {
+            fillStyle: '',
+            fillRect(x, y, w, h) {
+              el.rects.push([x, y, w, h]);
+            },
+          };
+        },
+      };
+      canvases.push(el);
+      return el;
+    },
+  };
+  try {
+    return { result: await fn(), canvas: canvases[0] };
+  } finally {
+    if (saved === undefined) delete globalThis.document;
+    else globalThis.document = saved;
+  }
+}
+
+// 每个插件的用例：输入 token 数组 + 对产出条目的断言//   expect      → 断言 query 返回的面板
 //   expectFirst → 断言首次 query 后面板里某个"中间态"（如加载中/用法提示）
 //   before      → 预置桩状态（如剪贴板历史），必须早于首个 query
 //   after       → 额外的异步断言（如 dict 打开发音）
@@ -761,11 +820,44 @@ const CASES = {
     {
       tokens: ['https://example.com'],
       expect: (items) => {
-        assert(items[0].metadata?.url?.startsWith('https://api.qrserver.com/'), 'qr 应产出图片链接');
+        assert(
+          items[0].icon?.startsWith('data:image/svg+xml;'),
+          `qr 首行应是本机生成的 SVG 预览，实得 ${String(items[0].icon).slice(0, 40)}`,
+        );
+        assert(items[0].iconSize === 200, `qr 预览行应声明 iconSize=200，实得 ${items[0].iconSize}`);
+        // 预览行的动作是"复制图片"，不能同时被通用复制契约当成复制文本
+        assert(!items[0].metadata?.value, 'qr 预览行不应带 metadata.value');
         assert(
           items.some((i) => i.badge === '内容' && i.metadata?.value === 'https://example.com'),
           'qr 应保留原文条目',
         );
+      },
+      after: async (plugin, items) => {
+        // 回车 = 矩阵 → canvas → PNG → svc.screen.savePng(剪贴板)，且预览留在屏上
+        const before = svcCalls.length;
+        const { result, canvas } = await withCanvasStub(() => plugin.onSelect(items[0]));
+        const call = svcCalls.slice(before).find((c) => c.method === 'svc.screen.savePng');
+        assert(call, `qr 预览项应调用 svc.screen.savePng，实得 toast=${result?.toast}`);
+        assert(call.params?.toClipboard === true, 'qr 复制图片应要求图片本体进剪贴板');
+        assert(canvas?.width === 264, `画布应含 4 模块留白按 8px 出图（v2=25 模块 → 264），实得 ${canvas?.width}`);
+        assert((canvas?.rects.length ?? 0) > 0, '应按游程画出深色模块');
+        assert(result?.close === false, `复制后应保留预览（close=false），实得 ${JSON.stringify(result?.close)}`);
+        assert(String(result?.toast).includes('.png'), `toast 应回带落盘路径，实得 ${result?.toast}`);
+      },
+    },
+    {
+      // 中文走字节模式（UTF-8 多字节），曾经是靠在线 API 兜着的场景
+      tokens: ['你好世界'],
+      expect: (items) => {
+        assert(items[0].icon?.startsWith('data:image/svg+xml;'), 'qr 中文输入应本机生成预览');
+        assert(items[0].description?.includes('纠错 M'), `预览说明应含编码参数，实得 ${items[0].description}`);
+      },
+    },
+    {
+      tokens: ['x'.repeat(700)],
+      expect: (items) => {
+        assert(items[0].badge === '超限', '超出 v20-M 上限应给出说明项，而不是静默截断');
+        assert(items[0].description?.includes('缩短'), '超限说明应给出下一步动作');
       },
     },
     {
@@ -1998,6 +2090,257 @@ function testPomoTimerModule() {
 }
 
 /**
+ * 纯函数模块测试：`/qr` 的离线 QR 编码器（ISO/IEC 18004 子集：字节模式 / 纠错 M / v1–20）。
+ *
+ * 这是全仓库**最不该靠"看起来能扫"验收**的一块：分块表和对齐坐标是抄来的字典，
+ * 抄错一位就会产出结构合法、形状完整、但解出来是乱码的二维码。因此三层一起钉：
+ *   1) 黄金摘要——以下 sha256 由 python `qrcode`（等级 M、显式字节模式、强制同一 mask）
+ *      逐格比对通过后才录进来，覆盖 v1–v20 每一档装满长度 + 中文/emoji/URL/WiFi/vCard；
+ *   2) 结构不变量——定位/定时/对齐/暗模块这些**与数据无关**的图形，错了必是画错；
+ *   3) 字典自证——分块表求和要等于 ISO 的字节容量表，防"表被顺手改一位"。
+ * 掩码选得和参考实现不同不算错（罚分实现有差异，两边都合法），所以这里不钉掩码。
+ */
+const QR_BYTE_CAPACITY_M = [
+  14, 26, 42, 62, 84, 106, 122, 152, 180, 213, 251, 287, 331, 362, 412, 450, 504, 560, 624, 666,
+];
+
+/** 黄金摘要：fill = 'c'.repeat(byteCapacity(v))，其余按 text 原文 */
+const QR_GOLDEN = [
+  { text: 'a', version: 1, digest: 'e8ab680854e4019c4ac89bd0e19dfe1f7e967f3cafd048091b3e3ec474b6f431' },
+  {
+    text: 'https://example.com',
+    version: 2,
+    digest: '74d9360c7e51b43c69bef31f279072356f072b3f482fcbe6e62084c8d5797624',
+  },
+  { text: '你好世界', version: 1, digest: 'e26959c3d592ced88040001ab0867c0a42280a595338923f7ae1c094a132fdd6' },
+  {
+    text: 'LiteLauncher 二维码 /qr 离线生成',
+    version: 3,
+    digest: '6da66a20181e3ea041e3e5660243b39d9b4ba93711ce05027651d4609bf573ea',
+  },
+  {
+    text: 'WIFI:S:MyNetwork;T:WPA;P:p@ssw0rd-12345;;',
+    version: 3,
+    digest: '0de279b51f94e7c5771973c22de7f9c8e35225b76efba1d3c9775c50e385229d',
+  },
+  {
+    text: 'MEGN:12345678901234567890:P:张三;;',
+    version: 3,
+    digest: '2a0015965334760b1775069805a7c65d6ed44c8a2dd3874e2652f441cb170dd4',
+  },
+  {
+    text: 'vcard:BEGIN:VCARD\nVERSION:3.0\nN:张三\nEND:VCARD',
+    version: 4,
+    digest: 'ae6cd8020740b34cfc08aad3a9b16c74d18666b94a3b786598456553517253c5',
+  },
+  {
+    text: '0123456789'.repeat(12),
+    version: 7,
+    digest: 'ae7a2314133fe36ea6c32804ce3fb14696cb6d5e2170aebc1192621ed6546202',
+  },
+  {
+    text: 'x'.repeat(666),
+    version: 20,
+    digest: '497df6c35a67d13f72b0afac007734db4ed5c1f0b80267e83a5414d2a6f3aa0c',
+  },
+  // 每档"刚好装满"：分块表与容量表逐版本对齐的证据
+  ...QR_BYTE_CAPACITY_M.map((cap, i) => ({
+    fill: true,
+    version: i + 1,
+    bytes: cap,
+    digest: [
+      'b2c5ccc732f209dd7fa5d60e93480040e842dc5a2e0d6597381d62bc3ad7c9ef',
+      'dc07d157c44407df14de7382686ab722c93f3a5a5a635ebcf23e9ea648b9d2b3',
+      '9036c0c16d5b666c84d164f0422746d20e0c359125d344a1016774a27db866f4',
+      '370909adb1dab7b71fb64604f377176c82cc41401a48e43c0f5e0dba5fba475b',
+      '37d6187b1232912819da765f0da7d9154661d5eb03249248792d4d3c4cb646ea',
+      'b20a6cdc04e18b028ef53010b559f6a7bcb1e1c217ce72772ca507c0e63248b0',
+      '748cdf6e18bd43728879964d1108aba6b0e1f809cfe6577f7abeffd9ae612573',
+      '06044f60ea2f5042dc45d97e733fce54b2fa2bd3de065e72f3601984081d56b9',
+      'b8017bd17c6898a7cdeaf36f38e52bbd67e403d8c5a8e21f0f9f2b5bdfcf1ad6',
+      'f8de34435b7814ce9ed2e36a5ab760d9de7df966a2ff3ff202e251a25d874acf',
+      '92c5473b967c5dcb7aca1e67dc621127ebfe07e922e1a0d52d517e8fe8336dbc',
+      'c44537356e4935b7914de9f6ac10de2f3be1f4c1c44fc0763f76199298c99136',
+      '10dc1d6cdcba91e137d648de81f5da3b86a48796dc485ea23cb9499b38496ad0',
+      '5b94c954869252f7da8601356c667b7e9b389ffc8c60113f207495b7600155cf',
+      'e13eedb96f2f065c0773e5ad84c9e936ca44440331c7a1af628d4dfc88a0dd93',
+      'e6fa5c1132e1b9fbcea681ab31d9f3779a57e4622eae35271f8a13b60c8bbef0',
+      '657d7c510ce5ce298274e65b2194e2eb1971571bd735b8f9bb6b0aa15451b401',
+      '8b43ddbba98b2f9ea95ab8e0b8580b5a0653e31c66f26824e1e67657ae3c1f47',
+      '6221d7207bb3116599e6ade0125a1d9f0e3ab76abd784f89dad50234a41ca53a',
+      '6f0af942732f5255972fd6c6f78693f4189d4eda410189655d99a728bf45113e',
+    ][i],
+  })),
+];
+
+/** v1 整张矩阵（'a'，掩码 5）：抄一份可读的，出问题时可以逐格 eye-diff */
+const QR_V1_MATRIX_A = [
+  '#######..#.##.#######',
+  '#.....#.#.##..#.....#',
+  '#.###.#.##.#..#.###.#',
+  '#.###.#.#.##..#.###.#',
+  '#.###.#..#..#.#.###.#',
+  '#.....#...##..#.....#',
+  '#######.#.#.#.#######',
+  '........##...........',
+  '#.....#.#.##.##..###.',
+  '#..##......###.###..#',
+  '..#.###..##.#.##.....',
+  '.#.#.#.##..#####.#.#.',
+  '##.#..####.##########',
+  '........##..#.....#.#',
+  '#######..###.#..####.',
+  '#.....#...#...#...###',
+  '#.###.#..###.#..###..',
+  '#.###.#..#.#####.#...',
+  '#.###.#..#.###.###.##',
+  '#.....#...######.#...',
+  '#######.#.#.#..#..##.',
+];
+
+function testQrcodeModule() {
+  const failures = [];
+  const file = path.join(pluginsDir, 'qr', 'fe', 'src', 'qrcode.ts');
+  if (!existsSync(file)) return ['qr/fe/src/qrcode.ts 不存在'];
+
+  let Q;
+  try {
+    moduleCache.clear();
+    Q = loadPluginModule(file);
+  } catch (err) {
+    return [`加载失败: ${err.message}`];
+  }
+
+  const digestOf = (modules) =>
+    crypto
+      .createHash('sha256')
+      .update(modules.map((row) => Array.from(row).join('')).join('\n'))
+      .digest('hex');
+
+  /** 与定位图形无关的公共前提：编码成功 */
+  const encode = (text) => {
+    const res = Q.encodeQR(text);
+    if (!res.ok) throw new Error(`编码失败：${res.reason}（${res.bytes} 字节）`);
+    return res.code;
+  };
+
+  try {
+    // 1) 黄金摘要：与 python `qrcode` 逐格比对过的矩阵指纹
+    for (const gold of QR_GOLDEN) {
+      const text = gold.fill ? 'c'.repeat(gold.bytes) : gold.text;
+      const code = encode(text);
+      assert(
+        code.version === gold.version,
+        `自动选版本应取最小档：${gold.fill ? `${gold.bytes} 字节` : text.slice(0, 20)} 期望 v${gold.version}，实得 v${code.version}`,
+      );
+      assert(
+        digestOf(code.modules) === gold.digest,
+        `黄金摘要不匹配：${gold.fill ? `v${gold.version} 装满` : JSON.stringify(text.slice(0, 24))}（字典表或图形摆放被改动过）`,
+      );
+    }
+
+    // 2) v1 全矩阵可读副本：黄金摘要之外的"人眼通道"
+    const v1 = encode('a');
+    const rendered = v1.modules.map((row) => Array.from(row).map((c) => (c ? '#' : '.')).join(''));
+    assert(
+      rendered.join('\n') === QR_V1_MATRIX_A.join('\n'),
+      `v1 矩阵与内联副本不一致：\n${rendered.join('\n')}`,
+    );
+
+    // 3) 结构不变量：定位图形 + 分隔符 + 定时线 + 暗模块，任何版本都必须成立
+    for (const version of [1, 7, 20]) {
+      const code = encode('c'.repeat(QR_BYTE_CAPACITY_M[version - 1]));
+      const size = code.size;
+      assert(size === version * 4 + 17, `v${version} 边长应为 ${version * 4 + 17}，实得 ${size}`);
+      const corners = [
+        [0, 0],
+        [0, size - 7],
+        [size - 7, 0],
+      ];
+      for (const [top, left] of corners) {
+        for (let i = 0; i < 7; i += 1) {
+          // 每层环：0/6 行是实心边，1 与 5 是亮环，2–4 含实心核
+          const ring = (r, c) => code.modules[top + r][left + c];
+          assert(ring(0, 3) === 1 && ring(3, 0) === 1, `v${version} 定位图形外边应恒亮`);
+          assert(ring(1, 1) === 0 && ring(1, 5) === 0, `v${version} 定位图形内环应恒暗`);
+          assert(ring(3, 3) === 1, `v${version} 定位图形中心应恒亮`);
+        }
+      }
+      for (let i = 0; i < 8; i += 1) {
+        // 分隔符（定位图形外圈一行）必须是暗的，否则扫描器找不到码的边界
+        assert(code.modules[7][i] === 0 || i >= 7, `v${version} 第 7 行分隔符应恒暗`);
+        assert(code.modules[i][7] === 0 || i >= 7, `v${version} 第 7 列分隔符应恒暗`);
+      }
+      for (let i = 8; i < size - 8; i += 1) {
+        const want = i % 2 === 0 ? 1 : 0;
+        assert(
+          code.modules[6][i] === want && code.modules[i][6] === want,
+          `v${version} 定时线在 i=${i} 应为 ${want}（错位会让解码器读错行）`,
+        );
+      }
+      assert(code.modules[size - 8][8] === 1, `v${version} 暗模块必须亮着，否则格式信息无法定位`);
+    }
+
+    // 4) 对齐图形回归：v7 起中心会落在定时线上（(6,22) 与 (22,6)）。
+    //    曾经用"该格是否已被占用"跳过，于是这两个对齐图形整个消失——码能扫但内容错位。
+    const v7 = encode('c'.repeat(QR_BYTE_CAPACITY_M[6]));
+    assert(
+      v7.modules[4][22] === 1 && v7.modules[5][22] === 0 && v7.modules[4][20] === 1,
+      'v7 应画出 (6,22) 对齐图形（定时线上的中心不能跳过）',
+    );
+    assert(
+      v7.modules[22][4] === 1 && v7.modules[22][5] === 0,
+      'v7 应画出 (22,6) 对齐图形（行列对称）',
+    );
+    assert(
+      JSON.stringify(Q.ALIGNMENT_CENTERS[6]) === JSON.stringify([6, 22, 38]),
+      `v7 对齐坐标表错误，实得 ${JSON.stringify(Q.ALIGNMENT_CENTERS[6])}`,
+    );
+
+    // 5) 分块表自证：每档数据码字 − 头部开销 = ISO 的字节容量表。
+    //    这张表只能抄对，抄错一位就会产出"形状正确但解出乱码"的码。
+    for (let version = 1; version <= 20; version += 1) {
+      assert(
+        Q.byteCapacity(version) === QR_BYTE_CAPACITY_M[version - 1],
+        `v${version} 字节容量应为 ${QR_BYTE_CAPACITY_M[version - 1]}，实得 ${Q.byteCapacity(version)}`,
+      );
+      const groups = Q.RS_BLOCKS_M[version - 1];
+      const total = groups.reduce((sum, [count, blockTotal, blockData]) => {
+        assert(
+          blockTotal > blockData,
+          `v${version} 分块表错误：纠错码字数应为正（${blockTotal}−${blockData}）`,
+        );
+        return sum + count * blockData;
+      }, 0);
+      const headerBytes = version < 10 ? 2 : 3; // 模式 4 位 + 计数 8/16 位，向上取整
+      assert(
+        total === QR_BYTE_CAPACITY_M[version - 1] + headerBytes,
+        `v${version} 数据码字总数 ${total} 与容量表不自洽`,
+      );
+    }
+
+    // 6) 超限分支：不能静默截断
+    const over = Q.encodeQR('y'.repeat(Q.MAX_BYTE_LENGTH + 1));
+    assert(!over.ok && over.reason === 'too-long', '超出上限应返回 too-long，而不是截断编码');
+    assert(over.bytes === Q.MAX_BYTE_LENGTH + 1 && over.capacity === Q.MAX_BYTE_LENGTH,
+      `超限信息应回带字节数与上限，实得 ${JSON.stringify(over)}`);
+
+    // 7) SVG：必须是 data URL、白底 + 4 模块留白、深色合并成单个 path（v20 逐格 rect 会涨到几百 KB）
+    const code = encode('https://example.com');
+    const url = Q.toSVGDataURL(code);
+    assert(url.startsWith('data:image/svg+xml;charset=utf-8,'), 'SVG 应以 data URL 前缀开头');
+    const svg = decodeURIComponent(url.slice('data:image/svg+xml;charset=utf-8,'.length));
+    assert(url.indexOf('#') === -1 && url.includes('%23'), '颜色 # 必须在 data URL 里转义，否则 src 会在 # 处被截断');
+    assert((svg.match(/<path/g) ?? []).length === 1, '深色模块应合并成单个 path');
+    assert((svg.match(/<rect/g) ?? []).length === 1, '应只有一块白色底矩形（透明底在暗色主题下扫不出来）');
+    assert(svg.includes(`width="${code.size + 8}"`), `SVG 边长应含 4 模块留白，实得 ${code.size + 8}`);
+  } catch (err) {
+    failures.push(err.message);
+  }
+  return failures;
+}
+
+/**
  * 纯函数模块测试：`/pomo` 挂件的悬停伸缩几何。
  *
  * 这块的坑都在"数字之间的关系"上，单测比真机点得快：
@@ -3170,6 +3513,16 @@ async function main() {
     for (const f of pomoFailures) console.log(`      - ${f}`);
   }
 
+  // 纯函数模块：/qr 离线 QR 编码器（黄金摘要 · 结构不变量 · 字典表自证）
+  const qrFailures = testQrcodeModule();
+  if (qrFailures.length === 0) {
+    console.log('\n  ✓ 纯函数：/qr 离线二维码编码（v1–v20 与 python 参考实现逐格一致）');
+  } else {
+    failed += 1;
+    console.log('\n  ✗ 纯函数：/qr qrcode');
+    for (const f of qrFailures) console.log(`      - ${f}`);
+  }
+
   // 纯函数模块：/pomo 挂件的悬停伸缩（宽度是否装得下内容 · 右边缘是否钉住 · 与 manifest 对齐）
     const hoverFailures = testPomoHoverModule();
     if (hoverFailures.length === 0) {
@@ -3270,9 +3623,9 @@ async function main() {
     for (const f of calEntryFailures) console.log(`      - ${f}`);
   }
 
-  // svc 桥接抽查：qr 打开二维码走 process.launch；网络插件应覆盖全部声明的域名
+  // svc 桥接抽查：/dict 打开网页走 process.launch（/qr 已改为本机编码，不再联网）
   if (svcCalls.some((c) => c.method === 'svc.process.launch')) {
-    console.log('\n  ✓ svc 桥接：/qr 与 /dict 已调用 svc.process.launch');
+    console.log('\n  ✓ svc 桥接：/dict 已调用 svc.process.launch');
   }
   const hosts = Array.from(new Set(httpCalls.map((u) => {
     try {

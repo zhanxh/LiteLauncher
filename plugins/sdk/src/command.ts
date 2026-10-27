@@ -83,6 +83,14 @@ export interface PanelItem {
   description?: string;
   category?: string;
   icon?: string;
+  /**
+   * 请求把本行的**图片**图标放大到该 CSS px 边长（如二维码的输入即预览）。
+   * 缺省 = 28px 旧行为，不声明的老条目渲染完全不变；emoji 文本图标忽略本字段。
+   *
+   * 为什么边长由壳层夹取（[28, 224]）而不是插件说了算：结果面板跑在 680px 宽的
+   * 启动器窗口里，尺寸上限一旦交给插件，个别插件就能把主窗口撑破。
+   */
+  iconSize?: number;
   badge?: string;
   /**
    * 分组标题：连续同组条目共享一个小标题（空状态用「常用应用 / 最近使用 / 推荐指令」）。

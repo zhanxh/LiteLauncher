@@ -409,8 +409,16 @@ export const bookmarkPlugin: CommandPlugin = {
 };
 ```
 
-### 5.3 裸文本搜索（SearchProvider）——可选
+**面板条目的图片位**：`icon` 支持 emoji、`ll-icon://`、`http(s)://` 与 `data:image/`，
+默认按 28px 画。需要"输入即预览"这类大图（`/qr` 的二维码）时，在同一项上声明
+`iconSize`（CSS px 边长），壳层会夹取到 **28–224** 并把 `<img>` 撑满该格；
+上限归壳层持有，插件不能把主窗口撑破。emoji 文本图标忽略 `iconSize`。
+两点注意：预览行要按**普通 action 行**做（`kind: 'info'` 会被降透明度且跳过键盘导航，
+用户按不到回车），且**不要**给它 `metadata.value`（通用复制契约会把首个带 value 的项
+当成"回车复制文本"，与本行动作冲突）。设计取舍见
+[实时二维码预览设计](../design/20261027_191501_qr-live-preview.md)。
 
+### 5.3 裸文本搜索（SearchProvider）——可选
 不输斜杠、直接打字时，壳层聚合所有 provider（按 priority 升序并行执行、50ms 防抖、陈旧结果取消）。参考 apps 插件的三个 provider：
 
 ```ts

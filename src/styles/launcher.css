@@ -489,6 +489,15 @@ html.ll-rounded .plugin-window-root {
   display: block;
 }
 
+/* 插件声明 PanelItem.iconSize 的大图标（如 /qr 实时预览）：铺满外层盒。
+   圆角收到 4px——二维码/图形边缘被裁掉会丢信息，宁可方一点。
+   必须写在 .item-icon img 之后：特异度 (0,2,1) 才压得过上面的默认 26px。 */
+.item-icon.sized img {
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+}
+
 .item-content {
   flex: 1;
   overflow: hidden;
