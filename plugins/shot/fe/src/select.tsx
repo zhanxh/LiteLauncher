@@ -34,11 +34,15 @@ import {
 } from './geometry';
 import { PALETTE, type Point } from './annotate';
 import {
+  applyHandle,
+  handleAt,
+  handleCursor,
   renderShapes,
   toolWidth,
   toolbarOrigin,
   type DrawShape,
   type DrawTool,
+  type HandleKind,
 } from './drawings';
 
 const ctx = getPluginContext('shot');
@@ -53,6 +57,9 @@ const VIEW_PIN = 'pin';
 
 /** 抓图前等首帧真正合成出去的双 rAF + 合成器余量 */
 const FIRST_PAINT_SETTLE_MS = 80;
+
+/** 选区外长按判定为"重新框选"的时长（flameshot 同款手势） */
+const REPICK_HOLD_MS = 260;
 
 /** 选区外虚化的模糊半径（CSS 像素）与压暗浓度 */
 const BLUR_PX = 7;
@@ -117,9 +124,15 @@ export function ShotSelect() {
   let mosaicCanvas: HTMLCanvasElement | null = null;
   let mosaicScratch: HTMLCanvasElement | null = null;
 
-  /** 选区拖拽 / 形状绘制互斥 */
+  /** 选区拖拽 / 形状绘制 / 选区调整互斥 */
   let dragging = false;
   let drawing = false;
+  /** 选区调整中：按住的把手 + 拖拽起点时的指针位置 */
+  let resizing: { handle: HandleKind } | null = null;
+  /** 长按重选：按住时的定时器句柄（松手前触发则进入重新框选） */
+  let repickTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 长按已判定为"重新框选"后，这次按下不再参与其他逻辑 */
+  let repicking = false;
   let draft: DrawShape | null = null;
   let hintTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -427,35 +440,80 @@ export function ShotSelect() {
       window.removeEventListener('keydown', onKeyDown);
       if (hintTimer) clearTimeout(hintTimer);
       clearTimeout(focusRetry);
+      if (repickTimer) clearTimeout(repickTimer);
       void win.close().catch(() => undefined);
     });
   });
 
+  /** 悬停光标：把手随方向、选区内默认、选区外长按重选用 crosshair */
+  function onPointerHover(e: PointerEvent): void {
+    if (dragging || drawing || resizing || repicking || busy()) return;
+    const s = sel();
+    if (!s) return;
+    const pt = localPoint(e);
+    const el = e.currentTarget as HTMLElement;
+    const h = handleAt(s, pt.x, pt.y);
+    if (h) {
+      el.style.cursor = handleCursor(h);
+    } else if (pt.x >= s.x && pt.x < s.x + s.width && pt.y >= s.y && pt.y < s.y + s.height) {
+      el.style.cursor = 'default';
+    } else {
+      el.style.cursor = 'crosshair';
+    }
+  }
+
   function onPointerDown(e: PointerEvent): void {
     if (busy()) return;
     const pt = localPoint(e);
-    // 阶段一：还没有选区，这次拖拽用来框选
-    if (!sel()) {
-      dragging = true;
-      setDrag({ startX: pt.x, startY: pt.y, curX: pt.x, curY: pt.y });
-      setHintOn(false);
-      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    const s = sel();
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+
+    // 阶段二：按在把手上 → 调整选区尺寸
+    if (s) {
+      const h = handleAt(s, pt.x, pt.y);
+      if (h) {
+        resizing = { handle: h };
+        return;
+      }
+      // 选了工具且按在选区内 → 在冻结画面上作画
+      const t = tool();
+      if (t !== 'none' && pt.x >= s.x && pt.x < s.x + s.width && pt.y >= s.y && pt.y < s.y + s.height) {
+        drawing = true;
+        draft = { kind: t, color: color(), size: toolWidth(t), points: [pt, pt] };
+        renderDraft();
+        return;
+      }
+      // 选区外（含未选工具时按在选区内空白）：长按后重新框选。
+      // 立即清掉旧选区会闪一下"整屏虚化"，长按判定过了再清才平滑。
+      repicking = false;
+      repickTimer = setTimeout(() => {
+        repicking = true;
+        setSel(null);
+        setShapes([]);
+        setTool('none');
+        if (bakedCanvas) bakedCanvas.getContext('2d')?.clearRect(0, 0, bakedCanvas.width, bakedCanvas.height);
+        if (draftCanvas) draftCanvas.getContext('2d')?.clearRect(0, 0, draftCanvas.width, draftCanvas.height);
+        dragging = true;
+        setDrag({ startX: pt.x, startY: pt.y, curX: pt.x, curY: pt.y });
+      }, REPICK_HOLD_MS);
       return;
     }
-    // 阶段二：选区已固定，选了工具就在冻结画面上作画
-    const t = tool();
-    if (t !== 'none') {
-      drawing = true;
-      draft = { kind: t, color: color(), size: toolWidth(t), points: [pt, pt] };
-      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-      renderDraft();
-    }
+
+    // 阶段一：还没有选区，这次拖拽用来框选
+    dragging = true;
+    setDrag({ startX: pt.x, startY: pt.y, curX: pt.x, curY: pt.y });
+    setHintOn(false);
   }
 
   function onPointerMove(e: PointerEvent): void {
     if (dragging) {
       const pt = localPoint(e);
       setDrag((d) => (d ? { ...d, curX: pt.x, curY: pt.y } : d));
+      return;
+    }
+    if (resizing) {
+      const pt = localPoint(e);
+      setSel((cur) => (cur ? applyHandle(cur, resizing!.handle, pt.x, pt.y) : cur));
       return;
     }
     if (drawing && draft) {
@@ -469,10 +527,20 @@ export function ShotSelect() {
         draft.points[1] = pt;
       }
       renderDraft();
+      return;
     }
+    onPointerHover(e);
   }
 
   function onPointerUp(): void {
+    if (repickTimer) {
+      clearTimeout(repickTimer);
+      repickTimer = null;
+    }
+    // 长按判定已触发：这次按压归"重新框选"，不走下面的分支
+    if (repicking) {
+      repicking = false;
+    }
     if (dragging) {
       dragging = false;
       const d = drag();
@@ -485,6 +553,14 @@ export function ShotSelect() {
       }
       setSel(rect);
       setError('');
+      return;
+    }
+    if (resizing) {
+      resizing = null;
+      const s = sel();
+      if (s && (s.width < MIN_DRAG || s.height < MIN_DRAG)) {
+        setError('选区太小，请拖拽框选一块区域');
+      }
       return;
     }
     if (drawing && draft) {
@@ -528,8 +604,22 @@ export function ShotSelect() {
 
   const rectNow = () => sel();
 
+  /**
+   * 视觉层的实时矩形 = 已提交选区 ?? 拖拽中的矩形。
+   *
+   * 拖拽（首次框选 / 长按重选）期间 sel() 是 null，若视觉层只读 sel()，
+   * 用户拖拽全程看不到边框和选区内预览，松手瞬间才"啪"地出现——很突兀。
+   * 全部视觉（锐利层/压暗/边框/把手/尺寸标签）跟着 liveRect 走，拖到哪亮到哪。
+   */
+  const liveRect = (): NormRect | null => {
+    const committed = sel();
+    if (committed) return committed;
+    const d = drag();
+    return d ? normalizeDrag(d) : null;
+  };
+
   const sharpClip = () => {
-    const r = sel();
+    const r = liveRect();
     if (!r) return undefined;
     return `inset(${r.y}px ${Math.max(0, cssW - r.x - r.width)}px ${Math.max(0, cssH - r.y - r.height)}px ${r.x}px)`;
   };
@@ -597,8 +687,8 @@ export function ShotSelect() {
         />
       </Show>
 
-      {/* 锐利底图：只在选区内露出（clip-path 内缩四边）；框选前不渲染 */}
-      <Show when={backdrop() && rectNow()}>
+      {/* 锐利底图：只在(实时)选区内露出（clip-path 内缩四边）——拖拽中实时跟随 */}
+      <Show when={backdrop() && liveRect()}>
         <img
           src={backdrop()!}
           alt="屏幕快照"
@@ -614,13 +704,13 @@ export function ShotSelect() {
         />
       </Show>
 
-      {/* 压暗：未框选时整屏一层；框选后只压选区外四条（锐利图之上） */}
-      <Show when={backdrop() && !rectNow()}>
+      {/* 压暗：无(实时)选区时整屏一层；有则只压选区外四条（锐利图之上） */}
+      <Show when={backdrop() && !liveRect()}>
         <div style={{ position: 'absolute', inset: '0', ...dimStyle }} />
       </Show>
-      <Show when={backdrop() && rectNow()}>
+      <Show when={backdrop() && liveRect()}>
         {(() => {
-          const r = rectNow()!;
+          const r = liveRect()!;
           return (
             <>
               <div
@@ -690,9 +780,19 @@ export function ShotSelect() {
         }}
       />
 
-      {/* 选区边框 + 尺寸标签 */}
-      {rectNow() && (() => {
-        const r = rectNow()!;
+      {/* 选区边框 + 四角四边把手（视觉提示"可拖拽调整"）+ 尺寸标签 —— 拖拽中实时跟随 */}
+      {liveRect() && (() => {
+        const r = liveRect()!;
+        const handles: { h: HandleKind; x: number; y: number; w: number; hh: number }[] = [
+          { h: 'nw', x: r.x, y: r.y, w: 10, hh: 10 },
+          { h: 'ne', x: r.x + r.width - 10, y: r.y, w: 10, hh: 10 },
+          { h: 'sw', x: r.x, y: r.y + r.height - 10, w: 10, hh: 10 },
+          { h: 'se', x: r.x + r.width - 10, y: r.y + r.height - 10, w: 10, hh: 10 },
+          { h: 'n', x: r.x + r.width / 2 - 8, y: r.y - 2, w: 16, hh: 5 },
+          { h: 's', x: r.x + r.width / 2 - 8, y: r.y + r.height - 3, w: 16, hh: 5 },
+          { h: 'w', x: r.x - 2, y: r.y + r.height / 2 - 8, w: 5, hh: 16 },
+          { h: 'e', x: r.x + r.width - 3, y: r.y + r.height / 2 - 8, w: 5, hh: 16 },
+        ];
         return (
           <>
             <div
@@ -707,6 +807,20 @@ export function ShotSelect() {
                 'pointer-events': 'none',
               }}
             />
+            {handles.map((k) => (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: `${k.x}px`,
+                  top: `${k.y}px`,
+                  width: `${k.w}px`,
+                  height: `${k.hh}px`,
+                  background: '#38BDF8',
+                  'border-radius': '2px',
+                  'pointer-events': 'none',
+                }}
+              />
+            ))}
             <div
               style={{
                 position: 'absolute',
@@ -822,7 +936,7 @@ export function ShotSelect() {
             'pointer-events': 'none',
           }}
         >
-          拖拽框选 · 松手后可选工具作画 · Enter 确认 · Esc 取消
+          拖拽框选 · 边角可调整 · 选区外长按重选 · Enter 确认 · Esc 取消
         </div>
       )}
 

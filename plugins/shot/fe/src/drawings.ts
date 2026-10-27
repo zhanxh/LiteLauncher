@@ -40,6 +40,95 @@ export function pointsBox(points: Point[]): { x: number; y: number; w: number; h
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 选区调整（flameshot 式）：四角 + 四边把手拖拽改尺寸，长按选区外重新框选
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 选区调整把手 */
+export type HandleKind = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+
+/** 把手命中半径（CSS 像素）：光标离边/角这么近就算按到了把手 */
+const HANDLE_HIT = 6;
+
+/**
+ * 判定指针落在选区的哪个把手上；选区外或距边都远时返回 null。
+ *
+ * 角优先于边（角是两条边的交集，先判角才能保证角落 6px 内都归角）；
+ * 边的命中带是"距该边 ≤ 6px 且在另一轴的选区范围内"——在边延长线外不算，
+ * 那里该留给下一层的长按重选。
+ */
+export function handleAt(
+  sel: { x: number; y: number; width: number; height: number },
+  px: number,
+  py: number,
+): HandleKind | null {
+  const nearL = Math.abs(px - sel.x) <= HANDLE_HIT;
+  const nearR = Math.abs(px - (sel.x + sel.width)) <= HANDLE_HIT;
+  const nearT = Math.abs(py - sel.y) <= HANDLE_HIT;
+  const nearB = Math.abs(py - (sel.y + sel.height)) <= HANDLE_HIT;
+  const inX = px >= sel.x - HANDLE_HIT && px <= sel.x + sel.width + HANDLE_HIT;
+  const inY = py >= sel.y - HANDLE_HIT && py <= sel.y + sel.height + HANDLE_HIT;
+
+  if (nearL && nearT) return 'nw';
+  if (nearR && nearT) return 'ne';
+  if (nearL && nearB) return 'sw';
+  if (nearR && nearB) return 'se';
+  if (nearT && inX) return 'n';
+  if (nearB && inX) return 's';
+  if (nearL && inY) return 'w';
+  if (nearR && inY) return 'e';
+  return null;
+}
+
+/** 把手对应的鼠标光标（对角双向箭头 / 边单向箭头） */
+export function handleCursor(h: HandleKind | null): string {
+  switch (h) {
+    case 'nw':
+    case 'se':
+      return 'nwse-resize';
+    case 'ne':
+    case 'sw':
+      return 'nesw-resize';
+    case 'n':
+    case 's':
+      return 'ns-resize';
+    case 'e':
+    case 'w':
+      return 'ew-resize';
+    default:
+      return 'crosshair';
+  }
+}
+
+/**
+ * 按住某个把手把指针 (px, py) 应用到选区上，返回调整后的选区。
+ *
+ * 拖过对边（比如把左边拖到右边右边去）必须走 normalize——宽高恒为正、
+ * 原点恒为左上，否则渲染层和坐标换算都会拿到负值。
+ */
+export function applyHandle(
+  sel: { x: number; y: number; width: number; height: number },
+  h: HandleKind,
+  px: number,
+  py: number,
+): { x: number; y: number; width: number; height: number } {
+  // 先算"动的边"的原始坐标，再 min/max 归一化
+  let x1 = sel.x;
+  let y1 = sel.y;
+  let x2 = sel.x + sel.width;
+  let y2 = sel.y + sel.height;
+  if (h.includes('w')) x1 = px;
+  if (h.includes('e')) x2 = px;
+  if (h.includes('n')) y1 = py;
+  if (h.includes('s')) y2 = py;
+  return {
+    x: Math.min(x1, x2),
+    y: Math.min(y1, y2),
+    width: Math.abs(x2 - x1),
+    height: Math.abs(y2 - y1),
+  };
+}
+
 /**
  * 工具栏摆放：优先右对齐贴选区**下方** 8px；下方放不下改上方 8px；
  * 水平/垂直都夹回视口内（小选区贴边时工具栏不能伸出屏幕）。

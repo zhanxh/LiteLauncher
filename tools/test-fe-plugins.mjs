@@ -1712,6 +1712,24 @@ function testDrawingsModule() {
     assert(d.toolWidth('mosaic') === 14, '马赛克笔刷应为 14');
     assert(d.toolWidth('pen') === 3 && d.toolWidth('rect') === 3, '画笔/矩形应为 3');
 
+    // 2.5) 选区调整把手：角优先于边、边延长线外不命中、拖过对边要归一化
+    const selBox = { x: 100, y: 100, width: 300, height: 200 };
+    assert(d.handleAt(selBox, 100, 100) === 'nw', '左上角应命中 nw');
+    assert(d.handleAt(selBox, 400, 300) === 'se', '右下角应命中 se');
+    assert(d.handleAt(selBox, 250, 100) === 'n', '上边中点应命中 n');
+    assert(d.handleAt(selBox, 100, 250) === 'w', '左边中点应命中 w');
+    assert(d.handleAt(selBox, 100, 50) === null, '上边延长线外不应命中任何把手');
+    assert(d.handleAt(selBox, 250, 250) === null, '选区内部不应命中把手');
+    const movedW = d.applyHandle(selBox, 'w', 500, 123);
+    assert(movedW.x === 400 && movedW.width === 100,
+      `左边拖过右边应归一化（原点变 400、宽 100），实得 ${JSON.stringify(movedW)}`);
+    const movedN = d.applyHandle(selBox, 'n', 200, 260);
+    assert(movedN.y === 260 && movedN.height === 40,
+      `上边拖过下边应归一化（原点变 260、高 40），实得 ${JSON.stringify(movedN)}`);
+    assert(d.handleCursor('n') === 'ns-resize' && d.handleCursor('nw') === 'nwse-resize',
+      '光标应随把手方向');
+    assert(d.handleCursor(null) === 'crosshair', '无把手时十字光标');
+
     // 3) 工具栏摆位：右对齐贴选区下方 8px
     const o1 = d.toolbarOrigin({ x: 100, y: 100, width: 600, height: 400 }, 2560, 1600, 392, 36);
     assert(o1.x === 308 && o1.y === 508, `应贴下方右对齐，实得 ${JSON.stringify(o1)}`);
