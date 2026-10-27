@@ -8,7 +8,9 @@
 
 ## [Unreleased]
 
-（下一次发布的改动记在这里。）
+### Internal
+
+- 接入自动更新签名：生成 minisign 密钥对（私钥存于本机 `~/.tauri/`，不入仓库），`tauri.conf.json` 的 `plugins.updater.pubkey` 填入公钥，`v*` tag 流水线产物即可签名并生成可被客户端验证的 `latest.json`。
 
 ## [0.2.0] - 2026-10-27
 
