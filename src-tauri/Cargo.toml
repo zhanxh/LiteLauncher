@@ -25,6 +25,8 @@ path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Windows：给测试二进制嵌入 Common-Controls v6 清单（见 build.rs 注释）
+embed-resource = "3"
 
 [dependencies]
 ll-plugin-api = { path = "crates/ll-plugin-api" }

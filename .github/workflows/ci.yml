@@ -26,10 +26,13 @@ jobs:
         with:
           components: rustfmt
 
+      # 注意：根 workspace 的 target-dir 被 .cargo/config.toml 钉到 src-tauri/target，
+      # 第一行必须显式映射过去，否则缓存落空、每次全量编译。
+      # plugins/*/be 已从 workspace exclude，各自用自己的 be/target。
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            . -> target
+            . -> src-tauri/target
             plugins/apps/be -> target
             plugins/find/be -> target
             plugins/sysinfo/be -> target

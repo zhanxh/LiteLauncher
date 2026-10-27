@@ -10,6 +10,8 @@
 
 ### Internal
 
+- 修复 Windows CI `cargo test` 测试二进制启动即崩（0xC0000139 STATUS_ENTRYPOINT_NOT_FOUND）：测试二进制经 tauri→muda 静态导入 `comctl32!TaskDialogIndirect`（仅 comctl32 v6 有此导出），而 tauri-build 的清单只经 `link-arg-bins` 嵌入 bin 目标，无清单的测试进程绑定 System32 的 comctl32 v5 后入口点缺失。现在 `ll-host` 与 `tauri-app` 各自的 build.rs 在 Windows 目标用 `embed_resource::compile_for_everything` 把 Common-Controls v6 清单链进所有目标，`tauri-app` 同时关闭 tauri 内置的 bins-only 清单避免双 RT_MANIFEST；附带修正 rust-cache 的 workspace→target 映射（此前指向不存在的 `target/`，缓存空转每次全量编译）。
+- 修复本地 MinGW（windows-gnu）工具链无法构建 app 的既有问题：`tauri_app_lib` cdylib 无 `#[no_mangle]` 导出时 ld 回退 auto-export-all，约 15.7 万符号超过 PE 导出序号上限报 "export ordinal too large"；桌面端 cdylib 无消费方（bin 静态链接 rlib），构建脚本对 gnu 目标追加 `--exclude-all-symbols`。
 - 修复 GitHub Actions windows CI：`cargo test --workspace` 会编译 `tauri-app`，其构建脚本校验 `bundle.resources` 里的 `../release/plugins`——该目录平时由 `build.cmd` 的部署步骤产出，CI 直接跑 cargo 时不存在，单测步骤必然失败。现在 ci.yml 在 cargo 测试前先执行 `tools/deploy-portable-plugins.mjs`。
 - 接入自动更新签名：生成 minisign 密钥对（私钥存于本机 `~/.tauri/`，不入仓库），`tauri.conf.json` 的 `plugins.updater.pubkey` 填入公钥，`v*` tag 流水线产物即可签名并生成可被客户端验证的 `latest.json`。
 

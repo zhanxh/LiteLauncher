@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "LiteLauncher 插件宿主：注册表、统一 IPC 通道、门控服务实现"
 
+# Windows：给测试二进制嵌入 Common-Controls v6 清单（见 build.rs 注释）
+[build-dependencies]
+embed-resource = "3"
+
 [dependencies]
 ll-plugin-api = { path = "../ll-plugin-api" }
 # native 动态库插件（M1）：ABI 类型与版本门控（与插件侧共用的唯一边界 crate）
