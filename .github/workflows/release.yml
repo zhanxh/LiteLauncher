@@ -71,69 +71,76 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $raw = $env:TAURI_SIGNING_PRIVATE_KEY
-          if (-not $raw) {
-            throw "缺少 Secret TAURI_SIGNING_PRIVATE_KEY（tauri signer generate 生成的私钥）"
-          }
-
-          # 私钥既可能是文件路径（本地用），也可能是 base64 内容（CI 用）。
-          # 内容串可能长于 MAX_PATH，直接 Test-Path 会抛错，这里先限长并吞掉探测异常。
-          $keyPath = $null
-          $trimmed = $raw.Trim()
-          if ($trimmed.Length -lt 260) {
-            try {
-              if (Test-Path -LiteralPath $trimmed) { $keyPath = $trimmed }
-            } catch { $keyPath = $null }
-          }
-
-          if (-not $keyPath) {
-            # GitHub secret 常见问题：从文件粘贴时带换行，Tauri 的 base64 解码不容忍空白
-            $key = $raw -replace '\s', ''
-            try {
-              $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($key))
-            } catch {
-              throw "TAURI_SIGNING_PRIVATE_KEY 既不是存在的文件路径，也不是合法 base64；应填私钥文件内容（tauri signer generate 的 .key 文件）"
+          try {
+            $raw = $env:TAURI_SIGNING_PRIVATE_KEY
+            if (-not $raw) {
+              throw "缺少 Secret TAURI_SIGNING_PRIVATE_KEY（配置在 $env:GITHUB_REPOSITORY 的 Repository secrets，名称需完全一致）"
             }
-            if ($decoded -notmatch 'rsign encrypted secret key') {
-              throw "TAURI_SIGNING_PRIVATE_KEY 不是 minisign 私钥（解码后缺少 'rsign encrypted secret key'），可能误填了公钥"
+            $hasPassword = [bool]$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+
+            # 私钥既可能是文件路径（本地用），也可能是 base64 内容（CI 用）。
+            # 内容串可能长于 MAX_PATH，直接 Test-Path 会抛错，这里先限长并吞掉探测异常。
+            $keyPath = $null
+            $trimmed = $raw.Trim()
+            if ($trimmed.Length -lt 260) {
+              try {
+                if (Test-Path -LiteralPath $trimmed) { $keyPath = $trimmed }
+              } catch { $keyPath = $null }
             }
-            $keyPath = Join-Path $env:RUNNER_TEMP 'updater.key'
-            [IO.File]::WriteAllText($keyPath, $key)
-            Write-Host "私钥内容已规范化写入 runner 临时文件"
-          }
 
-          # 后续构建步骤统一从文件读取，避免超长/多行 secret 直接进环境变量
-          "TAURI_SIGNING_PRIVATE_KEY=$keyPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            if (-not $keyPath) {
+              # GitHub secret 常见问题：从文件粘贴时带换行，Tauri 的 base64 解码不容忍空白
+              $key = $raw -replace '\s', ''
+              try {
+                $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($key))
+              } catch {
+                throw "TAURI_SIGNING_PRIVATE_KEY 既不是存在的文件路径，也不是合法 base64（trim 后 $($key.Length) 字符）。应填 tauri signer generate 生成的 .key 文件内容（单行 base64），不要填路径或解码后的文本"
+              }
+              if ($decoded -notmatch 'rsign encrypted secret key') {
+                $firstLine = ($decoded -split "`r?`n")[0]
+                throw "TAURI_SIGNING_PRIVATE_KEY 解码后不是 minisign 私钥（首行：'$firstLine'），可能误填了公钥或其他内容"
+              }
+              $keyPath = Join-Path $env:RUNNER_TEMP 'updater.key'
+              [IO.File]::WriteAllText($keyPath, $key)
+              Write-Host "私钥内容已规范化写入 runner 临时文件（$($key.Length) 字符）"
+            }
 
-          # 试签一次，提前暴露密码错误或私钥损坏（否则要等 10 分钟编译完才失败）
-          $probe = Join-Path $env:RUNNER_TEMP 'sign-probe.txt'
-          Set-Content -LiteralPath $probe -Value 'tauri updater key preflight' -NoNewline
-          Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
-          npx tauri signer sign --private-key-path $keyPath $probe
-          if ($LASTEXITCODE -ne 0) {
-            throw "私钥签名自检失败：确认 TAURI_SIGNING_PRIVATE_KEY_PASSWORD 与私钥匹配"
-          }
-          if (-not (Test-Path -LiteralPath "$probe.sig")) {
-            throw "私钥签名自检没有生成 $probe.sig"
-          }
+            # 后续构建步骤统一从文件读取，避免超长/多行 secret 直接进环境变量
+            "TAURI_SIGNING_PRIVATE_KEY=$keyPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          # Tauri 对私钥/pubkey 不匹配只打 warning，产物能发布但客户端永远验签失败；
-          # 发布流水线必须在构建前把它变成致命错误。签名 box 与 pubkey 的 keynum 均为
-          # 2 字节算法 + 8 字节 key id，直接比较这一段。
-          function Get-KeyIdHex([byte[]]$blob) {
-            return (($blob[2..9]) | ForEach-Object { $_.ToString('X2') }) -join ''
+            # 试签一次，提前暴露密码错误或私钥损坏（否则要等 10 分钟编译完才失败）
+            $probe = Join-Path $env:RUNNER_TEMP 'sign-probe.txt'
+            Set-Content -LiteralPath $probe -Value 'tauri updater key preflight' -NoNewline
+            Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+            npx tauri signer sign --private-key-path $keyPath $probe
+            if ($LASTEXITCODE -ne 0) {
+              throw "私钥签名自检失败（exit $LASTEXITCODE，password 已配置=$hasPassword）：确认 TAURI_SIGNING_PRIVATE_KEY_PASSWORD 与私钥匹配"
+            }
+            if (-not (Test-Path -LiteralPath "$probe.sig")) {
+              throw "私钥签名自检没有生成 $probe.sig"
+            }
+
+            # Tauri 对私钥/pubkey 不匹配只打 warning，产物能发布但客户端永远验签失败；
+            # 发布流水线必须在构建前把它变成致命错误。签名 box 与 pubkey 的 keynum 均为
+            # 2 字节算法 + 8 字节 key id，直接比较这一段。
+            function Get-KeyIdHex([byte[]]$blob) {
+              return (($blob[2..9]) | ForEach-Object { $_.ToString('X2') }) -join ''
+            }
+            $conf = Get-Content -LiteralPath 'src-tauri/tauri.conf.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+            $pub = $conf.plugins.updater.pubkey
+            if (-not $pub) { throw "tauri.conf.json 缺少 plugins.updater.pubkey" }
+            $sigBox = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content -Raw -LiteralPath "$probe.sig")))
+            $sigId = Get-KeyIdHex ([Convert]::FromBase64String(($sigBox -split "`r?`n")[1]))
+            $pubBox = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pub))
+            $pubId = Get-KeyIdHex ([Convert]::FromBase64String(($pubBox -split "`r?`n")[1]))
+            if ($sigId -ne $pubId) {
+              throw "签名私钥与 updater pubkey 不匹配（private=$sigId pub=$pubId）：更新包会被客户端拒签，请确认 Variable TAURI_UPDATER_PUBKEY 与 Secret TAURI_SIGNING_PRIVATE_KEY 来自同一对 tauri signer generate 密钥"
+            }
+            Write-Host "签名自检通过，私钥与 updater pubkey 匹配"
+          } catch {
+            Write-Output "::error::$($_.Exception.Message)"
+            throw
           }
-          $conf = Get-Content -LiteralPath 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
-          $pub = $conf.plugins.updater.pubkey
-          if (-not $pub) { throw "tauri.conf.json 缺少 plugins.updater.pubkey" }
-          $sigBox = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((Get-Content -Raw -LiteralPath "$probe.sig")))
-          $sigId = Get-KeyIdHex ([Convert]::FromBase64String(($sigBox -split "`r?`n")[1]))
-          $pubBox = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pub))
-          $pubId = Get-KeyIdHex ([Convert]::FromBase64String(($pubBox -split "`r?`n")[1]))
-          if ($sigId -ne $pubId) {
-            throw "签名私钥与 updater pubkey 不匹配（private=$sigId pub=$pubId）：更新包会被客户端拒签，请确认 Variable TAURI_UPDATER_PUBKEY 与 Secret TAURI_SIGNING_PRIVATE_KEY 来自同一对 tauri signer generate 密钥"
-          }
-          Write-Host "签名自检通过，私钥与 updater pubkey 匹配"
 
       - name: 构建安装包（NSIS + updater artifacts）
         shell: cmd
