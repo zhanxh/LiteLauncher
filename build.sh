@@ -199,10 +199,10 @@ if (( SHIP )) && [[ "$(uname -s)" == "Linux" ]]; then
         echo "  发版前把 Depends 与产物 ldd 对一遍（见 README「Linux 上 ./build.sh ship 多打一个 .deb」）"
     fi
     if [[ ",${SHIP_BUNDLES:-deb}," == *",appimage,"* ]]; then
-        echo "  src-tauri/target-ship/release/bundle/appimage/*.AppImage        便携包"
-        echo "  src-tauri/target-ship/release/bundle/appimage/*.AppImage.tar.gz 更新载体（+ .sig）"
-        if ! ls src-tauri/target-ship/release/bundle/appimage/*.AppImage.tar.gz >/dev/null 2>&1; then
-            echo "[警告] 没找到 *.AppImage.tar.gz，updater 产物可能没生成（检查 createUpdaterArtifacts 与签名私钥）"
+        echo "  src-tauri/target-ship/release/bundle/appimage/*.AppImage        便携包，也是 updater 载体（+ .sig）"
+        # v2 的 createUpdaterArtifacts 签的就是 AppImage 本体，不产 v1 时代的 .AppImage.tar.gz
+        if ! ls src-tauri/target-ship/release/bundle/appimage/*.AppImage.sig >/dev/null 2>&1; then
+            echo "[警告] 没找到 *.AppImage.sig，updater 产物可能没生成（检查 createUpdaterArtifacts 与签名私钥）"
         fi
     fi
 fi

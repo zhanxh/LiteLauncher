@@ -343,7 +343,6 @@ jobs:
             latest-linux.json
             src-tauri/target-ship/release/bundle/deb/*.deb
             src-tauri/target-ship/release/bundle/appimage/*.AppImage
-            src-tauri/target-ship/release/bundle/appimage/*.AppImage.tar.gz
             src-tauri/target-ship/release/bundle/appimage/*.sig
 
   # 两个平台都成功才发布，只发布一次：updater 清单要同时带 windows-x86_64 与
@@ -407,7 +406,6 @@ jobs:
             dist/release-windows/src-tauri/target-ship/release/bundle/nsis/*.sig
             dist/release-linux/src-tauri/target-ship/release/bundle/deb/*.deb
             dist/release-linux/src-tauri/target-ship/release/bundle/appimage/*.AppImage
-            dist/release-linux/src-tauri/target-ship/release/bundle/appimage/*.AppImage.tar.gz
             dist/release-linux/src-tauri/target-ship/release/bundle/appimage/*.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

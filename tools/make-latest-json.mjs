@@ -11,7 +11,10 @@
  * 每个平台被签名的文件不一样，url 必须指向那个被签名的文件、签名取同名 `.sig` 全文：
  *   Windows → `<installer>-setup.exe`（旧的 `<installer>.nsis.zip` 只在
  *             `createUpdaterArtifacts: "v1Compatible"` 下生成，v3 会移除）
- *   Linux   → `<AppImage>.tar.gz`（updater 在 Linux 上只认 AppImage，deb/rpm 不是载体）
+ *   Linux   → `<AppImage>`（v2 也只签 AppImage 本体，不产 v1 时代的 `.AppImage.tar.gz`；
+ *             updater 客户端 `install_appimage` 两种都收——payload 是 gzip 就解 tar，
+ *             是 ELF 就直接覆写当前 AppImage——但 deb/rpm 装的客户端按 bundle type
+ *             走 install_deb/install_rpm，收到 ELF payload 会报 InvalidUpdaterFormat）
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -24,7 +27,7 @@ const PLATFORMS = {
   },
   'linux-x86_64': {
     bundleDir: 'src-tauri/target-ship/release/bundle/appimage',
-    carriers: [{ suffix: '.AppImage.tar.gz' }],
+    carriers: [{ suffix: '.AppImage' }],
   },
 };
 

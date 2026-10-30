@@ -27,7 +27,7 @@
 | 便携插件 | `release/plugins/`（Release 里打包为 `plugins.zip`） | 外部插件随包分发 |
 | NSIS 安装包 | `src-tauri/target-ship/release/bundle/nsis/*.exe` | `build.cmd ship` |
 | Linux 安装包 | `src-tauri/target-ship/release/bundle/{deb,appimage}/*` | `SHIP_BUNDLES=deb,appimage ./build.sh ship` |
-| 更新包 | `*-setup.exe.sig` 与 `*.AppImage.tar.gz.sig`（对安装包本体签名） | Tauri `createUpdaterArtifacts: true` |
+| 更新包 | `*-setup.exe.sig` 与 `*.AppImage.sig`（对安装包本体签名） | Tauri `createUpdaterArtifacts: true` |
 | 更新清单 | `latest.json` | `tools/make-latest-json.mjs` 分平台生成、`tools/merge-latest-json.mjs` 合成 |
 
 ## 四、发布

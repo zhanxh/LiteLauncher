@@ -68,10 +68,10 @@ tag 与 `package.json` 不一致时，Release 工作流会在第一步直接失�
 ## 5. 发布后抽查
 
 - [ ] Release 页面有 `LiteLauncher.exe`、`plugins.zip`、`latest.json`、NSIS 安装包、
-      `.deb` 与 `.AppImage`（+ 更新用的 `.AppImage.tar.gz` 和两份 `.sig`）
+      `.deb` 与 `.AppImage`（后者是 Linux 的更新载体，连同各自同目录的 `.sig`）
 - [ ] 安装包在干净机器可装可启动（不要求 Python，纯前端插件已编进前端包）
 - [ ] `latest.json` 同时有 `windows-x86_64` 与 `linux-x86_64`：前者的 `url` 指向
-      `*-setup.exe`、后者指向 `*.AppImage.tar.gz`，`signature` 都是同名 `.sig` 全文
+      `*-setup.exe`、后者指向 `*.AppImage`，`signature` 都是同名 `.sig` 全文
 - [ ] 旧版本客户端能检测到新版本并完成更新（Linux 只有 `.AppImage` 那份能自动更新，
       `.deb` 装的会因 payload 不是 deb 而报 `InvalidUpdaterFormat`，需手动重装）
 - [ ] `.deb` 自带 `release/plugins`（装在 `usr/lib/LiteLauncher/plugins/`，即两级部署的便携层），
@@ -88,10 +88,13 @@ tag 与 `package.json` 不一致时，Release 工作流会在第一步直接失�
 | 平台 | 命令 | 产物 |
 | :--- | :--- | :--- |
 | Windows | `build.cmd ship` | NSIS 安装包 + updater `.exe`/`.sig` + 便携 exe |
-| Linux | `SHIP_BUNDLES=deb,appimage ./build.sh ship`（日常不带该变量时只打 `.deb`） | `bundle/deb/*.deb`、`bundle/appimage/*.AppImage` 与 updater 用的 `*.AppImage.tar.gz`(+`.sig`) |
+| Linux | `SHIP_BUNDLES=deb,appimage ./build.sh ship`（日常不带该变量时只打 `.deb`） | `bundle/deb/*.deb`、`bundle/appimage/*.AppImage`(+`.sig`，后者就是 updater 载体) |
 
 Linux 的更新载体只能是 AppImage：Tauri 的 updater 在 Linux 上只认 AppImage，`.deb` 不是载体，
-所以 `latest.json` 的 `linux-x86_64.url` 指向 `.AppImage.tar.gz`；`.deb` 供人工 `apt` 安装。
+所以 `latest.json` 的 `linux-x86_64.url` 指向 `.AppImage` 本体；`.deb` 供人工 `apt` 安装。
+客户端先按 `{os}-{arch}-{bundle_type}`（如 `linux-x86_64-appimage`）找条目，找不到才回落到
+`{os}-{arch}`，所以清单只写裸平台名对 AppImage 用户是有效的；deb 装的客户端同理会回落到这份
+AppImage，但按 bundle type 走 `install_deb` 校验 ELF 失败，报 `InvalidUpdaterFormat`。
 `.deb` 装的是 `usr/lib/LiteLauncher/` 下的整个应用目录（主程序 + `plugins/` 全部产物，
 0.2.1 实测 149 个插件文件在包内），`Depends` 却是 Tauri 探模块写的短列表
 （`libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0`），并不覆盖 pipewire/gbm 这类
