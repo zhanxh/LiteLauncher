@@ -162,10 +162,39 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path release/plugins -DestinationPath release/plugins.zip -Force
 
+      # 移动 tag 后立即开跑时，GitHub 的 tag ref 可能尚未收敛，创建 release 会 500
+      # 或退化成按默认分支建 untagged 草稿（资产传一半就成孤儿）。发布前先确认 tag 指向本次 commit。
+      - name: 等待 tag 在 GitHub 侧收敛
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:TAG"
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'release-workflow' }
+          for ($i = 1; $i -le 24; $i++) {
+            try {
+              $ref = Invoke-RestMethod -Uri $uri -Headers $headers
+              $actual = $ref.object.sha
+              if ($actual -eq $env:EXPECTED_SHA) {
+                Write-Host "tag $env:TAG 已指向 $actual"
+                exit 0
+              }
+              Write-Host "tag 当前指向 $actual，期望 $env:EXPECTED_SHA（第 $i 次）"
+            } catch {
+              Write-Host "tag 查询未就绪（第 $i 次）: $($_.Exception.Message)"
+            }
+            Start-Sleep -Seconds 5
+          }
+          throw "等待 120s 后 tag $env:TAG 仍未收敛到 $env:EXPECTED_SHA，拒绝发布以免产生 untagged 草稿"
+
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          target_commitish: ${{ github.sha }}
           name: LiteLauncher ${{ github.ref_name }}
           body_path: CHANGELOG.md
           fail_on_unmatched_files: true

@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Internal
+
+- Release 流水线发布前增加「等待 tag 在 GitHub 侧收敛」一步，并给 `action-gh-release` 显式传 `target_commitish`：移动 tag 后立即开跑时，tag ref 可能尚未收敛，创建 release 会连吃 500 或退化成按默认分支建 untagged 草稿（资产传一半成孤儿，`releases/tags/<tag>` 永远查不到）。现在轮询 `git/ref/tags/<tag>` 直到指向本次 commit（上限 120s），超时则带 `::error::` 失败而不是硬发。
+
 ### Fixed
 
 - 默认更新源 owner 笔误修正：`plugins.updater.endpoints` 原写 `github.com/zhanxiaohai/...`（那是 gitcode 侧的仓库路径），GitHub 上本仓库是 `zhanxh/LiteLauncher`，端点 404 会让本地/未过发布流水线的构建「检查更新」必然失败。CI 里 `tools/release-config.mjs --owner/--repo` 会覆盖它，所以只有非 CI 产物受影响。
