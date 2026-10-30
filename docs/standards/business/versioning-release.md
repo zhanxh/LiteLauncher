@@ -26,15 +26,16 @@
 | 便携 exe | `release/LiteLauncher.exe` | 仍需旁边有 `plugins/` |
 | 便携插件 | `release/plugins/`（Release 里打包为 `plugins.zip`） | 外部插件随包分发 |
 | NSIS 安装包 | `src-tauri/target-ship/release/bundle/nsis/*.exe` | `build.cmd ship` |
-| 更新包 | 同目录 `*-setup.exe.sig`（对安装包本体签名） | Tauri `createUpdaterArtifacts: true` |
-| 更新清单 | `latest.json` | `tools/make-latest-json.mjs` 生成 |
+| Linux 安装包 | `src-tauri/target-ship/release/bundle/{deb,appimage}/*` | `SHIP_BUNDLES=deb,appimage ./build.sh ship` |
+| 更新包 | `*-setup.exe.sig` 与 `*.AppImage.tar.gz.sig`（对安装包本体签名） | Tauri `createUpdaterArtifacts: true` |
+| 更新清单 | `latest.json` | `tools/make-latest-json.mjs` 分平台生成、`tools/merge-latest-json.mjs` 合成 |
 
 ## 四、发布
 
 1. 提交并推送 `main`/`master`，确认 CI 绿；
 2. `git tag v<version>` → `git push origin v<version>`；
 3. Release 工作流校验 tag 与 `package.json` 一致（不一致直接失败），再构建并上传；
-4. 发布后抽查：安装包可装、`latest.json` 指向的 zip 可下载、更新检查能读到新版本。
+4. 发布后抽查：安装包可装、`latest.json` 每个平台指向的产物可下载、更新检查能读到新版本。
 
 ## 五、回滚
 

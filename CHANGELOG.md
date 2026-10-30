@@ -10,6 +10,7 @@
 
 ### Internal
 
+- Release 流水线接入 Linux 打包：新增 `linux` job（ubuntu-22.04，装 webkit/gtk/pipewire 等 `-dev` 依赖后跑 `SHIP_BUNDLES=deb,appimage ./build.sh ship`），同时产 `.deb`（人工 `apt` 安装）与 `.AppImage`(+`.AppImage.tar.gz`/`.sig`，Linux 唯一的 updater 载体)。发布改为 `windows`/`linux` 各自构建并上传 artifact、由 `release` job 一次性发布：`tools/make-latest-json.mjs` 加 `--platform`（按平台选 bundle 目录与更新载体）只产片段，新增 `tools/merge-latest-json.mjs` 合成多平台 `latest.json`，并用 `--require windows-x86_64,linux-x86_64` 拒绝缺平台的清单——少一个平台照样能发，那台机器却从此收不到更新，必须在这里失败。`build.sh` 的 ship 分支支持 `SHIP_BUNDLES`（默认仍只打 `deb`，日常构建不碰网络）。Linux 的更新载体只能是 AppImage：`.deb` 装的客户端按 bundle type 会把 tar.gz 当 deb 校验并拒绝（`InvalidUpdaterFormat`），只能手动重装。
 - Release 流水线发布前增加「等待 tag 在 GitHub 侧收敛」一步，并给 `action-gh-release` 显式传 `target_commitish`：移动 tag 后立即开跑时，tag ref 可能尚未收敛，创建 release 会连吃 500 或退化成按默认分支建 untagged 草稿（资产传一半成孤儿，`releases/tags/<tag>` 永远查不到）。现在轮询 `git/ref/tags/<tag>` 直到指向本次 commit（上限 120s），超时则带 `::error::` 失败而不是硬发。
 
 ### Fixed

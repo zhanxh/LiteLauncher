@@ -362,7 +362,9 @@ build.cmd ship
 > ⚠️ **注意**：请使用 `npx tauri build`（或 `build.cmd`）打包，不要直接用 `cargo build --release`。
 > 后者不会启用 `custom-protocol` 特性，产出的 exe 会去连 `localhost:1420` dev server，导致窗口白屏或"localhost 拒绝连接"。
 
-**Linux 上 `./build.sh ship` 多打一个 `.deb`**（落在 `src-tauri/target-ship/release/bundle/deb/`，日常构建仍然 `--no-bundle`）：
+**Linux 上 `./build.sh ship` 多打一个 `.deb`**（落在 `src-tauri/target-ship/release/bundle/deb/`；
+发布流水线跑的是 `SHIP_BUNDLES=deb,appimage ./build.sh ship`，再叠一份 AppImage —— Tauri 在
+Linux 上只认 AppImage 作为更新载体。日常构建仍然 `--no-bundle`）：
 
 - deb 的 `Depends` 是 Tauri 自己探模块写出来的**短列表**（本项目当前是
   `libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0`），**不是 `dpkg-shlibdeps`
@@ -394,7 +396,7 @@ build.cmd ship
   ```bash
   ldd LiteLauncher | grep "not found"
   ```
-  真正决定能不能跑的是 webkit/GTK 那一坨：`libwebkit2gtk-4.1`、`libjavascriptcoregtk-4.1`、`libgtk-3`、`libsoup-3.0`、`libgbm1`、GStreamer、`libicu72`。带桌面的 Debian/Ubuntu 一般自带，精简镜像未必；`libicu72`、`libsoup-3.0` 这类 soname 里焊了版本号，跨发行版（如 Ubuntu 24.04 是 `libicu74`）会直接加载失败 —— 要跨发行版就自己加 `--bundles appimage`，代价是首次要联网下 linuxdeploy。
+  真正决定能不能跑的是 webkit/GTK 那一坨：`libwebkit2gtk-4.1`、`libjavascriptcoregtk-4.1`、`libgtk-3`、`libsoup-3.0`、`libgbm1`、GStreamer、`libicu72`。带桌面的 Debian/Ubuntu 一般自带，精简镜像未必；`libicu72`、`libsoup-3.0` 这类 soname 里焊了版本号，跨发行版（如 Ubuntu 24.04 是 `libicu74`）会直接加载失败 —— 要跨发行版就取 Release 里的 `.AppImage`（依赖自带，也是 Linux 的更新载体；本地自打用 `--bundles appimage`，代价是首次要联网下 linuxdeploy）。
 - **`.deb` 里只有主程序**，外部插件不在包内：装完把 `release/plugins/` 放到 `~/.local/share/LiteLauncher/extplugins/`（两级部署见 `src-tauri/src/lib.rs:194`）。Python 类插件（pomo 等）还要求目标机 PATH 上有 `python3`（`src-tauri/crates/ll-host/src/python.rs:161`）。
 
 ### 4. 排障日志

@@ -123,6 +123,7 @@ jobs:
             # Tauri 对私钥/pubkey 不匹配只打 warning，产物能发布但客户端永远验签失败；
             # 发布流水线必须在构建前把它变成致命错误。签名 box 与 pubkey 的 keynum 均为
             # 2 字节算法 + 8 字节 key id，直接比较这一段。
+            # Linux job 不重复这段：两个 job 用的是同一对 secret/variable，这里失败就没人发布。
             function Get-KeyIdHex([byte[]]$blob) {
               return (($blob[2..9]) | ForEach-Object { $_.ToString('X2') }) -join ''
             }
@@ -148,47 +149,204 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: build.cmd ship
 
-      - name: 生成 latest.json
+      - name: 生成 windows 更新清单片段
+        shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
           node tools/make-latest-json.mjs `
+            --platform windows-x86_64 `
             --repo "${{ github.repository }}" `
             --version $version `
-            --bundle-dir src-tauri/target-ship/release/bundle/nsis `
-            --out latest.json
-        shell: pwsh
+            --out latest-windows.json
 
       - name: 打包便携插件目录
         shell: pwsh
         run: Compress-Archive -Path release/plugins -DestinationPath release/plugins.zip -Force
 
+      - name: 上传 windows 发布产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          if-no-files-found: error
+          path: |
+            release/LiteLauncher.exe
+            release/plugins.zip
+            latest-windows.json
+            src-tauri/target-ship/release/bundle/nsis/*.exe
+            src-tauri/target-ship/release/bundle/nsis/*.sig
+
+  linux:
+    # 22.04 而不是 ubuntu-latest（已是 26.04）：deb/AppImage 的运行库下限由构建机决定，
+    # glibc 2.35 产出的包 Debian 12 / Ubuntu 22.04+ 都装得上；在 24.04 上打包会焊死
+    # glibc ≥ 2.39，本项目自己的开发机（Debian 12）就第一批跑不起来。
+    # 代价：GitHub 已公告该镜像 2027-04-17 完全下线，届时要么换 debian:bookworm 容器，
+    # 要么接受产物只覆盖新发行版。
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> src-tauri/target-ship
+            plugins/ai/native -> target
+            plugins/apps/native -> target
+            plugins/echo/native -> target
+            plugins/find/native -> target
+            plugins/notes/native -> target
+            plugins/pomo/native -> target
+            plugins/sysinfo/native -> target
+            plugins/todo/native -> target
+
+      # 清单照 build.sh 的依赖预检（缺项会在那里报错并给出同一份 apt 列表）；
+      # libssl-dev 给 reqwest 的 native-tls，libfuse2 + squashfs-tools 给 AppImage 打包
+      # （appimagetool 要 mksquashfs 和 fuse），desktop-file-utils 给 linuxdeploy 的 gtk 插件。
+      - name: 安装 Linux 打包依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libclang-dev libssl-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev libgbm-dev libpipewire-0.3-dev libspa-0.2-dev \
+            libfuse2 squashfs-tools desktop-file-utils
+
+      - run: npm ci
+      - run: npm run version:check
+
+      - name: 校验 tag 与 package 版本一致
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p 'require("./package.json").version')"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$tag" != "$pkg" ]]; then
+            echo "::error::tag ${GITHUB_REF_NAME} 与 package.json $pkg 不一致"
+            exit 1
+          fi
+          echo "release version=$pkg"
+
+      - name: 配置更新源（owner/repo/pubkey）
+        env:
+          TAURI_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TAURI_UPDATER_PUBKEY:-}" ]]; then
+            echo "::error::缺少仓库 Variable TAURI_UPDATER_PUBKEY（tauri signer generate 的公钥）"
+            exit 1
+          fi
+          node tools/release-config.mjs --owner "$GITHUB_REPOSITORY_OWNER" --repo "${GITHUB_REPOSITORY#*/}"
+
+      # 与 windows job 的预检同源，只是 bash：先规范化 secret 再试签，
+      # 免得编译十分钟之后才暴露密码错或私钥被截断。
+      - name: 预检更新签名私钥
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+            echo "::error::缺少 Secret TAURI_SIGNING_PRIVATE_KEY（配置在 $GITHUB_REPOSITORY 的 Repository secrets，名称需完全一致）"
+            exit 1
+          fi
+          key="$(printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" | tr -d '[:space:]')"
+          if ! decoded="$(printf '%s' "$key" | base64 -d 2>&1)"; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY 不是合法 base64（trim 后 ${#key} 字符）。应填 tauri signer generate 生成的 .key 文件内容（单行 base64），不要填路径或解码后的文本"
+            exit 1
+          fi
+          if ! grep -q 'rsign encrypted secret key' <<<"$decoded"; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY 解码后不是 minisign 私钥（首行：'$(head -1 <<<"$decoded")'），可能误填了公钥或其他内容"
+            exit 1
+          fi
+          key_path="$RUNNER_TEMP/updater.key"
+          printf '%s' "$key" > "$key_path"
+          # 后续步骤统一从文件读取，避免超长 secret 一直挂在环境变量里
+          echo "TAURI_SIGNING_PRIVATE_KEY=$key_path" >> "$GITHUB_ENV"
+          probe="$RUNNER_TEMP/sign-probe.txt"
+          printf '%s' 'tauri updater key preflight' > "$probe"
+          unset TAURI_SIGNING_PRIVATE_KEY
+          if ! npx tauri signer sign --private-key-path "$key_path" "$probe"; then
+            echo "::error::私钥签名自检失败（password 已配置=$([[ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] && echo yes || echo no)）：确认 TAURI_SIGNING_PRIVATE_KEY_PASSWORD 与私钥匹配"
+            exit 1
+          fi
+          [[ -f "$probe.sig" ]] || { echo "::error::私钥签名自检没有生成 $probe.sig"; exit 1; }
+          echo "签名自检通过"
+
+      - name: 构建安装包（deb + AppImage updater 载体）
+        env:
+          SHIP_BUNDLES: deb,appimage
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: ./build.sh ship
+
+      - name: 生成 linux 更新清单片段
+        run: |
+          node tools/make-latest-json.mjs \
+            --platform linux-x86_64 \
+            --repo "${{ github.repository }}" \
+            --version "${GITHUB_REF_NAME#v}" \
+            --out latest-linux.json
+
+      - name: 上传 linux 发布产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          if-no-files-found: error
+          path: |
+            latest-linux.json
+            src-tauri/target-ship/release/bundle/deb/*.deb
+            src-tauri/target-ship/release/bundle/appimage/*.AppImage
+            src-tauri/target-ship/release/bundle/appimage/*.AppImage.tar.gz
+            src-tauri/target-ship/release/bundle/appimage/*.sig
+
+  # 两个平台都成功才发布，只发布一次：updater 清单要同时带 windows-x86_64 与
+  # linux-x86_64，谁先发都会让另一边的 url 短暂 404。
+  release:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+
+      - name: 合并多平台更新清单
+        run: |
+          set -euo pipefail
+          node tools/merge-latest-json.mjs \
+            --out latest.json \
+            --require windows-x86_64,linux-x86_64 \
+            dist/release-windows/latest-windows.json \
+            dist/release-linux/latest-linux.json
+
       # 移动 tag 后立即开跑时，GitHub 的 tag ref 可能尚未收敛，创建 release 会 500
       # 或退化成按默认分支建 untagged 草稿（资产传一半就成孤儿）。发布前先确认 tag 指向本次 commit。
       - name: 等待 tag 在 GitHub 侧收敛
-        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
           EXPECTED_SHA: ${{ github.sha }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:TAG"
-          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'release-workflow' }
-          for ($i = 1; $i -le 24; $i++) {
-            try {
-              $ref = Invoke-RestMethod -Uri $uri -Headers $headers
-              $actual = $ref.object.sha
-              if ($actual -eq $env:EXPECTED_SHA) {
-                Write-Host "tag $env:TAG 已指向 $actual"
-                exit 0
-              }
-              Write-Host "tag 当前指向 $actual，期望 $env:EXPECTED_SHA（第 $i 次）"
-            } catch {
-              Write-Host "tag 查询未就绪（第 $i 次）: $($_.Exception.Message)"
-            }
-            Start-Sleep -Seconds 5
-          }
-          throw "等待 120s 后 tag $env:TAG 仍未收敛到 $env:EXPECTED_SHA，拒绝发布以免产生 untagged 草稿"
+          set -euo pipefail
+          uri="https://api.github.com/repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG"
+          for i in $(seq 1 24); do
+            actual="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' "$uri" | jq -r '.object.sha' || true)"
+            if [[ "$actual" == "$EXPECTED_SHA" ]]; then
+              echo "tag $TAG 已指向 $actual"
+              exit 0
+            fi
+            echo "tag 当前指向 ${actual:-未就绪}，期望 $EXPECTED_SHA（第 $i 次）"
+            sleep 5
+          done
+          echo "::error::等待 120s 后 tag $TAG 仍未收敛到 $EXPECTED_SHA，拒绝发布以免产生 untagged 草稿"
+          exit 1
 
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
@@ -199,10 +357,14 @@ jobs:
           body_path: CHANGELOG.md
           fail_on_unmatched_files: true
           files: |
-            release/LiteLauncher.exe
-            release/plugins.zip
+            dist/release-windows/release/LiteLauncher.exe
+            dist/release-windows/release/plugins.zip
             latest.json
-            src-tauri/target-ship/release/bundle/nsis/*.exe
-            src-tauri/target-ship/release/bundle/nsis/*.sig
+            dist/release-windows/src-tauri/target-ship/release/bundle/nsis/*.exe
+            dist/release-windows/src-tauri/target-ship/release/bundle/nsis/*.sig
+            dist/release-linux/src-tauri/target-ship/release/bundle/deb/*.deb
+            dist/release-linux/src-tauri/target-ship/release/bundle/appimage/*.AppImage
+            dist/release-linux/src-tauri/target-ship/release/bundle/appimage/*.AppImage.tar.gz
+            dist/release-linux/src-tauri/target-ship/release/bundle/appimage/*.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

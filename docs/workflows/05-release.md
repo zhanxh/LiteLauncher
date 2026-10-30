@@ -57,22 +57,28 @@ tag 与 `package.json` 不一致时，Release 工作流会在第一步直接失�
 1. `npm ci` → `npm run version:check`；
 2. 校验 tag 去 `v` 后与 `package.json` 一致；
 3. `node tools/release-config.mjs` 写入 owner/repo/pubkey；
-4. `build.cmd ship`（fat LTO + 1 CGU + NSIS + updater artifacts）；
-5. `node tools/make-latest-json.mjs` 生成更新清单；
-6. 打包 `release/plugins` 为 `plugins.zip`；
-7. 创建 GitHub Release，附 exe、安装包、`.sig`、`latest.json`、`plugins.zip`。
+4. 预检更新签名私钥（先试签，再把签名里的 key id 与 `pubkey` 对账）；
+5. 构建：`windows` job 跑 `build.cmd ship`，`linux` job 跑 `SHIP_BUNDLES=deb,appimage ./build.sh ship`；
+6. 每个平台 `node tools/make-latest-json.mjs --platform <平台>` 生成清单片段（windows job
+   另把 `release/plugins` 打包成 `plugins.zip`），产物与片段一起上传为 artifact；
+7. 两个平台都成功后，`release` job 用 `node tools/merge-latest-json.mjs` 合成一份
+   `latest.json`（缺任一平台直接失败，避免那台机器从此收不到更新），等 tag 收敛后
+   一次性创建 GitHub Release 并附上全部资产。
 
 ## 5. 发布后抽查
 
-- [ ] Release 页面有 `LiteLauncher.exe`、`plugins.zip`、`latest.json` 与 NSIS 安装包
+- [ ] Release 页面有 `LiteLauncher.exe`、`plugins.zip`、`latest.json`、NSIS 安装包、
+      `.deb` 与 `.AppImage`（+ 更新用的 `.AppImage.tar.gz` 和两份 `.sig`）
 - [ ] 安装包在干净机器可装可启动（不要求 Python，纯前端插件已编进前端包）
-- [ ] `latest.json` 的 `url` 指向 `*-setup.exe`，`signature` 是同名 `.sig` 全文
-- [ ] 旧版本客户端能检测到新版本并完成更新
+- [ ] `latest.json` 同时有 `windows-x86_64` 与 `linux-x86_64`：前者的 `url` 指向
+      `*-setup.exe`、后者指向 `*.AppImage.tar.gz`，`signature` 都是同名 `.sig` 全文
+- [ ] 旧版本客户端能检测到新版本并完成更新（Linux 只有 `.AppImage` 那份能自动更新，
+      `.deb` 装的会因 payload 不是 deb 而报 `InvalidUpdaterFormat`，需手动重装）
 - [ ] 需要时把 `release/plugins` 部署到目标机 `~/.local/share/LiteLauncher/extplugins/`（`.deb` 不含外部插件）
 
 ## 6. 回滚
 
-1. 把 `latest.json` 指回上一个版本的安装包与签名，重新上传到 Release 资产；
+1. 把 `latest.json` 指回上一个版本的安装包与签名（每个平台各一条），重新上传到 Release 资产；
 2. 不删除 tag 与安装包，保留可追溯记录；
 3. 需要撤销功能时，发一个更高的修订版本（patch），而不是改写已发布的历史。
 
@@ -80,8 +86,14 @@ tag 与 `package.json` 不一致时，Release 工作流会在第一步直接失�
 
 | 平台 | 命令 | 产物 |
 | :--- | :--- | :--- |
-| Windows | `build.cmd ship` | NSIS 安装包 + updater zip/sig + 便携 exe |
-| Linux | `./build.sh ship` | 多一个 `.deb`，落在 `target-ship/release/bundle/deb/` |
+| Windows | `build.cmd ship` | NSIS 安装包 + updater `.exe`/`.sig` + 便携 exe |
+| Linux | `SHIP_BUNDLES=deb,appimage ./build.sh ship`（日常不带该变量时只打 `.deb`） | `bundle/deb/*.deb`、`bundle/appimage/*.AppImage` 与 updater 用的 `*.AppImage.tar.gz`(+`.sig`) |
 
-Linux 的 `.deb` 只含主程序，`Depends` 是 Tauri 探模块写的短列表；新接原生依赖时要重跑
+Linux 的更新载体只能是 AppImage：Tauri 的 updater 在 Linux 上只认 AppImage，`.deb` 不是载体，
+所以 `latest.json` 的 `linux-x86_64.url` 指向 `.AppImage.tar.gz`；`.deb` 供人工 `apt` 安装。
+`.deb` 只含主程序，`Depends` 是 Tauri 探模块写的短列表；新接原生依赖时要重跑
 `ldd` 与 `Depends` 闭包对账（完整脚本见根 `README.md`）。
+
+CI 的 `linux` job 钉在 `ubuntu-22.04`：deb/AppImage 的运行库下限取构建机的 glibc（2.35），
+换到 24.04（glibc 2.39）产出的包在 Debian 12 上直接加载失败。该镜像 GitHub 已公告
+2027-04-17 完全下线，届时改跑在 `debian:bookworm` 容器里，或接受产物只覆盖新发行版。

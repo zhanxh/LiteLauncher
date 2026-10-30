@@ -1,19 +1,32 @@
 #!/usr/bin/env node
 /**
- * 生成 Tauri updater 的 latest.json。
+ * 生成单个平台的 Tauri updater 清单片段（latest.json 的一部分）。
  *
  * 用法（CI）：
- *   node tools/make-latest-json.mjs --repo owner/name --version 0.2.0 \
- *     --bundle-dir src-tauri/target-ship/release/bundle/nsis \
- *     --out latest.json
+ *   node tools/make-latest-json.mjs --platform windows-x86_64 --out latest-windows.json
+ *   node tools/make-latest-json.mjs --platform linux-x86_64   --out latest-linux.json
+ * 多个平台的片段用 tools/merge-latest-json.mjs 合成最终 latest.json。
  *
- * Tauri v2 的 `createUpdaterArtifacts: true` 直接复用安装包本体作为更新载体：
- * Windows 下产出 `<installer>.exe` 与同名 `.sig`（旧的 `<installer>.nsis.zip` 只在
- * `createUpdaterArtifacts: "v1Compatible"` 下生成，该选项将在 v3 移除）。
- * latest.json 的 url 必须指向被签名的那个文件，签名取对应 `.sig` 全文。
+ * Tauri v2 的 `createUpdaterArtifacts: true` 直接复用安装包本体作为更新载体，
+ * 每个平台被签名的文件不一样，url 必须指向那个被签名的文件、签名取同名 `.sig` 全文：
+ *   Windows → `<installer>-setup.exe`（旧的 `<installer>.nsis.zip` 只在
+ *             `createUpdaterArtifacts: "v1Compatible"` 下生成，v3 会移除）
+ *   Linux   → `<AppImage>.tar.gz`（updater 在 Linux 上只认 AppImage，deb/rpm 不是载体）
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+
+// pick 挑出该平台的 updater 载体；顺序即优先级（新形状放前面）。
+const PLATFORMS = {
+  'windows-x86_64': {
+    bundleDir: 'src-tauri/target-ship/release/bundle/nsis',
+    carriers: [{ suffix: '.nsis.zip' }, { suffix: '.exe' }],
+  },
+  'linux-x86_64': {
+    bundleDir: 'src-tauri/target-ship/release/bundle/appimage',
+    carriers: [{ suffix: '.AppImage.tar.gz' }],
+  },
+};
 
 const args = process.argv.slice(2);
 const argOf = (name) => {
@@ -21,9 +34,16 @@ const argOf = (name) => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 
+const platform = argOf('platform');
+const conf = PLATFORMS[platform];
+if (!conf) {
+  console.error(`未知平台: ${platform}（可选 ${Object.keys(PLATFORMS).join(' | ')}）`);
+  process.exit(1);
+}
+
 const repo = argOf('repo') || process.env.GITHUB_REPOSITORY;
 const version = argOf('version') || process.env.GITHUB_REF_NAME?.replace(/^v/, '');
-const bundleDir = resolve(argOf('bundle-dir') || 'src-tauri/target-ship/release/bundle/nsis');
+const bundleDir = resolve(argOf('bundle-dir') || conf.bundleDir);
 const out = resolve(argOf('out') || 'latest.json');
 const notes = argOf('notes') || 'See CHANGELOG.md';
 
@@ -38,17 +58,20 @@ if (!existsSync(bundleDir)) {
 
 const files = readdirSync(bundleDir);
 const signed = files.filter(
-  (f) => (f.endsWith('.nsis.zip') || f.endsWith('.exe')) && files.includes(`${f}.sig`),
+  (f) => conf.carriers.some(({ suffix }) => f.endsWith(suffix)) && files.includes(`${f}.sig`),
 );
 if (signed.length === 0) {
   console.error(
-    `没有找到带同名 .sig 的 updater artifact（*.nsis.zip 或 *-setup.exe）: ${bundleDir}\n` +
-      `目录内容: ${files.join(', ') || '(空)'}`,
+    `没有找到带同名 .sig 的 ${platform} updater artifact（${conf.carriers
+      .map(({ suffix }) => `*${suffix}`)
+      .join(' 或 ')}）: ${bundleDir}\n目录内容: ${files.join(', ') || '(空)'}`,
   );
-  console.error('若只有 .exe 没有 .sig，检查 TAURI_SIGNING_PRIVATE_KEY 是否配置');
+  console.error('若只有安装包没有 .sig，检查 TAURI_SIGNING_PRIVATE_KEY 是否配置');
   process.exit(1);
 }
-const artifact = signed.find((f) => f.endsWith('.nsis.zip')) ?? signed.find((f) => f.endsWith('.exe'));
+const artifact = conf.carriers
+  .map(({ suffix }) => signed.find((f) => f.endsWith(suffix)))
+  .find(Boolean);
 const sig = `${artifact}.sig`;
 
 const tag = `v${version}`;
@@ -58,12 +81,12 @@ const manifest = {
   notes,
   pub_date: new Date().toISOString(),
   platforms: {
-    'windows-x86_64': {
+    [platform]: {
       signature: readFileSync(join(bundleDir, sig), 'utf8').trim(),
       url: downloadUrl,
     },
   },
 };
 writeFileSync(out, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-console.log(`[latest-json] ${version} → ${artifact}`);
+console.log(`[latest-json] ${platform} ${version} → ${artifact}`);
 console.log(`[latest-json] ${downloadUrl}`);

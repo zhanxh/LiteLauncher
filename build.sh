@@ -161,10 +161,12 @@ echo "[1.8/4] 部署外部插件到 release/plugins/..."
 node tools/deploy-portable-plugins.mjs
 
 # ship = 正式发布包：顺手打 .deb，让目标机用 apt 补运行库。
-# 日常构建保持 --no-bundle（快，且不碰网络）。目标只有 deb：rpm 要装 rpmbuild，
+# 日常构建保持 --no-bundle（快，且不碰网络）。默认目标只有 deb：rpm 要装 rpmbuild，
 # appimage 要从 GitHub 下 linuxdeploy，两者都不适合放进构建默认路径。
+# 发布流水线用 SHIP_BUNDLES=deb,appimage 显式加上 appimage —— Tauri 在 Linux 上的
+# 自动更新只认 AppImage（deb 不是 updater 载体），缺它就没有 linux-x86_64 更新条目。
 if (( SHIP )) && [[ "$(uname -s)" == "Linux" ]]; then
-    npx tauri build --bundles deb
+    npx tauri build --bundles "${SHIP_BUNDLES:-deb}"
 else
     npx tauri build --no-bundle
 fi
@@ -186,5 +188,12 @@ if (( SHIP )) && [[ "$(uname -s)" == "Linux" ]]; then
         echo "[警告] 上面这一步没找到 .deb，tauri 打包步骤可能静默失败，请检查上方输出"
     else
         echo "  发版前把 Depends 与产物 ldd 对一遍（见 README「Linux 上 ./build.sh ship 多打一个 .deb」）"
+    fi
+    if [[ ",${SHIP_BUNDLES:-deb}," == *",appimage,"* ]]; then
+        echo "  src-tauri/target-ship/release/bundle/appimage/*.AppImage        便携包"
+        echo "  src-tauri/target-ship/release/bundle/appimage/*.AppImage.tar.gz 更新载体（+ .sig）"
+        if ! ls src-tauri/target-ship/release/bundle/appimage/*.AppImage.tar.gz >/dev/null 2>&1; then
+            echo "[警告] 没找到 *.AppImage.tar.gz，updater 产物可能没生成（检查 createUpdaterArtifacts 与签名私钥）"
+        fi
     fi
 fi
