@@ -184,6 +184,8 @@ mod tests {
 
     #[test]
     fn source_labels_cover_manual_desktop_and_menu() {
+        // source_label 的非桌面分支按编译目标平台取词，断言跟着 cfg 走
+        let menu = if cfg!(target_os = "windows") { "开始菜单" } else { "应用菜单" };
         assert_eq!(source_label("manual", r"C:\Tools\x.exe"), "自定义");
         assert_eq!(
             source_label("system", r"C:\Users\me\Desktop\微信.lnk"),
@@ -194,23 +196,24 @@ mod tests {
                 "system",
                 r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\微信.lnk"
             ),
-            "开始菜单"
+            menu
         );
     }
 
     #[test]
     fn description_prefers_group_folder_over_full_path() {
+        let menu = if cfg!(target_os = "windows") { "开始菜单" } else { "应用菜单" };
         let desc = short_description(
             "system",
             r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\腾讯\微信.lnk",
         );
-        assert_eq!(desc, "开始菜单 · 腾讯");
+        assert_eq!(desc, format!("{menu} · 腾讯"));
 
         let flat = short_description(
             "system",
             r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\微信.lnk",
         );
-        assert_eq!(flat, "开始菜单");
+        assert_eq!(flat, menu);
     }
 
     #[test]
