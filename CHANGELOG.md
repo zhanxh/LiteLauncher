@@ -8,6 +8,12 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-30
+
+### Internal
+
+- Release 的 `linux` job 从 `ubuntu-22.04` runner 改为 `debian:bookworm` 容器（宿主 `ubuntu-24.04`）：v0.2.2 的首跑在「构建安装包」一步挂在 `libspa-sys` 编译——jammy 最高只有 pipewire 0.3.48，缺 `spa_meta_first` / `spa_meta_region_is_valid` / `spa_video_info_raw.flags`（`xcap` 的 Wayland portal 截图链路），而 noble 的 pipewire 1.x 虽能编却把 glibc 抬到 2.39，产物连开发机（Debian 12）都跑不起来、更新链路无从自测。bookworm 是 pipewire 0.3.65 + glibc 2.36，两个条件同时满足。容器侧配套：先装 `git/xz/zstd/ca-certificates` 否则连 checkout 都跑不起来、`apt` 以 root 直跑（镜像没有 sudo）、`APPIMAGE_EXTRACT_AND_RUN=1` 让 linuxdeploy 与 appimagetool 自解压（容器不挂 `/dev/fuse`）。新增「核对 pipewire 头文件版本」一步，把这类环境不匹配挡在十几分钟编译之前。
+
 ## [0.2.2] - 2026-10-30
 
 ### Internal
