@@ -94,6 +94,9 @@ Linux 的更新载体只能是 AppImage：Tauri 的 updater 在 Linux 上只认 
 `.deb` 只含主程序，`Depends` 是 Tauri 探模块写的短列表；新接原生依赖时要重跑
 `ldd` 与 `Depends` 闭包对账（完整脚本见根 `README.md`）。
 
-CI 的 `linux` job 钉在 `ubuntu-22.04`：deb/AppImage 的运行库下限取构建机的 glibc（2.35），
-换到 24.04（glibc 2.39）产出的包在 Debian 12 上直接加载失败。该镜像 GitHub 已公告
-2027-04-17 完全下线，届时改跑在 `debian:bookworm` 容器里，或接受产物只覆盖新发行版。
+CI 的 `linux` job 跑在 `debian:bookworm` 容器里（宿主 `ubuntu-24.04`），而不是直接用
+Ubuntu runner 镜像，两个原因叠在一起：`xcap → libspa-sys` 要 pipewire ≥ 0.3.6x 的头文件，
+jammy 最高只有 0.3.48（编译期缺 `spa_meta_first` / `spa_video_info_raw.flags`），noble 能编
+但把 glibc 抬到 2.39，产物连开发机（Debian 12，glibc 2.36）都跑不起来、更新链路无从自测。
+bookworm 同时满足两点；容器里 `apt` 直接以 root 跑（无 sudo），且因为不挂 `/dev/fuse`，
+必须给 job 设 `APPIMAGE_EXTRACT_AND_RUN=1`，否则 linuxdeploy/appimagetool 自己就起不来。
