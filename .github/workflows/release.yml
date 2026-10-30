@@ -226,6 +226,10 @@ jobs:
       # 清单照 build.sh 的依赖预检（缺项会在那里报错并给出同一份 apt 列表）；
       # libssl-dev 给 reqwest 的 native-tls，squashfs-tools 给 appimagetool 的 mksquashfs，
       # desktop-file-utils 给 linuxdeploy 的 gtk 插件。
+      # libayatana-appindicator3-dev 不在 build.sh 的编译期预检里，却是打包硬依赖：
+      # tauri 开了 tray-icon，CLI 在 bundle 阶段用 pkg-config 探 appindicator 的 libdir
+      # （写 deb Depends、往 AppImage 塞 .so），缺了就 panic
+      # "Can't detect any appindicator library"——而且是在 release 编完 7 分钟后。
       - name: 安装 Linux 打包依赖
         shell: bash
         run: |
@@ -235,6 +239,7 @@ jobs:
             build-essential pkg-config libclang-dev libssl-dev \
             libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev libgbm-dev libpipewire-0.3-dev libspa-0.2-dev \
+            libayatana-appindicator3-dev \
             libfuse2 squashfs-tools desktop-file-utils
 
       # pipewire 太旧会在 libspa 编译期才炸（一次 CI 往返十几分钟），这里先亮版本。

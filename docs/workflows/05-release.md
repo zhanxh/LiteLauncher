@@ -74,7 +74,8 @@ tag 与 `package.json` 不一致时，Release 工作流会在第一步直接失�
       `*-setup.exe`、后者指向 `*.AppImage.tar.gz`，`signature` 都是同名 `.sig` 全文
 - [ ] 旧版本客户端能检测到新版本并完成更新（Linux 只有 `.AppImage` 那份能自动更新，
       `.deb` 装的会因 payload 不是 deb 而报 `InvalidUpdaterFormat`，需手动重装）
-- [ ] 需要时把 `release/plugins` 部署到目标机 `~/.local/share/LiteLauncher/extplugins/`（`.deb` 不含外部插件）
+- [ ] `.deb` 自带 `release/plugins`（装在 `usr/lib/LiteLauncher/plugins/`，即两级部署的便携层），
+      装完即可用全部插件；只有需要覆盖同名插件时才往 `~/.local/share/LiteLauncher/extplugins/` 放
 
 ## 6. 回滚
 

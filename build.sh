@@ -166,6 +166,15 @@ node tools/deploy-portable-plugins.mjs
 # 发布流水线用 SHIP_BUNDLES=deb,appimage 显式加上 appimage —— Tauri 在 Linux 上的
 # 自动更新只认 AppImage（deb 不是 updater 载体），缺它就没有 linux-x86_64 更新条目。
 if (( SHIP )) && [[ "$(uname -s)" == "Linux" ]]; then
+    # tray-icon 让 tauri-cli 在打包期用 pkg-config 探 appindicator 的 libdir（写 deb
+    # Depends、往 AppImage 里塞 .so）。这不是编译依赖，上面那份预检查不到它；缺了也不
+    # 报「缺依赖」，而是 release 全编完（CI 上 7 分钟）才 panic
+    # "Can't detect any appindicator library"。在这里先亮出来。
+    if ! pkg-config --exists ayatana-appindicator3-0.1 2>/dev/null; then
+        echo "[错误] 打包需要 libayatana-appindicator3-dev（pkg-config 模块 ayatana-appindicator3-0.1）"
+        echo "       sudo apt-get install -y libayatana-appindicator3-dev"
+        exit 1
+    fi
     npx tauri build --bundles "${SHIP_BUNDLES:-deb}"
 else
     npx tauri build --no-bundle
@@ -180,8 +189,8 @@ echo "[4/4] 完成。可分发内容："
 echo "  release/LiteLauncher        主程序（内置：todo/apps/ai；notes 为 native 插件）"
 echo "  release/plugins/            外部插件（便携部署，随程序分发）"
 
-# deb 里只有主程序，外部插件不在包内：装完要把 release/plugins/ 放到
-# ~/.local/share/LiteLauncher/extplugins/（用户安装目录，见 src-tauri/src/lib.rs 的两级部署）
+# deb 装的是整个应用目录：主程序 + bundle.resources 里的 release/plugins/（0.2.1 实测
+# 149 个插件文件在包内），但 Depends 只列 Tauri 探到的那几个库。
 if (( SHIP )) && [[ "$(uname -s)" == "Linux" ]]; then
     echo "  src-tauri/target-ship/release/bundle/deb/*.deb   安装包"
     if ! ls src-tauri/target-ship/release/bundle/deb/*.deb >/dev/null 2>&1; then

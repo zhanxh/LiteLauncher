@@ -8,6 +8,11 @@
 
 ## [Unreleased]
 
+### Internal
+
+- Release 流水线 linux job 补上打包期硬依赖 `libayatana-appindicator3-dev`：Tauri 开了 `tray-icon`，CLI 在 bundle 阶段用 `pkg-config` 探 `ayatana-appindicator3-0.1` 的 libdir（写 deb 的 `Depends`、往 AppImage 里塞 `.so`），v0.2.4 因此在 release 全编完 7 分钟后 panic `Can't detect any appindicator library`（exit 134）。`build.sh` 同步加一道 ship 前置检查（非 ship 路径不受影响，它不是编译依赖），失败信息直接给出 apt 命令。
+- 更正三条关于 `.deb` 内容的过期记载（README「平台差异」、`05-release.md` §5/§7、`build.sh` 产物提示）：`dpkg-deb -c` 实测 0.2.1 的包内有 149 个 `usr/lib/LiteLauncher/plugins/` 文件——`bundle.resources` 把 `release/plugins/` 一起打了进去，那正是两级部署的「便携目录（主程序旁 plugins）」一层，装完不需要再往 `extplugins/` 拷贝；原文写成「deb 只含主程序」会让发布后抽查去做多余的一步。`Depends` 仍只是 Tauri 探到的短列表，不覆盖 pipewire/gbm 这类运行期依赖，这点没变。
+
 ## [0.2.4] - 2026-10-31
 
 ### Internal

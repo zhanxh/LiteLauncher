@@ -397,7 +397,7 @@ Linux 上只认 AppImage 作为更新载体。日常构建仍然 `--no-bundle`�
   ldd LiteLauncher | grep "not found"
   ```
   真正决定能不能跑的是 webkit/GTK 那一坨：`libwebkit2gtk-4.1`、`libjavascriptcoregtk-4.1`、`libgtk-3`、`libsoup-3.0`、`libgbm1`、GStreamer、`libicu72`。带桌面的 Debian/Ubuntu 一般自带，精简镜像未必；`libicu72`、`libsoup-3.0` 这类 soname 里焊了版本号，跨发行版（如 Ubuntu 24.04 是 `libicu74`）会直接加载失败 —— 要跨发行版就取 Release 里的 `.AppImage`（依赖自带，也是 Linux 的更新载体；本地自打用 `--bundles appimage`，代价是首次要联网下 linuxdeploy）。
-- **`.deb` 里只有主程序**，外部插件不在包内：装完把 `release/plugins/` 放到 `~/.local/share/LiteLauncher/extplugins/`（两级部署见 `src-tauri/src/lib.rs:194`）。Python 类插件（pomo 等）还要求目标机 PATH 上有 `python3`（`src-tauri/crates/ll-host/src/python.rs:161`）。
+- **`.deb` 装的是整个应用目录**：主程序 + `bundle.resources` 里的 `release/plugins/`（0.2.1 实测 149 个插件文件在包内），落在 `usr/lib/LiteLauncher/plugins/`，正是两级部署里的「便携目录（主程序旁 plugins）」一层（见 `src-tauri/src/lib.rs:336`）。`~/.local/share/LiteLauncher/extplugins/` 只是用户自行覆盖用的，同名优先，**不装也能跑全套插件**。Python 类插件（pomo 等）仍要求目标机 PATH 上有 `python3`（`src-tauri/crates/ll-host/src/python.rs:161`）。
 
 ### 4. 排障日志
 - `lifecycle.log`：生成在 exe 同目录。默认 `info`（启动/迁移/插件 init/热键），`LL_LOG=debug` 才记录窗口尺寸、焦点、IPC 与前端 console；`LL_LOG=off` 全关。超过 2 MB 时启动自动轮转为 `lifecycle.log.1`（只保留一份）。
