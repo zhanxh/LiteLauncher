@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-10-31
+
 ### Internal
 
 - Linux 的 updater 载体从 `*.AppImage.tar.gz` 改成 `*.AppImage`：v0.2.5 的 linux job 第一次把 deb(10.87 MiB) 与 AppImage(101.70 MiB) 都构建并签名成功，却卡在这一步——Tauri v2 的 `createUpdaterArtifacts` 只签安装包本体，Linux 侧产的是 `LiteLauncher_<ver>_amd64.AppImage` + 同名 `.sig`，v1 时代的 `.AppImage.tar.gz` 根本不生成，`make-latest-json.mjs` 因此找不到载体而 exit 1。读 `tauri-plugin-updater` 的 `install_appimage` 确认客户端两种 payload 都收（gzip 解 tar、ELF 直接覆写当前 AppImage），指向裸 `.AppImage` 是正确形状。`tools/make-latest-json.mjs` 的 linux 载体后缀、release.yml 的 upload/资产 glob、`build.sh` 的 ship 校验（改查 `*.AppImage.sig`）与四份文档同步跟着改。
