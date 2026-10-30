@@ -91,8 +91,10 @@ tag 与 `package.json` 不一致时，Release 工作流会在第一步直接失�
 
 Linux 的更新载体只能是 AppImage：Tauri 的 updater 在 Linux 上只认 AppImage，`.deb` 不是载体，
 所以 `latest.json` 的 `linux-x86_64.url` 指向 `.AppImage.tar.gz`；`.deb` 供人工 `apt` 安装。
-`.deb` 只含主程序，`Depends` 是 Tauri 探模块写的短列表；新接原生依赖时要重跑
-`ldd` 与 `Depends` 闭包对账（完整脚本见根 `README.md`）。
+`.deb` 装的是 `usr/lib/LiteLauncher/` 下的整个应用目录（主程序 + `plugins/` 全部产物，
+0.2.1 实测 149 个插件文件在包内），`Depends` 却是 Tauri 探模块写的短列表
+（`libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0`），并不覆盖 pipewire/gbm 这类
+运行期依赖；新接原生依赖时要重跑 `ldd` 与 `Depends` 闭包对账（完整脚本见根 `README.md`）。
 
 CI 的 `linux` job 跑在 `debian:bookworm` 容器里（宿主 `ubuntu-24.04`），而不是直接用
 Ubuntu runner 镜像，两个原因叠在一起：`xcap → libspa-sys` 要 pipewire ≥ 0.3.6x 的头文件，
@@ -100,3 +102,6 @@ jammy 最高只有 0.3.48（编译期缺 `spa_meta_first` / `spa_video_info_raw.
 但把 glibc 抬到 2.39，产物连开发机（Debian 12，glibc 2.36）都跑不起来、更新链路无从自测。
 bookworm 同时满足两点；容器里 `apt` 直接以 root 跑（无 sudo），且因为不挂 `/dev/fuse`，
 必须给 job 设 `APPIMAGE_EXTRACT_AND_RUN=1`，否则 linuxdeploy/appimagetool 自己就起不来。
+另一个容器特有的坑：镜像里没有 bash，Actions 于是把默认 shell 退成 `sh -e {0}`，
+「容器引导」这一步（要装 git/xz/zstd/bash）自己就得写成 POSIX——`set -euo pipefail`
+在 dash 里是非法选项，0 秒退出，连 bash 都装不上；它之后的步骤才统一 `shell: bash`。
