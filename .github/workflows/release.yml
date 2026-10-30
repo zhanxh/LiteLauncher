@@ -175,6 +175,5 @@ jobs:
             latest.json
             src-tauri/target-ship/release/bundle/nsis/*.exe
             src-tauri/target-ship/release/bundle/nsis/*.sig
-            src-tauri/target-ship/release/bundle/nsis/*.nsis.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

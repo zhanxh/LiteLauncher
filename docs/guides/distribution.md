@@ -7,7 +7,7 @@
 | 便携 exe | `release/LiteLauncher.exe` | 仍需旁边有 `plugins/` |
 | 便携插件 | `release/plugins/` | 可分发包；安装包会把它放到 `$INSTDIR/plugins` |
 | NSIS 安装包 | `src-tauri/target-ship/release/bundle/nsis/*.exe` | `build.cmd ship` |
-| 更新包 | 同目录 `*.nsis.zip` + `.sig` | Tauri `createUpdaterArtifacts` |
+| 更新包 | 同目录 `*-setup.exe.sig`（对安装包本体签名） | Tauri `createUpdaterArtifacts: true` |
 | 更新清单 | `latest.json` | Release 工作流生成 |
 
 `build.cmd ship` 会先部署 `release/plugins`，再执行 `tauri build --bundles nsis`，

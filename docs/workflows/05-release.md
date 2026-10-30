@@ -66,13 +66,13 @@ tag 与 `package.json` 不一致时，Release 工作流会在第一步直接失�
 
 - [ ] Release 页面有 `LiteLauncher.exe`、`plugins.zip`、`latest.json` 与 NSIS 安装包
 - [ ] 安装包在干净机器可装可启动（不要求 Python，纯前端插件已编进前端包）
-- [ ] `latest.json` 的 `url` 指向 `.nsis.zip`，`signature` 是 `.sig` 全文
+- [ ] `latest.json` 的 `url` 指向 `*-setup.exe`，`signature` 是同名 `.sig` 全文
 - [ ] 旧版本客户端能检测到新版本并完成更新
 - [ ] 需要时把 `release/plugins` 部署到目标机 `~/.local/share/LiteLauncher/extplugins/`（`.deb` 不含外部插件）
 
 ## 6. 回滚
 
-1. 把 `latest.json` 指回上一个版本的 zip 与签名，重新上传到 Release 资产；
+1. 把 `latest.json` 指回上一个版本的安装包与签名，重新上传到 Release 资产；
 2. 不删除 tag 与安装包，保留可追溯记录；
 3. 需要撤销功能时，发一个更高的修订版本（patch），而不是改写已发布的历史。
 

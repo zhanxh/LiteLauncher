@@ -64,7 +64,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/zhanxiaohai/LiteLauncher/releases/latest/download/latest.json"
+        "https://github.com/zhanxh/LiteLauncher/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDA3NjJFRjg1QjRGNTEwMkQKUldRdEVQVzBoZTlpQnlHaTduRXlsQ2hVeHM5R3ErMC9qd0FxYk9HWFRwRjRMbUdJR2JYekI0NkYK"
     }

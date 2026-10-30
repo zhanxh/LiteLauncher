@@ -26,7 +26,7 @@
 | 便携 exe | `release/LiteLauncher.exe` | 仍需旁边有 `plugins/` |
 | 便携插件 | `release/plugins/`（Release 里打包为 `plugins.zip`） | 外部插件随包分发 |
 | NSIS 安装包 | `src-tauri/target-ship/release/bundle/nsis/*.exe` | `build.cmd ship` |
-| 更新包 | 同目录 `*.nsis.zip` + `.sig` | Tauri updater artifacts |
+| 更新包 | 同目录 `*-setup.exe.sig`（对安装包本体签名） | Tauri `createUpdaterArtifacts: true` |
 | 更新清单 | `latest.json` | `tools/make-latest-json.mjs` 生成 |
 
 ## 四、发布

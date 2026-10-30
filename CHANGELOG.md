@@ -8,6 +8,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 默认更新源 owner 笔误修正：`plugins.updater.endpoints` 原写 `github.com/zhanxiaohai/...`（那是 gitcode 侧的仓库路径），GitHub 上本仓库是 `zhanxh/LiteLauncher`，端点 404 会让本地/未过发布流水线的构建「检查更新」必然失败。CI 里 `tools/release-config.mjs --owner/--repo` 会覆盖它，所以只有非 CI 产物受影响。
+- 适配 Tauri v2 的 updater 产物形状：`createUpdaterArtifacts: true` 不再产出 `*-setup.nsis.zip`，而是对安装包本体 `*-setup.exe` 直接签名（`.exe.sig`）。`tools/make-latest-json.mjs` 此前硬找 `.nsis.zip`，Release 流水线在「生成 latest.json」一步必然 exit 1；现在按「存在同名 `.sig` 的产物」选取（优先 legacy zip，回退安装包 exe），发布清单同步去掉 `*.nsis.zip` glob。三份文档（分发手册、版本与发布规范、发布工作流）的产物表随改。
+
 ## [0.2.1] - 2026-10-27
 
 ### Internal

@@ -7,8 +7,10 @@
  *     --bundle-dir src-tauri/target-ship/release/bundle/nsis \
  *     --out latest.json
  *
- * Tauri 在 createUpdaterArtifacts 打开时会产出 `<installer>.nsis.zip` 与 `.sig`；
- * latest.json 的 url 必须指向 zip，签名取 .sig 全文。
+ * Tauri v2 的 `createUpdaterArtifacts: true` 直接复用安装包本体作为更新载体：
+ * Windows 下产出 `<installer>.exe` 与同名 `.sig`（旧的 `<installer>.nsis.zip` 只在
+ * `createUpdaterArtifacts: "v1Compatible"` 下生成，该选项将在 v3 移除）。
+ * latest.json 的 url 必须指向被签名的那个文件，签名取对应 `.sig` 全文。
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -35,19 +37,22 @@ if (!existsSync(bundleDir)) {
 }
 
 const files = readdirSync(bundleDir);
-const zip = files.find((f) => f.endsWith('.nsis.zip'));
-if (!zip) {
-  console.error(`没有找到 *.nsis.zip（Tauri updater artifact）: ${bundleDir}`);
+const signed = files.filter(
+  (f) => (f.endsWith('.nsis.zip') || f.endsWith('.exe')) && files.includes(`${f}.sig`),
+);
+if (signed.length === 0) {
+  console.error(
+    `没有找到带同名 .sig 的 updater artifact（*.nsis.zip 或 *-setup.exe）: ${bundleDir}\n` +
+      `目录内容: ${files.join(', ') || '(空)'}`,
+  );
+  console.error('若只有 .exe 没有 .sig，检查 TAURI_SIGNING_PRIVATE_KEY 是否配置');
   process.exit(1);
 }
-const sig = files.find((f) => f === `${zip}.sig`);
-if (!sig) {
-  console.error(`没有找到 ${zip}.sig，检查 TAURI_SIGNING_PRIVATE_KEY 是否配置`);
-  process.exit(1);
-}
+const artifact = signed.find((f) => f.endsWith('.nsis.zip')) ?? signed.find((f) => f.endsWith('.exe'));
+const sig = `${artifact}.sig`;
 
 const tag = `v${version}`;
-const downloadUrl = `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(zip)}`;
+const downloadUrl = `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(artifact)}`;
 const manifest = {
   version,
   notes,
@@ -60,5 +65,5 @@ const manifest = {
   },
 };
 writeFileSync(out, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-console.log(`[latest-json] ${version} → ${zip}`);
+console.log(`[latest-json] ${version} → ${artifact}`);
 console.log(`[latest-json] ${downloadUrl}`);
