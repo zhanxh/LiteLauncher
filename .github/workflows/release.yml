@@ -193,10 +193,13 @@ jobs:
       # actions/checkout 要 git，setup-node 解 node 压缩包要 xz，@actions/cache 压缩要 zstd。
       # Debian 镜像不带这些，必须先于 checkout 装好，否则连仓库都拉不下来。
       - name: 容器引导
+        # 这一步自己也得是 POSIX：Debian 容器里 Actions 默认用 sh -e，
+        # `set -euo pipefail` 会直接报 "set: Illegal option -o pipefail"。
         run: |
-          set -euo pipefail
+          set -eu
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git tar xz-utils zstd
+          apt-get install -y --no-install-recommends \
+            bash ca-certificates curl git tar xz-utils zstd
 
       - uses: actions/checkout@v4
 
@@ -224,6 +227,7 @@ jobs:
       # libssl-dev 给 reqwest 的 native-tls，squashfs-tools 给 appimagetool 的 mksquashfs，
       # desktop-file-utils 给 linuxdeploy 的 gtk 插件。
       - name: 安装 Linux 打包依赖
+        shell: bash
         run: |
           set -euo pipefail
           apt-get update
@@ -236,6 +240,7 @@ jobs:
       # pipewire 太旧会在 libspa 编译期才炸（一次 CI 往返十几分钟），这里先亮版本。
       # 判据来自 jammy 0.3.48 编不过、bookworm 0.3.65 编得过。
       - name: 核对 pipewire 头文件版本
+        shell: bash
         run: |
           set -euo pipefail
           v="$(pkg-config --modversion libpipewire-0.3)"
@@ -249,6 +254,7 @@ jobs:
       - run: npm run version:check
 
       - name: 校验 tag 与 package 版本一致
+        shell: bash
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
@@ -260,6 +266,7 @@ jobs:
           echo "release version=$pkg"
 
       - name: 配置更新源（owner/repo/pubkey）
+        shell: bash
         env:
           TAURI_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
         run: |
@@ -273,6 +280,7 @@ jobs:
       # 与 windows job 的预检同源，只是 bash：先规范化 secret 再试签，
       # 免得编译十分钟之后才暴露密码错或私钥被截断。
       - name: 预检更新签名私钥
+        shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -306,12 +314,14 @@ jobs:
           echo "签名自检通过"
 
       - name: 构建安装包（deb + AppImage updater 载体）
+        shell: bash
         env:
           SHIP_BUNDLES: deb,appimage
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: ./build.sh ship
 
       - name: 生成 linux 更新清单片段
+        shell: bash
         run: |
           node tools/make-latest-json.mjs \
             --platform linux-x86_64 \

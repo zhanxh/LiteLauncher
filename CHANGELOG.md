@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Internal
+
+- Release 流水线 linux job 适配 Actions 容器任务：Debian 镜像里没有 bash，容器任务的默认 shell 是 `sh -e {0}`，v0.2.3 的「容器引导」一步因此在第一行 `set -euo pipefail` 就挂了（`set: Illegal option -o pipefail`，0 秒退出）。现在引导步骤本身写成 POSIX（`set -eu`）并负责装上 `bash`，其余 linux 步骤显式 `shell: bash`。
+
 ## [0.2.3] - 2026-10-30
 
 ### Internal
