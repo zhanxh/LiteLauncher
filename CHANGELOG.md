@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-31
+
 ### Internal
 
 - Release 流水线 linux job 补上打包期硬依赖 `libayatana-appindicator3-dev`：Tauri 开了 `tray-icon`，CLI 在 bundle 阶段用 `pkg-config` 探 `ayatana-appindicator3-0.1` 的 libdir（写 deb 的 `Depends`、往 AppImage 里塞 `.so`），v0.2.4 因此在 release 全编完 7 分钟后 panic `Can't detect any appindicator library`（exit 134）。`build.sh` 同步加一道 ship 前置检查（非 ship 路径不受影响，它不是编译依赖），失败信息直接给出 apt 命令。
