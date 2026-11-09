@@ -6,6 +6,9 @@ pub mod migration;
 pub mod python_env;
 pub mod settings;
 
+#[cfg(windows)]
+mod webview_suspend;
+
 use db::DbState;
 use ll_host::{HostState, PluginDbRegistry};
 use std::path::PathBuf;
@@ -147,6 +150,7 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
     log_debug("IPC: hide_main_window called");
     if let Some(window) = app.get_webview_window("main") {
         window.hide().map_err(|e| e.to_string())?;
+        suspend_main_after_hide(&window);
     }
     Ok(())
 }
@@ -156,7 +160,48 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
 /// GTK/X11 兜底组合：重申 always-on-top（部分窗口管理器在 remap 后丢弃
 /// keep-above）、unminimize、show，并在短暂延迟后二次 set_focus
 /// （对抗 WM 的焦点抢占抑制与新映射窗口的焦点竞态）
+/// 主窗口隐藏后延迟挂起 WebView2；唤起前恢复（仅 Windows，其它平台空操作）。
+///
+/// 用代数（generation）实现取消：隐藏→30s 内又唤起时，旧定时发现代数已
+/// 变化就自行退出，不会误挂起刚显示的窗口。
+static MAIN_SUSPEND_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+const MAIN_SUSPEND_DELAY_SECS: u64 = 30;
+
+fn suspend_main_after_hide(window: &tauri::WebviewWindow) {
+    #[cfg(windows)]
+    {
+        let my_gen = MAIN_SUSPEND_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let w = window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(MAIN_SUSPEND_DELAY_SECS));
+            // 期间发生过唤起（代数变化）或窗口又可见了：放弃本次挂起
+            if MAIN_SUSPEND_GEN.load(std::sync::atomic::Ordering::SeqCst) != my_gen {
+                return;
+            }
+            if w.is_visible().unwrap_or(true) {
+                return;
+            }
+            log_debug("webview: 主窗口隐藏超时，挂起 WebView2");
+            webview_suspend::set_suspended(&w, true);
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
+fn resume_main_webview(window: &tauri::WebviewWindow) {
+    // 递增代数：取消尚在等待的挂起定时；Resume 对未挂起的 webview 无害
+    MAIN_SUSPEND_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    #[cfg(windows)]
+    webview_suspend::set_suspended(window, false);
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
 fn present_main(window: &tauri::WebviewWindow) {
+    // 挂起状态下必须先 Resume 再 show，否则页面停留在冻结帧且不响应输入
+    resume_main_webview(window);
     let _ = window.set_always_on_top(true);
     let _ = window.unminimize();
     let _ = window.show();
@@ -195,6 +240,7 @@ pub(crate) fn toggle_main_window(app: AppHandle) -> Result<(), String> {
         ));
         if is_visible && is_focused {
             window.hide().map_err(|e| e.to_string())?;
+            suspend_main_after_hide(&window);
         } else {
             if !is_visible {
                 let _ = window.center();
@@ -458,6 +504,9 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     let _ = window.hide();
+                    if let Some(wv) = window.get_webview_window("main") {
+                        suspend_main_after_hide(&wv);
+                    }
                     api.prevent_close();
                 }
             }

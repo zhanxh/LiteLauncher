@@ -33,7 +33,7 @@ ll-plugin-api = { path = "crates/ll-plugin-api" }
 ll-host = { path = "crates/ll-host" }
 ll-migrate = { path = "crates/ll-migrate" }
 ll-icons = { path = "crates/ll-icons" }
-tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
@@ -48,3 +48,13 @@ rusqlite = { version = "0.31", features = ["bundled-full"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
+
+# Windows：WebView2 挂起（ICoreWebView2_6::TrySuspend）需要，版本对齐 wry
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
+
+# DevTools 仅调试构建启用（F12 可用）；release 不带 devtools，减体积减攻击面。
+# Cargo 1.61+ 支持 cfg(debug_assertions) 条目依赖。
+[target.'cfg(debug_assertions)'.dependencies]
+tauri = { version = "2", features = ["devtools"] }

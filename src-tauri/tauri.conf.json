@@ -13,8 +13,10 @@
     "windows": [
       {
         "label": "main",
-        "title": "LiteLauncher",
         "url": "index.html?transparent=1",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disk-cache-size=33554432",
+        "title": "LiteLauncher",
+
         "width": 680,
         "height": 70,
         "decorations": false,
