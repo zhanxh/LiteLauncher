@@ -1,17 +1,19 @@
 {
   "id": "hash",
   "name": "哈希与编码",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "api_version": "^1",
   "trigger": "/hash",
-  "description": "哈希与编码工具：/hash 文本 列出全部（md5/sha1/sha256/sha512/base64/url/html/crc32），或 /hash md5 文本 只算指定项；回车复制结果。纯前端，无需 Python。",
-  "permissions": [],
+  "description": "哈希与编码工具：/hash 文本 列出全部（md5/sha1/sha256/sha512/base64/url/html/crc32），/hash 文件路径 直接计算文件内容哈希（md5/sha1/sha256/sha512/crc32），或 /hash md5 输入 只算指定项；回车复制结果。",
+  "permissions": [
+    "fs:read"
+  ],
   "backend": {
     "kind": "none"
   },
   "command": {
     "icon": "🔐",
     "action_subcommands": [],
-    "hint": "输入要处理的文本，回车复制选中结果"
+    "hint": "输入文本或文件路径，回车复制选中结果"
   }
 }

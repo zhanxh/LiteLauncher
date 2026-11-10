@@ -231,6 +231,48 @@ const calStore = {
   ],
 };
 
+// ── 文件系统能力桩（/hash 文件模式：stat 探测 + digest 单遍摘要）────────────────
+const FS_FILES = new Map([
+  // fixture 文件内容即字节内容；md5/sha 系用 node:crypto 现算，crc32 本地实现
+  ['C:\\demo\\setup.exe', Buffer.from('hello', 'utf8')],
+]);
+
+function fsCrc32(buf) {
+  const table = [];
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? (0xedb88320 ^ (c >>> 1)) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  let crc = 0xffffffff;
+  for (const b of buf) crc = (crc >>> 8) ^ table[(crc ^ b) & 0xff];
+  return ((crc ^ 0xffffffff) >>> 0).toString(16).padStart(8, '0');
+}
+
+const FS_HASH_NAMES = { md5: 'md5', sha1: 'sha1', sha256: 'sha256', sha512: 'sha512' };
+
+const FS_FIXTURE = {
+  stat(p) {
+    const buf = FS_FILES.get(p);
+    return buf
+      ? { exists: true, isFile: true, isDir: false, size: buf.length, modifiedMs: 1762100000000 }
+      : { exists: false, isFile: false, isDir: false, size: 0, modifiedMs: null };
+  },
+  digest(p, algos) {
+    const buf = FS_FILES.get(p);
+    if (!buf) throw new Error(`fixture 无此文件: ${p}`);
+    return {
+      size: buf.length,
+      digests: algos.map((algo) => {
+        if (algo === 'crc32') return { algo, hex: fsCrc32(buf) };
+        const name = FS_HASH_NAMES[algo];
+        if (!name) throw new Error(`fixture 不支持算法: ${algo}`);
+        return { algo, hex: crypto.createHash(name).update(buf).digest('hex') };
+      }),
+    };
+  },
+};
+
 // ── 壳层依赖桩 ────────────────────────────────────────────────────────────────
 const registered = [];
 const svcCalls = [];
@@ -327,6 +369,17 @@ const sdkStub = {
           svcCalls.push({ pluginId, method: 'svc.clipboard.write', params: { text } });
         },
         read: async () => (settingsStore.get('__clipboard') ?? null),
+      },
+      // 文件系统能力（fs:read/fs:write）：/hash 文件模式走 stat 探测 + digest 摘要
+      fs: {
+        stat: async (p) => {
+          svcCalls.push({ pluginId, method: 'svc.fs.stat', params: { path: p } });
+          return FS_FIXTURE.stat(p);
+        },
+        digest: async (p, algos) => {
+          svcCalls.push({ pluginId, method: 'svc.fs.digest', params: { path: p, algos } });
+          return FS_FIXTURE.digest(p, algos);
+        },
       },
       // 与真实 SDK 的 ctx.http 同构：都落到 svc.http.send，只是这里用 fixture 应答
       http: {
@@ -1428,6 +1481,39 @@ const CASES = {
       tokens: ['crc32', 'hello'],
       expect: (items) => {
         assert(items.find((i) => i.badge === 'CRC32')?.metadata?.value === '3610a686', 'CRC32 结果错');
+      },
+    },
+    {
+      // 文件全量模式：宿主 digest 桩应答，输出的是**文件内容**哈希，不是对路径字符串哈希
+      tokens: ['C:\\demo\\setup.exe'],
+      expect: (items) => {
+        const md5 = items.find((i) => i.badge === 'MD5');
+        assert(md5?.metadata?.value === '5d41402abc4b2a76b9719d911017c592', `文件 md5 应等于文件内容摘要: ${md5?.metadata?.value}`);
+        assert(items.find((i) => i.badge === 'CRC32')?.metadata?.value === '3610a686', '文件 crc32 应等于文件内容摘要');
+        assert(!items.some((i) => i.badge === 'BASE64'), '文件模式不应混入文本编码条目');
+        assert(!items.some((i) => i.badge === '长度'), '文件模式不应有“输入长度”条目');
+        const info = items.find((i) => i.badge === '文件');
+        assert(info?.description?.includes('5 B'), `文件信息条目应含大小: ${info?.description}`);
+      },
+    },
+    {
+      // 指定算法：只算这一个 + 文件信息条目
+      tokens: ['md5', 'C:\\demo\\setup.exe'],
+      expect: (items) => {
+        assert(items.length === 2, `指定算法应只输出 1 条摘要 + 1 条文件信息，实得 ${items.length}`);
+        assert(
+          items[0]?.badge === 'MD5' && items[0]?.metadata?.value === '5d41402abc4b2a76b9719d911017c592',
+          `指定算法应输出该算法的文件摘要: ${JSON.stringify(items[0])}`,
+        );
+      },
+    },
+    {
+      // 路径不存在：回落文本模式 + 解释条目
+      tokens: ['C:\\demo\\missing.exe'],
+      expect: (items) => {
+        assert(items.some((i) => i.badge === 'MD5'), '路径不存在应回落文本模式');
+        const hint = items.find((i) => i.badge === '提示');
+        assert(hint?.description?.includes('路径不存在'), `应有“路径不存在”解释: ${hint?.description}`);
       },
     },
   ],

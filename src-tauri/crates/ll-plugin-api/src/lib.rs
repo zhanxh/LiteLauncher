@@ -982,6 +982,123 @@ pub trait HttpApi: Send + Sync {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 文件系统能力（`fs:read` / `fs:write` 权限，逐项声明、无通配）
+//
+// 与 db（SQLite 读写）、window（UI 创建）同级的宿主能力：插件前端没有文件 IO
+// 途径（WebView 拒绝 `file://` 跨源读取），需要碰文件的插件都走这条通道。
+//
+// 权限模型：读（stat/read/list/digest）与写（write/mkdir/remove）分别授权，
+// 与 `clipboard:read/write` 同构；至少声明一项宿主才注入句柄。
+// 路径不做沙箱——信任模型与 `process`（可启动任意程序）一致：插件是用户
+// 显式安装的受信代码，安全边界是 manifest 逐权限声明，不是运行时路径白名单。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 文件元信息（`stat` 的返回；目标不存在时 `exists=false`，其余字段为零值）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsStat {
+    pub exists: bool,
+    pub is_file: bool,
+    pub is_dir: bool,
+    /// 文件字节长度（目录为 0）
+    pub size: u64,
+    /// 最后修改时间的 Unix 毫秒；取不到时为 None
+    pub modified_ms: Option<i64>,
+}
+
+/// 文本读取结果（UTF-8 宽容解码：非法字节替换为 U+FFFD）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsText {
+    pub content: String,
+    /// 文件实际字节长度（`content` 因解码与截断可能与它不一致）
+    pub size: u64,
+    /// 超过 max_bytes 被截断时为 true
+    pub truncated: bool,
+}
+
+/// 二进制读取结果（base64 过 JSON IPC；仅适合小文件，上限由宿主硬顶）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsBinary {
+    pub base64: String,
+    pub size: u64,
+    pub truncated: bool,
+}
+
+/// 目录条目
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsEntry {
+    pub name: String,
+    pub is_dir: bool,
+    /// 文件字节长度（目录为 0）
+    pub size: u64,
+}
+
+/// 目录列举结果（超出宿主上限时截断并标记）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsListing {
+    pub entries: Vec<FsEntry>,
+    pub truncated: bool,
+}
+
+/// 单算法摘要结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsDigestItem {
+    /// 归一化算法名（小写、去 `-`/`_`）：md5 / sha1 / sha256 / sha512 / crc32
+    pub algo: String,
+    /// 小写十六进制摘要
+    pub hex: String,
+}
+
+/// 文件摘要结果（一次顺序读同时算请求的全部算法）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsDigest {
+    /// 文件字节长度
+    pub size: u64,
+    pub digests: Vec<FsDigestItem>,
+}
+
+/// 文件系统服务：读类方法需 `fs:read`，写类方法需 `fs:write`
+pub trait FsApi: Send + Sync {
+    /// 元信息；目标不存在返回 `exists:false`（探测语义，不报错）
+    fn stat(&self, path: &str) -> Result<FsStat, PluginError>;
+    /// 读 UTF-8 文本；`max_bytes` 传 0 取宿主默认，超出被截断并标记
+    fn read_text(&self, path: &str, max_bytes: u64) -> Result<FsText, PluginError>;
+    /// 读二进制为 base64；`max_bytes` 传 0 取宿主默认（小文件专用）
+    fn read_base64(&self, path: &str, max_bytes: u64) -> Result<FsBinary, PluginError>;
+    /// 写 UTF-8 文本；`append` 追加、`mkdirs` 自动建父目录；返回写入字节数
+    fn write_text(
+        &self,
+        path: &str,
+        content: &str,
+        append: bool,
+        mkdirs: bool,
+    ) -> Result<u64, PluginError>;
+    /// 写二进制（base64 解码后落盘）；解码失败报 bad_params；返回写入字节数
+    fn write_base64(
+        &self,
+        path: &str,
+        base64: &str,
+        append: bool,
+        mkdirs: bool,
+    ) -> Result<u64, PluginError>;
+    /// 列举目录（按名称排序，超出上限截断并标记）
+    fn list(&self, path: &str) -> Result<FsListing, PluginError>;
+    /// 建目录；已存在且是目录时幂等成功
+    fn mkdir(&self, path: &str, recursive: bool) -> Result<(), PluginError>;
+    /// 删除文件或目录；`recursive=false` 时目录必须为空，`true` 才递归删除
+    fn remove(&self, path: &str, recursive: bool) -> Result<(), PluginError>;
+    /// 流式文件摘要：一次顺序读同时计算 `algos` 中的全部算法。
+    /// 支持的算法名（归一化后）：md5 / sha1 / sha256 / sha512 / crc32
+    fn digest(&self, path: &str, algos: &[String]) -> Result<FsDigest, PluginError>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 屏幕捕获（D 组）：截图与取色
 //
 // 平台 API（xcap / GDI / CGDisplay …）全部关在 ll-host 里，插件只表达
@@ -1227,6 +1344,9 @@ pub struct PluginContext {
     pub secrets: Option<Arc<dyn SecretApi>>,
     pub http: Option<Arc<dyn HttpApi>>,
     pub clipboard: Option<Arc<dyn ClipboardApi>>,
+    /// 文件系统能力：声明 `fs:read` / `fs:write` 至少一项时才注入，
+    /// 实现内按方法细分读/写权限（与 clipboard 双开关同构）
+    pub fs: Option<Arc<dyn FsApi>>,
     /// 屏幕捕获（D 组）：声明 `screen` 权限时才注入
     pub screen: Option<Arc<dyn ScreenApi>>,
     /// 全局热键（D 组）：声明 `shortcut:<accel>` 时才注入

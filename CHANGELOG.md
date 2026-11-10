@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/hash` 支持文件哈希：输入文件路径（含引号包裹的带空格路径）直接给出**文件内容**摘要（md5/sha1/sha256/sha512/crc32），回车复制；路径不存在/指向目录时回落原文本模式并提示。文件摘要由新增的框架文件读写能力承载：宿主 `svc.fs.*`（stat/readText/readBase64/writeText/writeBase64/list/mkdir/remove/digest，`fs:read`/`fs:write` 双权限门控，digest 单遍流式多算法防大文件进内存），SDK 同步暴露 `ctx.fs`，native/llp 插件经 ForwardFs 同口径转发；`/hash` 仅声明 `fs:read`（manifest 0.3.0）。
+
 ## [0.2.6] - 2026-10-31
 
 ### Internal

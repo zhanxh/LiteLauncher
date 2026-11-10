@@ -7,16 +7,21 @@ use base64::Engine as _;
 use ll_plugin_api::{
     AppliedSize, CaptureRequest, CaptureResult, CapturedRegion, ClipEntry, ClipboardApi,
     ClipboardHistoryApi, ClipboardHistoryApiExt, ClipboardPolicy, DbApi, DesktopAttachResult,
-    EventApi, ExistingPolicy, HttpApi, HttpRequest, LogApi, MonitorInfo, MonitorSelector,
+    EventApi, ExistingPolicy, FsApi, FsBinary, FsDigest, FsDigestItem, FsEntry, FsListing,
+    FsStat, FsText, HttpApi, HttpRequest, LogApi, MonitorInfo, MonitorSelector,
     NotifyApi, PixelGrid, PixelSample, PluginContext, PluginError, PluginErrorCode, PluginManifest,
     PopupPolicy, ProcessApi, Region, SavedImage, ScreenApi, SecretApi, SettingsApi, ShortcutApi,
     ViewSpec, WindowApi, WindowPosition, corner_origin, is_corner_position, label_matches_view,
     popup_policy, popup_rect_after_size, window_label,
 };
+use md5::Md5;
 use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
+use sha1::Sha1;
+use sha2::{Digest as _, Sha256, Sha512};
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::sync::atomic::AtomicBool;
 #[cfg(windows)]
 use std::sync::atomic::Ordering;
@@ -3108,6 +3113,408 @@ impl ClipboardHistoryApiExt for HostClipboardHistoryApi {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FsApi —— 文件系统能力（`fs:read` / `fs:write` 分开授权）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 读文本默认上限（防一次性把大文件搬进 JSON IPC）
+pub const FS_TEXT_DEFAULT_MAX: u64 = 2 * 1024 * 1024;
+/// 读文本硬顶（插件显式传更大的 max_bytes 也不会超过它）
+pub const FS_TEXT_HARD_MAX: u64 = 16 * 1024 * 1024;
+/// 读二进制默认上限（base64 过 IPC 有 1.33 倍膨胀，硬顶更低）
+pub const FS_BINARY_DEFAULT_MAX: u64 = 2 * 1024 * 1024;
+/// 读二进制硬顶
+pub const FS_BINARY_HARD_MAX: u64 = 8 * 1024 * 1024;
+/// 目录列举条数上限
+pub const FS_LIST_MAX_ENTRIES: usize = 10_000;
+/// digest 的读缓冲大小（一次顺序读喂全部 hasher）
+const FS_DIGEST_CHUNK: usize = 256 * 1024;
+/// digest 支持的算法清单（错误信息里回给插件）
+pub const FS_SUPPORTED_DIGESTS: &str = "md5, sha1, sha256, sha512, crc32";
+
+fn fs_clamp_max(max_bytes: u64, default_max: u64, hard_max: u64) -> u64 {
+    if max_bytes == 0 {
+        default_max
+    } else {
+        max_bytes.min(hard_max)
+    }
+}
+
+/// IEEE CRC-32（zlib 同款）。为什么手写：md5/sha1/sha2 走 RustCrypto，
+/// crc32 单独引一个 crate 不划算；20 行实现 + 标准向量单测足够可信。
+const fn crc32_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let mut c = i as u32;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 1 != 0 { 0xEDB88320 ^ (c >> 1) } else { c >> 1 };
+            k += 1;
+        }
+        table[i] = c;
+        i += 1;
+    }
+    table
+}
+
+static CRC32_TABLE: [u32; 256] = crc32_table();
+
+pub(crate) struct Crc32 {
+    state: u32,
+}
+
+impl Crc32 {
+    fn new() -> Self {
+        Self { state: 0xFFFF_FFFF }
+    }
+    fn update(&mut self, data: &[u8]) {
+        for &byte in data {
+            self.state = CRC32_TABLE[((self.state ^ byte as u32) & 0xFF) as usize] ^ (self.state >> 8);
+        }
+    }
+    fn finalize(self) -> u32 {
+        self.state ^ 0xFFFF_FFFF
+    }
+}
+
+/// 文件摘要哈希器：枚举分发而不是 dyn Digest——没有 trait-object 的装箱与
+/// 重置语义坑，且新增算法只需在此加一个分支
+enum FileHasher {
+    Md5(Md5),
+    Sha1(Sha1),
+    Sha256(Sha256),
+    Sha512(Sha512),
+    Crc32(Crc32),
+}
+
+impl FileHasher {
+    /// 算法名归一化：小写、去 `-`/`_`（`sha-256` → `sha256`）
+    fn normalize_algo(raw: &str) -> String {
+        raw.trim().to_ascii_lowercase().replace(['-', '_'], "")
+    }
+
+    fn new(algo: &str) -> Option<Self> {
+        match algo {
+            "md5" => Some(Self::Md5(Md5::new())),
+            "sha1" => Some(Self::Sha1(Sha1::new())),
+            "sha256" => Some(Self::Sha256(Sha256::new())),
+            "sha512" => Some(Self::Sha512(Sha512::new())),
+            "crc32" => Some(Self::Crc32(Crc32::new())),
+            _ => None,
+        }
+    }
+
+    fn update(&mut self, chunk: &[u8]) {
+        match self {
+            Self::Md5(h) => h.update(chunk),
+            Self::Sha1(h) => h.update(chunk),
+            Self::Sha256(h) => h.update(chunk),
+            Self::Sha512(h) => h.update(chunk),
+            Self::Crc32(h) => h.update(chunk),
+        }
+    }
+
+    fn finalize_hex(self) -> String {
+        match self {
+            Self::Md5(h) => fs_digest_hex(h.finalize()),
+            Self::Sha1(h) => fs_digest_hex(h.finalize()),
+            Self::Sha256(h) => fs_digest_hex(h.finalize()),
+            Self::Sha512(h) => fs_digest_hex(h.finalize()),
+            Self::Crc32(h) => format!("{:08x}", h.finalize()),
+        }
+    }
+}
+
+fn fs_digest_hex(bytes: impl AsRef<[u8]>) -> String {
+    bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 读文件到 max+1 字节以探测截断；返回 (内容(≤max), 文件实际字节长度, 是否截断)。
+/// 不先信 metadata.size——写一半的文件 size 可能与实际读到的不一致
+fn fs_read_capped(path: &str, max: u64) -> Result<(Vec<u8>, u64, bool), PluginError> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| PluginError::internal(format!("打开 {path} 失败: {e}")))?;
+    let size = file
+        .metadata()
+        .map(|m| m.len())
+        .map_err(|e| PluginError::internal(format!("读取 {path} 元信息失败: {e}")))?;
+    let mut buf = Vec::new();
+    file.take(max.saturating_add(1))
+        .read_to_end(&mut buf)
+        .map_err(|e| PluginError::internal(format!("读取 {path} 失败: {e}")))?;
+    let truncated = buf.len() as u64 > max;
+    if truncated {
+        buf.truncate(max as usize);
+    }
+    Ok((buf, size, truncated))
+}
+
+fn fs_write_bytes(path: &str, bytes: &[u8], append: bool, mkdirs: bool) -> Result<u64, PluginError> {
+    let target = std::path::Path::new(path);
+    if mkdirs {
+        if let Some(parent) = target.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    PluginError::internal(format!("创建父目录 {} 失败: {e}", parent.display()))
+                })?;
+            }
+        }
+    }
+    // append 与 truncate 互斥（OpenOptions 同时设置会 panic），按需二选一
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true);
+    if append {
+        opts.append(true);
+    } else {
+        opts.truncate(true);
+    }
+    let mut file = opts
+        .open(target)
+        .map_err(|e| PluginError::internal(format!("打开 {path} 失败: {e}")))?;
+    std::io::Write::write_all(&mut file, bytes)
+        .map_err(|e| PluginError::internal(format!("写入 {path} 失败: {e}")))?;
+    Ok(bytes.len() as u64)
+}
+
+fn fs_modified_ms(meta: &std::fs::Metadata) -> Option<i64> {
+    meta.modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as i64)
+}
+
+/// 文件系统能力（`fs:read` / `fs:write`）：与 HostClipboardApi 同一双开关模型——
+/// 句柄按"至少声明一项"注入，每个方法内部再校验对应权限。
+/// 路径不做沙箱：插件是用户显式安装的受信代码，安全边界在 manifest 声明。
+pub struct HostFsApi {
+    pub can_read: bool,
+    pub can_write: bool,
+}
+
+impl HostFsApi {
+    fn ensure_read(&self) -> Result<(), PluginError> {
+        if self.can_read {
+            Ok(())
+        } else {
+            Err(PluginError::permission_denied("fs:read"))
+        }
+    }
+    fn ensure_write(&self) -> Result<(), PluginError> {
+        if self.can_write {
+            Ok(())
+        } else {
+            Err(PluginError::permission_denied("fs:write"))
+        }
+    }
+}
+
+impl FsApi for HostFsApi {
+    fn stat(&self, path: &str) -> Result<FsStat, PluginError> {
+        self.ensure_read()?;
+        let path = path.trim();
+        if path.is_empty() {
+            return Err(PluginError::bad_params("path 不能为空"));
+        }
+        match std::fs::metadata(path) {
+            Ok(meta) => Ok(FsStat {
+                exists: true,
+                is_file: meta.is_file(),
+                is_dir: meta.is_dir(),
+                size: if meta.is_file() { meta.len() } else { 0 },
+                modified_ms: fs_modified_ms(&meta),
+            }),
+            // 探测语义：不存在是合法答案，不是错误（前端逐键调用做分支）
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(FsStat {
+                exists: false,
+                is_file: false,
+                is_dir: false,
+                size: 0,
+                modified_ms: None,
+            }),
+            Err(e) => Err(PluginError::internal(format!("stat {path} 失败: {e}"))),
+        }
+    }
+
+    fn read_text(&self, path: &str, max_bytes: u64) -> Result<FsText, PluginError> {
+        self.ensure_read()?;
+        let max = fs_clamp_max(max_bytes, FS_TEXT_DEFAULT_MAX, FS_TEXT_HARD_MAX);
+        let (bytes, size, truncated) = fs_read_capped(path.trim(), max)?;
+        Ok(FsText {
+            // UTF-8 宽容解码：文本插件的输入不该因为一个非法字节整体失败
+            content: String::from_utf8_lossy(&bytes).into_owned(),
+            size,
+            truncated,
+        })
+    }
+
+    fn read_base64(&self, path: &str, max_bytes: u64) -> Result<FsBinary, PluginError> {
+        self.ensure_read()?;
+        let max = fs_clamp_max(max_bytes, FS_BINARY_DEFAULT_MAX, FS_BINARY_HARD_MAX);
+        let (bytes, size, truncated) = fs_read_capped(path.trim(), max)?;
+        Ok(FsBinary {
+            base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            size,
+            truncated,
+        })
+    }
+
+    fn write_text(
+        &self,
+        path: &str,
+        content: &str,
+        append: bool,
+        mkdirs: bool,
+    ) -> Result<u64, PluginError> {
+        self.ensure_write()?;
+        fs_write_bytes(path.trim(), content.as_bytes(), append, mkdirs)
+    }
+
+    fn write_base64(
+        &self,
+        path: &str,
+        base64: &str,
+        append: bool,
+        mkdirs: bool,
+    ) -> Result<u64, PluginError> {
+        self.ensure_write()?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(base64.trim())
+            .map_err(|e| PluginError::bad_params(format!("base64 解码失败: {e}")))?;
+        fs_write_bytes(path.trim(), &bytes, append, mkdirs)
+    }
+
+    fn list(&self, path: &str) -> Result<FsListing, PluginError> {
+        self.ensure_read()?;
+        let path = path.trim();
+        let mut entries: Vec<FsEntry> = Vec::new();
+        let mut truncated = false;
+        let dir = std::fs::read_dir(path)
+            .map_err(|e| PluginError::internal(format!("读取目录 {path} 失败: {e}")))?;
+        for entry in dir {
+            // 单个条目 metadata 失败不该拖垮整个列举，按缺省值呈现
+            let Ok(entry) = entry else { continue };
+            if entries.len() >= FS_LIST_MAX_ENTRIES {
+                truncated = true;
+                break;
+            }
+            let meta = entry.metadata().ok();
+            entries.push(FsEntry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                is_dir: meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
+                size: meta
+                    .as_ref()
+                    .map(|m| if m.is_file() { m.len() } else { 0 })
+                    .unwrap_or(0),
+            });
+        }
+        // 按名排序：目录顺序平台相关，排序让前端展示与断言都稳定
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(FsListing { entries, truncated })
+    }
+
+    fn mkdir(&self, path: &str, recursive: bool) -> Result<(), PluginError> {
+        self.ensure_write()?;
+        let path = path.trim();
+        if path.is_empty() {
+            return Err(PluginError::bad_params("path 不能为空"));
+        }
+        let target = std::path::Path::new(path);
+        if target.is_dir() {
+            return Ok(()); // 幂等：目录已存在即成功
+        }
+        let result = if recursive {
+            std::fs::create_dir_all(target)
+        } else {
+            std::fs::create_dir(target)
+        };
+        result.map_err(|e| PluginError::internal(format!("创建目录 {path} 失败: {e}")))
+    }
+
+    fn remove(&self, path: &str, recursive: bool) -> Result<(), PluginError> {
+        self.ensure_write()?;
+        let path = path.trim();
+        if path.is_empty() {
+            return Err(PluginError::bad_params("path 不能为空"));
+        }
+        // symlink_metadata：链接本身按文件删，不追进去误删目标树
+        let meta = std::fs::symlink_metadata(path)
+            .map_err(|e| PluginError::internal(format!("定位 {path} 失败: {e}")))?;
+        let result = if meta.is_dir() {
+            if recursive {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_dir(path)
+            }
+        } else {
+            std::fs::remove_file(path)
+        };
+        result.map_err(|e| PluginError::internal(format!("删除 {path} 失败: {e}")))
+    }
+
+    fn digest(&self, path: &str, algos: &[String]) -> Result<FsDigest, PluginError> {
+        self.ensure_read()?;
+        let path = path.trim();
+        if path.is_empty() {
+            return Err(PluginError::bad_params("path 不能为空"));
+        }
+        // 归一化 + 保序去重：同一算法不重复喂数据
+        let mut normalized: Vec<String> = Vec::with_capacity(algos.len());
+        for raw in algos {
+            let algo = FileHasher::normalize_algo(raw);
+            if algo.is_empty() || normalized.contains(&algo) {
+                continue;
+            }
+            normalized.push(algo);
+        }
+        if normalized.is_empty() {
+            return Err(PluginError::bad_params(format!(
+                "缺少算法参数，支持: {FS_SUPPORTED_DIGESTS}"
+            )));
+        }
+        let mut hashers: Vec<(String, FileHasher)> = Vec::with_capacity(normalized.len());
+        for algo in &normalized {
+            match FileHasher::new(algo) {
+                Some(h) => hashers.push((algo.clone(), h)),
+                None => {
+                    return Err(PluginError::bad_params(format!(
+                        "不支持的摘要算法 {algo:?}，支持: {FS_SUPPORTED_DIGESTS}"
+                    )));
+                }
+            }
+        }
+        let mut file = std::fs::File::open(path)
+            .map_err(|e| PluginError::internal(format!("打开 {path} 失败: {e}")))?;
+        let size = file
+            .metadata()
+            .map(|m| m.len())
+            .map_err(|e| PluginError::internal(format!("读取 {path} 元信息失败: {e}")))?;
+        // 单遍流式：`/hash <文件>` 默认要 5 种算法，逐算法各读一遍是 5 次 IO，
+        // 一次顺序读喂全部 hasher 才是文件哈希该有的成本
+        let mut buf = vec![0u8; FS_DIGEST_CHUNK];
+        loop {
+            let n = file
+                .read(&mut buf)
+                .map_err(|e| PluginError::internal(format!("读取 {path} 失败: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            for (_, h) in hashers.iter_mut() {
+                h.update(&buf[..n]);
+            }
+        }
+        Ok(FsDigest {
+            size,
+            digests: hashers
+                .into_iter()
+                .map(|(algo, h)| FsDigestItem { algo, hex: h.finalize_hex() })
+                .collect(),
+        })
+    }
+}
+
+
 /// 分发一个 `svc.*` 调用。method 非法或对应权限未声明时返回结构化错误。
 ///
 /// `caller` 是**发起这次 IPC 的窗口标签**，由命令层从 Tauri 的请求里取，
@@ -3593,6 +4000,90 @@ pub fn dispatch_svc(
             Ok(to_json(&hist.policy())?)
         }
 
+        // ── 文件系统（fs:read / fs:write 分开授权，句柄内按方法细分）────────
+        "svc.fs.stat" => {
+            let fs = ctx
+                .fs
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("fs:read / fs:write"))?;
+            let path = p_str("path").ok_or_else(|| PluginError::bad_params("缺少 path"))?;
+            Ok(to_json(&fs.stat(&path)?)?)
+        }
+        "svc.fs.readText" => {
+            let fs = ctx
+                .fs
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("fs:read"))?;
+            let path = p_str("path").ok_or_else(|| PluginError::bad_params("缺少 path"))?;
+            // 0 = 用宿主默认上限；显式传值也会被硬顶夹住
+            let max_bytes = params.get("maxBytes").and_then(|v| v.as_u64()).unwrap_or(0);
+            Ok(to_json(&fs.read_text(&path, max_bytes)?)?)
+        }
+        "svc.fs.readBase64" => {
+            let fs = ctx
+                .fs
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("fs:read"))?;
+            let path = p_str("path").ok_or_else(|| PluginError::bad_params("缺少 path"))?;
+            let max_bytes = params.get("maxBytes").and_then(|v| v.as_u64()).unwrap_or(0);
+            Ok(to_json(&fs.read_base64(&path, max_bytes)?)?)
+        }
+        "svc.fs.writeText" => {
+            let fs = ctx
+                .fs
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("fs:write"))?;
+            let path = p_str("path").ok_or_else(|| PluginError::bad_params("缺少 path"))?;
+            let content = p_str("content").ok_or_else(|| PluginError::bad_params("缺少 content"))?;
+            let bytes = fs.write_text(&path, &content, p_bool("append"), p_bool("mkdirs"))?;
+            Ok(json!(bytes))
+        }
+        "svc.fs.writeBase64" => {
+            let fs = ctx
+                .fs
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("fs:write"))?;
+            let path = p_str("path").ok_or_else(|| PluginError::bad_params("缺少 path"))?;
+            let base64 = p_str("base64").ok_or_else(|| PluginError::bad_params("缺少 base64"))?;
+            let bytes = fs.write_base64(&path, &base64, p_bool("append"), p_bool("mkdirs"))?;
+            Ok(json!(bytes))
+        }
+        "svc.fs.list" => {
+            let fs = ctx
+                .fs
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("fs:read"))?;
+            let path = p_str("path").ok_or_else(|| PluginError::bad_params("缺少 path"))?;
+            Ok(to_json(&fs.list(&path)?)?)
+        }
+        "svc.fs.mkdir" => {
+            let fs = ctx
+                .fs
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("fs:write"))?;
+            let path = p_str("path").ok_or_else(|| PluginError::bad_params("缺少 path"))?;
+            fs.mkdir(&path, p_bool("recursive"))?;
+            Ok(JsonValue::Null)
+        }
+        "svc.fs.remove" => {
+            let fs = ctx
+                .fs
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("fs:write"))?;
+            let path = p_str("path").ok_or_else(|| PluginError::bad_params("缺少 path"))?;
+            fs.remove(&path, p_bool("recursive"))?;
+            Ok(JsonValue::Null)
+        }
+        "svc.fs.digest" => {
+            let fs = ctx
+                .fs
+                .as_ref()
+                .ok_or_else(|| PluginError::permission_denied("fs:read"))?;
+            let path = p_str("path").ok_or_else(|| PluginError::bad_params("缺少 path"))?;
+            let algos = p_strings("algos");
+            Ok(to_json(&fs.digest(&path, &algos)?)?)
+        }
+
         _ => Err(PluginError::unknown_method(method)),
     }
 }
@@ -3947,5 +4438,208 @@ mod screenshot_cleanup_tests {
             .count();
         assert_eq!(remaining, 500);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+#[cfg(test)]
+mod fs_api_tests {
+    use base64::Engine as _;
+    use super::{Crc32, HostFsApi, crc32_table};
+    use ll_plugin_api::{FsApi, PluginErrorCode};
+
+    fn api() -> HostFsApi {
+        HostFsApi {
+            can_read: true,
+            can_write: true,
+        }
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ll-fs-test-{name}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn crc32_matches_known_vectors() {
+        // zlib 标准向量
+        let mut h = Crc32::new();
+        h.update(b"123456789");
+        assert_eq!(h.finalize(), 0xCBF4_3926);
+        let mut h = Crc32::new();
+        h.update(b"hello");
+        assert_eq!(h.finalize(), 0x3610_A686);
+        // 空输入
+        let mut h = Crc32::new();
+        h.update(b"");
+        assert_eq!(h.finalize(), 0);
+        // 分块喂入与一次性喂入一致（覆盖缓冲边界）
+        let data: Vec<u8> = (0..=255u8).cycle().take(700 * 1024).collect();
+        let mut whole = Crc32::new();
+        whole.update(&data);
+        let mut chunked = Crc32::new();
+        for chunk in data.chunks(64 * 1024) {
+            chunked.update(chunk);
+        }
+        assert_eq!(whole.finalize(), chunked.finalize());
+    }
+
+    #[test]
+    fn crc32_table_is_ieee() {
+        assert_eq!(crc32_table()[1], 0x7707_3096);
+    }
+
+    #[test]
+    fn digest_single_pass_matches_known_vectors() {
+        let dir = temp_dir("digest");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"hello").unwrap();
+        let algos: Vec<String> = ["md5", "sha1", "sha256", "sha512", "crc32", "SHA-256"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let out = api().digest(file.to_str().unwrap(), &algos).unwrap();
+        assert_eq!(out.size, 5);
+        let get = |name: &str| {
+            out.digests
+                .iter()
+                .find(|d| d.algo == name)
+                .map(|d| d.hex.clone())
+        };
+        assert_eq!(get("md5").as_deref(), Some("5d41402abc4b2a76b9719d911017c592"));
+        assert_eq!(get("sha1").as_deref(), Some("aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"));
+        assert_eq!(
+            get("sha256").as_deref(),
+            Some("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+        );
+        assert_eq!(
+            get("sha512").as_deref(),
+            Some("9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043")
+        );
+        assert_eq!(get("crc32").as_deref(), Some("3610a686"));
+        // 归一化去重：SHA-256 与 sha256 是同一算法，只出现一次
+        assert_eq!(out.digests.len(), 5);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn digest_empty_file_and_unknown_algo() {
+        let dir = temp_dir("digest-empty");
+        let file = dir.join("empty.bin");
+        std::fs::write(&file, b"").unwrap();
+        let out = api()
+            .digest(file.to_str().unwrap(), &["md5".to_string()])
+            .unwrap();
+        assert_eq!(out.size, 0);
+        assert_eq!(out.digests[0].hex, "d41d8cd98f00b204e9800998ecf8427e");
+        let err = api()
+            .digest(file.to_str().unwrap(), &["nope".to_string()])
+            .unwrap_err();
+        assert_eq!(err.code, PluginErrorCode::BadParams);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn text_roundtrip_and_truncation() {
+        let dir = temp_dir("text");
+        let file = dir.join("note.txt");
+        let content = "你好 LiteLauncher";
+        api().write_text(file.to_str().unwrap(), content, false, false)
+            .unwrap();
+        let out = api().read_text(file.to_str().unwrap(), 0).unwrap();
+        assert_eq!(out.content, content);
+        assert!(!out.truncated);
+        assert_eq!(out.size, content.len() as u64);
+
+        // 截断：上限 4 字节，size 始终是文件实际字节长度
+        let out = api().read_text(file.to_str().unwrap(), 4).unwrap();
+        assert!(out.truncated);
+        assert_eq!(out.size, content.len() as u64);
+        // UTF-8 宽容解码会把截断处的半个字符扩成 U+FFFD（3 字节），
+        // 所以 content 字节长度不保证 ≤ max；正确语义是：去掉尾部替换符后
+        // content 必须是原内容的前缀
+        let stem = out.content.trim_end_matches('\u{FFFD}');
+        assert!(content.starts_with(stem), "截断内容应是原内容前缀: {stem:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_base64_append_and_mkdirs() {
+        let dir = temp_dir("write");
+        let file = dir.join("nested").join("data.bin");
+        let b64 = base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3, 255]);
+        api().write_base64(file.to_str().unwrap(), &b64, false, true)
+            .unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), vec![1, 2, 3, 255]);
+        // 追加不覆盖
+        api().write_base64(file.to_str().unwrap(), &b64, true, false)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            vec![1, 2, 3, 255, 1, 2, 3, 255]
+        );
+        // 非法 base64 → bad_params
+        let err = api()
+            .write_base64(file.to_str().unwrap(), "!!!!", false, false)
+            .unwrap_err();
+        assert_eq!(err.code, PluginErrorCode::BadParams);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stat_missing_list_and_permission_split() {
+        let dir = temp_dir("stat");
+        // stat 不存在的路径：exists=false，不报错
+        let st = api().stat(dir.join("nope.txt").to_str().unwrap()).unwrap();
+        assert!(!st.exists);
+
+        std::fs::write(dir.join("b.txt"), b"12345").unwrap();
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        let listing = api().list(dir.to_str().unwrap()).unwrap();
+        let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["b.txt", "sub"], "目录列举应按名称排序");
+        assert_eq!(listing.entries[0].size, 5);
+        assert!(listing.entries[1].is_dir);
+
+        // 权限拆分：只读句柄拒绝写、只写句柄拒绝读
+        let ro = HostFsApi {
+            can_read: true,
+            can_write: false,
+        };
+        let err = ro
+            .write_text(dir.join("x.txt").to_str().unwrap(), "y", false, false)
+            .unwrap_err();
+        assert_eq!(err.code, PluginErrorCode::PermissionDenied);
+        let wo = HostFsApi {
+            can_read: false,
+            can_write: true,
+        };
+        let err = wo
+            .read_text(dir.join("b.txt").to_str().unwrap(), 0)
+            .unwrap_err();
+        assert_eq!(err.code, PluginErrorCode::PermissionDenied);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mkdir_remove_semantics() {
+        let dir = temp_dir("mkdir-remove");
+        let nested = dir.join("a").join("b");
+        api().mkdir(nested.to_str().unwrap(), true).unwrap();
+        assert!(nested.is_dir());
+        // 幂等
+        api().mkdir(nested.to_str().unwrap(), true).unwrap();
+        // 非递归建多级 → 报错；递归删目录树 → 成功
+        assert!(api().mkdir(dir.join("c").join("d").to_str().unwrap(), false).is_err());
+        std::fs::write(nested.join("f.txt"), b"x").unwrap();
+        // 非空目录非递归删 → 报错
+        assert!(api().remove(nested.to_str().unwrap(), false).is_err());
+        api().remove(dir.to_str().unwrap(), true).unwrap();
+        assert!(!dir.exists());
     }
 }

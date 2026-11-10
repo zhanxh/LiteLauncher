@@ -23,6 +23,7 @@
 | 文档 | 内容 | 状态 |
 | :--- | :--- | :--- |
 | [20261027_191501_qr-live-preview.md](20261027_191501_qr-live-preview.md) | 结果面板大图标行契约（`PanelItem.iconSize`）与 `/qr` 离线二维码实时预览 | 🟡 实施中（2026-10-27） |
+| [20261110_095401_fs-capability-hash-file.md](20261110_095401_fs-capability-hash-file.md) | 框架文件读写能力（`svc.fs.*`、`fs:read`/`fs:write`）与 `/hash` 文件内容哈希 | ✅ 已完成（2026-11-10） |
 
 ## 现状与历史
 

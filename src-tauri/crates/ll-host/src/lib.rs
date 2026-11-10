@@ -332,6 +332,17 @@ pub(crate) fn build_context_from_parts(
         } else {
             None
         },
+        // 文件系统能力：fs:read / fs:write 分开授权，至少声明一项才注入句柄，
+        // 实现内按方法细分（与 clipboard 双开关同构）。纯 std::fs 不需要 AppHandle，
+        // 但风险面与 db/process 同级——manifest 未声明即 None，兜底清单绝不放行。
+        fs: if granted("fs:read") || granted("fs:write") {
+            Some(Arc::new(services::HostFsApi {
+                can_read: granted("fs:read"),
+                can_write: granted("fs:write"),
+            }))
+        } else {
+            None
+        },
         secrets: if granted("secrets") {
             Some(Arc::new(services::HostSecretApi {
                 db: Arc::clone(&core_db),

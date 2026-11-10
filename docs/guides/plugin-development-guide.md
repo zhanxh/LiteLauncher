@@ -895,6 +895,8 @@ export function setup(): void {
 | `ctx.windows.setContentSize({width?, height?})` | `svc.window.setContentSize` | `windows`（且只能改自己所在视图，改高需该视图 `auto_height`） |
 | `ctx.call('svc.db.migrate' / 'svc.db.execute' / 'svc.db.query')` | 同左 | `db` |
 | `ctx.call('svc.process.launch', { target })` | 同左 | `process` |
+| `ctx.fs.stat/readText/readBase64/list/digest` | `svc.fs.*` | `fs:read`（读类） |
+| `ctx.fs.writeText/writeBase64/mkdir/remove` | `svc.fs.*` | `fs:write`（写类） |
 
 ```ts
 import { getPluginContext } from '@ll/sdk';
@@ -961,6 +963,24 @@ onSelect(结果项)  → 返回 { copy: metadata.value }
 
 需要按状态码分支时用 `ctx.http.send`（返回 `{status, body}`），例如词典要区分「404 未收录」与「网络异常」。参考实现：`plugins/weather`、`plugins/fx`、`plugins/ip`、`plugins/dict`、`plugins/tr`。
 
+#### 文件读写插件：`fs:read` / `fs:write`
+
+插件前端没有文件 IO 途径（WebView 拒绝 `file://` 跨源读取），需要碰文件一律走 `ctx.fs`。读类方法（stat / readText / readBase64 / list / digest）需 `fs:read`，写类（writeText / writeBase64 / mkdir / remove）需 `fs:write`，分开授权：
+
+```ts
+const st = await ctx.fs.stat('D:\\setup.iso');   // 不存在返回 exists:false，不抛错
+if (st.exists && st.isFile) {
+  const { digests, size } = await ctx.fs.digest('D:\\setup.iso', ['md5', 'sha256', 'crc32']);
+  // 宿主一次顺序读同时算全部算法（256 KiB 缓冲流式），GB 级文件也不会整块进内存/IPC
+}
+await ctx.fs.writeText('D:\\out\\a.txt', '内容', { mkdirs: true });
+```
+
+- 读有上限保护：文本/二进制缺省 2 MiB（`maxBytes` 可调，宿主硬顶 16/8 MiB，超限截断并标记 `truncated`）；大文件请走 `digest`（流式）或 `stat`；
+- `stat` 是探测语义（不存在返回 `exists:false`，逐键调用也无妨）；读/写失败抛带路径与原因的可读错误；
+- 路径不做沙箱：与 `process` 同一信任模型（插件是用户显式安装的受信代码），安全边界是 manifest 逐权限声明——只读文件（如算哈希）只声明 `fs:read`；
+- 参考实现：`plugins/hash`（文件内容哈希，`/hash <文件路径>`）。
+
 ### 11.5 权限门控怎么生效（重要）
 
 宿主对 `svc.*` 构造门控上下文时按插件是否在注册表中分两种情况：
@@ -970,7 +990,7 @@ onSelect(结果项)  → 返回 { copy: metadata.value }
 | manifest 能被宿主读到（部署在 plugins/ 里） | 严格按 `manifest.permissions` 门控 |
 | manifest 读不到（只随前端包编译进来） | 退回 `shell_safe_manifest`：仅 `settings / clipboard:* / notifications / events`，**db / process / net 一律拒绝** |
 
-因此**只要用到 `db` / `process` / `net:*`，就必须把 manifest 部署到宿主能看到的地方**：
+因此**只要用到 `db` / `process` / `net:*` / `fs:*`，就必须把 manifest 部署到宿主能看到的地方**：
 
 ```bash
 npm run plugin:install -- myplug              # 用户目录

@@ -361,12 +361,116 @@ export interface PluginClipboardHistory {
   policy(): Promise<ClipboardPolicy>;
 }
 
+/** 文件元信息（`fs.stat` 的返回；目标不存在时 `exists=false`） */
+export interface FsStat {
+  exists: boolean;
+  isFile: boolean;
+  isDir: boolean;
+  /** 文件字节长度（目录为 0） */
+  size: number;
+  /** 最后修改时间的 Unix 毫秒；取不到时为 null */
+  modifiedMs: number | null;
+}
+
+/** 文本读取结果（UTF-8 宽容解码：非法字节替换为 U+FFFD） */
+export interface FsReadTextResult {
+  content: string;
+  /** 文件实际字节长度（content 因解码与截断可能与它不一致） */
+  size: number;
+  /**
+   * 超过 maxBytes 被截断时为 true。此时 content 是前 max 字节的宽容解码：
+   * 截断处的半字符会扩成 U+FFFD（3 字节），所以 content 字节长度可能略大于 maxBytes。
+   */
+  truncated: boolean;
+}
+
+/** 二进制读取结果（base64 过 JSON IPC；仅适合小文件，宿主有硬顶） */
+export interface FsReadBinaryResult {
+  base64: string;
+  size: number;
+  truncated: boolean;
+}
+
+/** 写入回执：实际写入字节数 */
+export interface FsWriteResult {
+  bytes: number;
+}
+
+/** 目录条目 */
+export interface FsEntry {
+  name: string;
+  isDir: boolean;
+  size: number;
+}
+
+/** 目录列举结果（超出宿主上限时截断并标记） */
+export interface FsListResult {
+  entries: FsEntry[];
+  truncated: boolean;
+}
+
+/** 单算法摘要 */
+export interface FsDigestItem {
+  /** 归一化算法名（小写、去 `-`/`_`）：md5 / sha1 / sha256 / sha512 / crc32 */
+  algo: string;
+  /** 小写十六进制摘要 */
+  hex: string;
+}
+
+/** 文件摘要结果（宿主一次顺序读同时算全部请求算法，大文件不会整块进内存/IPC） */
+export interface FsDigestResult {
+  /** 文件字节长度 */
+  size: number;
+  digests: FsDigestItem[];
+}
+
+export interface FsReadOptions {
+  /** 字节上限；缺省取宿主默认（文本/二进制各 2 MiB），显式传值也有宿主硬顶 */
+  maxBytes?: number;
+}
+
+export interface FsWriteOptions {
+  /** 追加而非覆盖（默认覆盖） */
+  append?: boolean;
+  /** 父目录不存在时自动创建 */
+  mkdirs?: boolean;
+}
+
+/**
+ * 文件系统（`fs:read` / `fs:write` 权限，读/写分开授权）。
+ *
+ * 路径不做沙箱：插件是用户显式安装的受信代码，安全边界是 manifest 逐权限
+ * 声明——只读文件（如算哈希）只声明 `fs:read`，需要落盘/删除才声明 `fs:write`。
+ */
+export interface PluginFs {
+  /** 元信息；目标不存在返回 `exists=false`（探测语义，不抛错） */
+  stat(path: string): Promise<FsStat>;
+  /** 读 UTF-8 文本（非法字节替换为 U+FFFD；超限截断并标记） */
+  readText(path: string, opts?: FsReadOptions): Promise<FsReadTextResult>;
+  /** 读二进制为 base64（小文件专用） */
+  readBase64(path: string, opts?: FsReadOptions): Promise<FsReadBinaryResult>;
+  /** 写 UTF-8 文本，返回写入字节数 */
+  writeText(path: string, content: string, opts?: FsWriteOptions): Promise<FsWriteResult>;
+  /** 写二进制（base64 解码后落盘），返回写入字节数 */
+  writeBase64(path: string, base64: string, opts?: FsWriteOptions): Promise<FsWriteResult>;
+  /** 列举目录（按名称排序；超出宿主上限截断并标记） */
+  list(path: string): Promise<FsListResult>;
+  /** 建目录（已存在且是目录时幂等成功） */
+  mkdir(path: string, opts?: { recursive?: boolean }): Promise<void>;
+  /** 删除文件或目录（recursive=false 时目录必须为空） */
+  remove(path: string, opts?: { recursive?: boolean }): Promise<void>;
+  /** 流式文件摘要：一次顺序读同时计算全部算法（md5/sha1/sha256/sha512/crc32） */
+  digest(path: string, algos: string[]): Promise<FsDigestResult>;
+}
+
 export interface PluginContext {
   /** 调用本插件后端方法，或宿主保留的 `svc.*` 方法 */
   call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
 
   settings: PluginSettings;
   clipboard: PluginClipboard;
+  /** 文件系统（`fs:read` / `fs:write` 权限）；未声明时调用会抛权限错误 */
+  fs: PluginFs;
   http: PluginHttp;
   screen: PluginScreen;
   shortcuts: PluginShortcuts;
@@ -444,6 +548,72 @@ export function getPluginContext(pluginId: string): PluginContext {
         await svc('clipboard.write', { text });
       },
       read: async () => (await svc<string | null>('clipboard.read', {})) ?? null,
+    },
+    fs: {
+      stat: async (path) => {
+        // 宿主对不存在路径回结构化 exists=false；异常形状时按"不存在"兜底而不是抛错，
+        // 让调用方（如 /hash 的逐键路径探测）拿到稳定语义
+        const r = await svc<Partial<FsStat> | null>('fs.stat', { path });
+        return {
+          exists: r?.exists === true,
+          isFile: r?.isFile === true,
+          isDir: r?.isDir === true,
+          size: Number(r?.size ?? 0),
+          modifiedMs: typeof r?.modifiedMs === 'number' ? r.modifiedMs : null,
+        };
+      },
+      readText: async (path, opts = {}) => {
+        const r = await svc<FsReadTextResult | null>('fs.readText', {
+          path,
+          ...(opts.maxBytes ? { maxBytes: opts.maxBytes } : {}),
+        });
+        if (!r) throw new Error('fs.readText：宿主未返回内容');
+        return r;
+      },
+      readBase64: async (path, opts = {}) => {
+        const r = await svc<FsReadBinaryResult | null>('fs.readBase64', {
+          path,
+          ...(opts.maxBytes ? { maxBytes: opts.maxBytes } : {}),
+        });
+        if (!r) throw new Error('fs.readBase64：宿主未返回内容');
+        return r;
+      },
+      writeText: async (path, content, opts = {}) => {
+        const bytes = await svc<number | null>('fs.writeText', {
+          path,
+          content,
+          append: opts.append === true,
+          mkdirs: opts.mkdirs === true,
+        });
+        return { bytes: Number(bytes ?? 0) };
+      },
+      writeBase64: async (path, base64, opts = {}) => {
+        const bytes = await svc<number | null>('fs.writeBase64', {
+          path,
+          base64,
+          append: opts.append === true,
+          mkdirs: opts.mkdirs === true,
+        });
+        return { bytes: Number(bytes ?? 0) };
+      },
+      list: async (path) => {
+        const r = await svc<Partial<FsListResult> | null>('fs.list', { path });
+        return {
+          entries: Array.isArray(r?.entries) ? r.entries : [],
+          truncated: r?.truncated === true,
+        };
+      },
+      mkdir: async (path, opts = {}) => {
+        await svc('fs.mkdir', { path, recursive: opts.recursive === true });
+      },
+      remove: async (path, opts = {}) => {
+        await svc('fs.remove', { path, recursive: opts.recursive === true });
+      },
+      digest: async (path, algos) => {
+        const r = await svc<FsDigestResult | null>('fs.digest', { path, algos });
+        if (!r || !Array.isArray(r.digests)) throw new Error('fs.digest：宿主未返回摘要');
+        return r;
+      },
     },
     http: {
       send: async (req) => {

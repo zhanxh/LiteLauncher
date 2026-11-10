@@ -22,8 +22,9 @@
 
 use ll_plugin_abi::{LlBuf, LlHostApi, LlStatus, LL_OK};
 use ll_plugin_api::{
-    ClipboardApi, DbApi, DesktopAttachResult, EventApi, HttpApi, HttpRequest, LogApi, NotifyApi,
-    PluginContext, PluginError, PluginManifest, ProcessApi, SecretApi, SettingsApi, WindowApi,
+    ClipboardApi, DbApi, DesktopAttachResult, EventApi, FsApi, FsBinary, FsDigest, FsListing,
+    FsStat, FsText, HttpApi, HttpRequest, LogApi, NotifyApi, PluginContext, PluginError,
+    PluginManifest, ProcessApi, SecretApi, SettingsApi, WindowApi,
 };
 use serde_json::{json, Value as JsonValue};
 use std::ffi::c_void;
@@ -102,6 +103,10 @@ impl Shell {
                 .then(|| Arc::new(ForwardHttp { shell: Arc::clone(self) }) as Arc<dyn HttpApi>),
             clipboard: (granted("clipboard:write") || granted("clipboard:read"))
                 .then(|| Arc::new(ForwardClipboard { shell: Arc::clone(self) }) as Arc<dyn ClipboardApi>),
+            // fs：与宿主 build_context_from_parts 同口径——fs:read / fs:write 至少
+            // 声明一项才注入句柄，读/写细分由宿主 svc.fs.* 分发臂校验
+            fs: (granted("fs:read") || granted("fs:write"))
+                .then(|| Arc::new(ForwardFs { shell: Arc::clone(self) }) as Arc<dyn FsApi>),
             screen: None,
             shortcuts: None,
             clipboard_history: None,
@@ -228,6 +233,65 @@ impl ClipboardApi for ForwardClipboard {
         Err(PluginError::internal(
             "native 形态暂不支持 write_image（svc 通道无图片剪贴板路由）",
         ))
+    }
+}
+
+struct ForwardFs {
+    shell: Arc<Shell>,
+}
+
+impl FsApi for ForwardFs {
+    fn stat(&self, path: &str) -> Result<FsStat, PluginError> {
+        let v = shell_call!(self, "svc.fs.stat", { "path": path })?;
+        serde_json::from_value(v).map_err(|e| PluginError::internal(format!("fs.stat 返回形状错误: {e}")))
+    }
+    fn read_text(&self, path: &str, max_bytes: u64) -> Result<FsText, PluginError> {
+        let v = shell_call!(self, "svc.fs.readText", { "path": path, "maxBytes": max_bytes })?;
+        serde_json::from_value(v).map_err(|e| PluginError::internal(format!("fs.readText 返回形状错误: {e}")))
+    }
+    fn read_base64(&self, path: &str, max_bytes: u64) -> Result<FsBinary, PluginError> {
+        let v = shell_call!(self, "svc.fs.readBase64", { "path": path, "maxBytes": max_bytes })?;
+        serde_json::from_value(v).map_err(|e| PluginError::internal(format!("fs.readBase64 返回形状错误: {e}")))
+    }
+    fn write_text(
+        &self,
+        path: &str,
+        content: &str,
+        append: bool,
+        mkdirs: bool,
+    ) -> Result<u64, PluginError> {
+        let v = shell_call!(self, "svc.fs.writeText", {
+            "path": path, "content": content, "append": append, "mkdirs": mkdirs
+        })?;
+        Ok(v.as_u64().unwrap_or(0))
+    }
+    fn write_base64(
+        &self,
+        path: &str,
+        base64: &str,
+        append: bool,
+        mkdirs: bool,
+    ) -> Result<u64, PluginError> {
+        let v = shell_call!(self, "svc.fs.writeBase64", {
+            "path": path, "base64": base64, "append": append, "mkdirs": mkdirs
+        })?;
+        Ok(v.as_u64().unwrap_or(0))
+    }
+    fn list(&self, path: &str) -> Result<FsListing, PluginError> {
+        let v = shell_call!(self, "svc.fs.list", { "path": path })?;
+        serde_json::from_value(v).map_err(|e| PluginError::internal(format!("fs.list 返回形状错误: {e}")))
+    }
+    fn mkdir(&self, path: &str, recursive: bool) -> Result<(), PluginError> {
+        shell_call!(self, "svc.fs.mkdir", { "path": path, "recursive": recursive })?;
+        Ok(())
+    }
+    fn remove(&self, path: &str, recursive: bool) -> Result<(), PluginError> {
+        shell_call!(self, "svc.fs.remove", { "path": path, "recursive": recursive })?;
+        Ok(())
+    }
+    fn digest(&self, path: &str, algos: &[String]) -> Result<FsDigest, PluginError> {
+        let v = shell_call!(self, "svc.fs.digest", { "path": path, "algos": algos })?;
+        serde_json::from_value(v).map_err(|e| PluginError::internal(format!("fs.digest 返回形状错误: {e}")))
     }
 }
 
