@@ -12,6 +12,14 @@
 
 - `/hash` 支持文件哈希：输入文件路径（含引号包裹的带空格路径）直接给出**文件内容**摘要（md5/sha1/sha256/sha512/crc32），回车复制；路径不存在/指向目录时回落原文本模式并提示。文件摘要由新增的框架文件读写能力承载：宿主 `svc.fs.*`（stat/readText/readBase64/writeText/writeBase64/list/mkdir/remove/digest，`fs:read`/`fs:write` 双权限门控，digest 单遍流式多算法防大文件进内存），SDK 同步暴露 `ctx.fs`，native/llp 插件经 ForwardFs 同口径转发；`/hash` 仅声明 `fs:read`（manifest 0.3.0）。
 
+### Fixed
+
+- Windows 上插件视图全部打不开（`/note` 管理面板、`/shot` 选区、设置/欢迎窗等，日志报 `0x8007139F 组或资源的状态不是执行请求操作的正确状态`）：内存优化给主窗口声明了 `additionalBrowserArgs`（`--disk-cache-size`），而 WebView2 的浏览器进程**全应用共享**、后建窗口环境选项必须与首个窗口一致（微软文档明文行为，参考 Readest 同款案例）；Rust 侧建窗（ll-host `open_on_main` 与 settings/welcome）不带这份参数、落回 wry 默认值，主窗口起来后必被拒建。修复：新增 `ll_host::services::shared_webview_args` 运行时读 tauri.conf.json 主窗口声明（未声明返回 None，各窗口同落 wry 默认参数天然一致），所有 Rust 侧 `WebviewWindowBuilder` 建窗前统一带上同一份参数。
+- 笔记管理面板四处交互修复：① 内容根加 `ll-popup-fill-fixed` 钉成窗口高，去掉随内容增长的全局滚动（目录树、工作区各自内部滚）；② 分栏模式编辑区只保留 textarea 一条滚动条（edit-pane 不再重复出条），预览区独立滚动并按整体高度比例与编辑区双向同步（程序性滚动用 syncLock 防回声，换文件/切分栏时对齐）；③ 右键菜单对任意层级子目录补上「新建文件/新建文件夹」（落点为该目录内部）；④ 目录树支持拖拽移动——文件/文件夹拖到目录行（含根）即移动，落点高亮，过滤自身/自身子树/原父目录，打开中文件按 rel 前缀重映射（与「移动…」弹窗共用 move_entry 通道 moveEntryTo）。
+- ④ 的配套宿主改动：插件视图建窗统一 `disable_drag_drop_handler()`——默认开启的 drag-drop handler 让 wry 调 `SetAllowExternalDrop(false)` + `RegisterDragDrop` 接管窗口，WebView2 页内 HTML5 拖拽全程 🚫（tauri#8157 同款，官方文档明言该 API 是前端用 HTML5 DnD 的前提）。插件无 OS 文件拖入用法（llp 拷入安装走目录监听），统一关闭；将来要支持 OS 拖入时需先把该开关做成 ViewSpec 声明项。
+- 目录区可用性补强：① 左树与内容区之间加拖拽条（宽度钳制 190–400px，双击恢复默认 248px，拖拽期间 body 锁 col-resize 光标）；② 树行改 `width: max-content; min-width: 100%`，长文件名不再省略号截断，`.ntree-body` 自适应出横向滚动条（厚度与纵向同款 8px）。
+- 全局屏蔽 WebView2 默认右键菜单（返回/刷新/另存为/打印/检查）：壳层入口 `src/index.tsx` 对所有窗口 `contextmenu` 只 preventDefault 不拦事件，插件自绘右键（笔记目录树等）照常；笔记目录右键其他区域时同步收起自绘菜单；文本拷贝/粘贴走 Ctrl+C/V。
+
 ## [0.2.6] - 2026-10-31
 
 ### Internal

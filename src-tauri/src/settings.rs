@@ -79,13 +79,19 @@ pub async fn open_settings_window(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(
+    let mut builder = WebviewWindowBuilder::new(
         &app,
         "app-settings",
         // rounded=1：与主窗/插件窗同款圆角机制——前端 App 用 .plugin-window-root
         // 画 4px 圆角面板，四角透出桌面
         WebviewUrl::App("index.html?view=settings&rounded=1".into()),
-    )
+    );
+    // WebView2 共享浏览器进程防线：必须与主窗口同一份 additionalBrowserArgs，
+    // 否则 0x8007139F 拒建（详见 ll_host::services::shared_webview_args 文档）
+    if let Some(args) = ll_host::services::shared_webview_args(&app) {
+        builder = builder.additional_browser_args(&args);
+    }
+    builder
     .title("LiteLauncher - 设置")
     // 横版布局：左侧竖排分类导航 + 右侧内容区，宽度大于高度才摆得下
     .inner_size(800.0, 560.0)
@@ -121,7 +127,13 @@ pub async fn open_welcome_window(app: AppHandle, apps: Option<u32>) -> Result<()
         Some(count) => format!("index.html?view=welcome&apps={count}"),
         None => "index.html?view=welcome".to_string(),
     };
-    WebviewWindowBuilder::new(&app, "welcome", WebviewUrl::App(url.into()))
+    let mut builder = WebviewWindowBuilder::new(&app, "welcome", WebviewUrl::App(url.into()));
+    // WebView2 共享浏览器进程防线：必须与主窗口同一份 additionalBrowserArgs，
+    // 否则 0x8007139F 拒建（详见 ll_host::services::shared_webview_args 文档）
+    if let Some(args) = ll_host::services::shared_webview_args(&app) {
+        builder = builder.additional_browser_args(&args);
+    }
+    builder
         .title("LiteLauncher - 欢迎")
         .inner_size(720.0, 560.0)
         .resizable(false)

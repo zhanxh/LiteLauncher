@@ -639,6 +639,27 @@ fn assets_bridge_script(plugin_id: &str) -> String {
     .replace("__LL_PLUGIN_ID__", &id_json)
 }
 
+/// 主窗口（tauri.conf.json，label=main）声明的 `additionalBrowserArgs`。
+///
+/// WebView2 的浏览器进程在**整个应用内共享**（微软文档明文行为）：后建窗口的
+/// EnvironmentOptions 与已在运行的进程不一致时，建窗直接以
+/// 0x8007139F（ERROR_INVALID_STATE，"组或资源的状态不是执行请求操作的正确状态"）
+/// 拒绝。首个窗口是 main，2026-11 的内存优化给它声明了
+/// `--disk-cache-size=33554432`；此后 Rust 侧任何不带同一份参数的建窗
+/// （wry 会落到自己的默认参数）都会被共享进程拒绝——症状是**所有插件视图
+/// 打不开**（notes 管理面板、shot 选区、settings 等，lifecycle.log 有记录）。
+/// 因此 Rust 侧一切 WebviewWindowBuilder 建窗前都要带这份参数，保证与首个
+/// 窗口一致；主窗口未声明时返回 None（各窗口都落 wry 默认参数，天然一致）。
+/// `additional_browser_args` 仅 Windows 生效，其余平台为 no-op，可无条件调用。
+pub fn shared_webview_args(app: &AppHandle) -> Option<String> {
+    app.config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .and_then(|w| w.additional_browser_args.clone())
+}
+
 /// 主线程上执行的实际建窗逻辑
 fn open_on_main(
     app: &AppHandle,
@@ -778,6 +799,18 @@ fn open_on_main(
         // 注入 llBridge：薄封装宿主 IPC，全部调用走 plugin_call 应用命令（同一权限管线）
         builder = builder.initialization_script(&assets_bridge_script(plugin_id));
     }
+    // WebView2 共享浏览器进程防线：必须与主窗口同一份 additionalBrowserArgs，
+    // 否则 0x8007139F 拒建（详见 shared_webview_args 文档）
+    if let Some(args) = shared_webview_args(app) {
+        builder = builder.additional_browser_args(&args);
+    }
+    // 关掉宿主的 OS 拖放接管：默认开启的 drag-drop handler 会让 wry 调
+    // SetAllowExternalDrop(false) + RegisterDragDrop 接管窗口，WebView2 的页内
+    // HTML5 拖拽因此全程 🚫（tauri#8157 同款）。插件目前没有 OS 文件拖入窗口的
+    // 用法（llp 拷入安装走目录监听），而插件视图内的页内拖拽（如笔记树拖拽移动）
+    // 依赖原生 DnD，所以插件视图统一关闭；将来某视图要支持 OS 文件拖入时，
+    // 需把该能力做成 ViewSpec 声明项再按视图放开。
+    builder = builder.disable_drag_drop_handler();
     // 圆角窗口必须去投影：系统投影沿着**矩形窗口**画，透明四角外会套一圈
     // 方形阴影/Win11 白边，与圆角面板形状对不上（main 启动器同理用 shadow:false）。
     let shadow = if rounded {

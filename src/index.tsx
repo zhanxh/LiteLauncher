@@ -26,5 +26,11 @@ if (llUrlParams.get('rounded') === '1') {
 registerShellPlugins();
 registerBuiltinPlugins();
 void registerExternalPlugins();
+
+// WebView2 默认右键菜单（返回/刷新/另存为/打印/检查）与启动器的交互形态不符，
+// 所有窗口一律屏蔽：只拦默认菜单（preventDefault），不拦事件本身——插件自绘
+// 右键菜单（如笔记目录树）照常工作，文本拷贝/粘贴走 Ctrl+C/V。
+document.addEventListener('contextmenu', (e) => e.preventDefault());
+
 render(() => <App />, document.getElementById("root") as HTMLElement);
 console.log("src/index.tsx render call completed!");

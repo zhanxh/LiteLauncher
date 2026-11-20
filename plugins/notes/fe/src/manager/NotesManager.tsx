@@ -16,6 +16,7 @@ import {
   Match,
   Show,
   Switch,
+  createEffect,
   createSignal,
   onCleanup,
   onMount,
@@ -66,6 +67,11 @@ interface MenuItemDef {
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
+
+/** 目录区宽度（拖拽条可调；钳制与 .ntree-side 的 min/max-width 同口径） */
+const DEFAULT_TREE_WIDTH = 248;
+const TREE_WIDTH_MIN = 190;
+const TREE_WIDTH_MAX = 400;
 
 /** 浏览器预览环境（vite dev 无宿主）的静态示例树，交互全部降级展示 */
 const MOCK_TREE: TreeNode = {
@@ -126,8 +132,54 @@ export const NotesManager: Component = () => {
   const [dialogError, setDialogError] = createSignal('');
   const [showSearch, setShowSearch] = createSignal(false);
 
+  // ── 拖拽移动状态：被拖节点 + 当前落点（落点用于行高亮） ──
+  const [dragging, setDragging] = createSignal<TreeNode | null>(null);
+  const [dropTarget, setDropTarget] = createSignal<string | null>(null);
+
+  // ── 目录区宽度：左树与内容区之间的拖拽条可调，双击恢复默认 ──
+  const [treeWidth, setTreeWidth] = createSignal(DEFAULT_TREE_WIDTH);
+  let treeSideRef: HTMLElement | undefined;
+
   let textareaRef: HTMLTextAreaElement | undefined;
   let previewRef: HTMLDivElement | undefined;
+
+  // ── 分栏比例同步滚动：编辑区与预览区按整体高度比例互相同步 ──
+  // 滚动者：编辑区是 textarea 本身（edit-pane 不滚），预览区是 preview-pane；
+  // 程序性滚动会用 syncLock 挡掉回声，双 rAF 后解锁。
+  let syncLock = false;
+  const scrollRatio = (el: HTMLElement | undefined): number | null => {
+    if (!el) return null;
+    const max = el.scrollHeight - el.clientHeight;
+    return max > 0 ? el.scrollTop / max : null;
+  };
+  const applyScrollRatio = (el: HTMLElement | undefined, ratio: number) => {
+    if (!el) return;
+    const max = el.scrollHeight - el.clientHeight;
+    if (max <= 0) return;
+    syncLock = true;
+    el.scrollTop = ratio * max;
+    requestAnimationFrame(() => requestAnimationFrame(() => { syncLock = false; }));
+  };
+  const onEditorScroll = () => {
+    if (syncLock || mode() !== 'split') return;
+    const r = scrollRatio(textareaRef);
+    if (r !== null) applyScrollRatio(previewRef, r);
+  };
+  const onPreviewScroll = () => {
+    if (syncLock || mode() !== 'split') return;
+    const r = scrollRatio(previewRef);
+    if (r !== null) applyScrollRatio(textareaRef, r);
+  };
+  // 切回分栏（含首次进入）时按编辑区当前比例对齐预览区；jumpToLine 的定位
+  // 在它自己的 rAF 里后到，最终仍以编辑区实际滚动位置为准，不冲突
+  createEffect(() => {
+    if (mode() !== 'split') return;
+    requestAnimationFrame(() => {
+      if (syncLock) return;
+      const r = scrollRatio(textareaRef);
+      if (r !== null) applyScrollRatio(previewRef, r);
+    });
+  });
 
   let statusTimer: ReturnType<typeof setTimeout> | null = null;
   const flash = (msg: string) => {
@@ -156,9 +208,18 @@ export const NotesManager: Component = () => {
     const onDocClick = () => setMenu(null);
     window.addEventListener('click', onDocClick);
     window.addEventListener('blur', onDocClick);
+    // 右键其他区域（默认菜单已被壳层全局屏蔽）也应收起自绘菜单，
+    // 避免右键空白后旧菜单还挂在原地；目标在树行内时不拦（行自己的
+    // contextmenu 会开新菜单，先于本监听执行）
+    const onCtxOutside = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t?.closest('.ntree-row')) setMenu(null);
+    };
+    window.addEventListener('contextmenu', onCtxOutside);
     onCleanup(() => {
       window.removeEventListener('click', onDocClick);
       window.removeEventListener('blur', onDocClick);
+      window.removeEventListener('contextmenu', onCtxOutside);
       if (statusTimer) clearTimeout(statusTimer);
     });
   });
@@ -215,6 +276,40 @@ export const NotesManager: Component = () => {
     });
   };
 
+  // ── 拖拽移动辅助（问题4）：文件/文件夹拖到目录行即移动 ──
+  const isDescendantPath = (root: string, path: string) =>
+    path.startsWith(`${root}\\`) || path.startsWith(`${root}/`);
+  /** 落点能否接收被拖节点：必须是目录、非自身、且不落进自己的子树 */
+  const canDropOn = (dragged: TreeNode, target: TreeNode) => {
+    if (target.kind !== 'dir') return false;
+    if (dragged.path === target.path) return false;
+    if (dragged.kind === 'dir' && isDescendantPath(dragged.path, target.path)) return false;
+    return true;
+  };
+  /** 拖回当前父目录 = 无操作，静默忽略 */
+  const droppedInPlace = (dragged: TreeNode, target: TreeNode) => {
+    const parentPath = dragged.path.slice(0, dragged.path.length - dragged.name.length - 1);
+    return parentPath === target.path;
+  };
+
+  // ── 目录宽度拖拽：pointer 按下后挂窗口级 move/up，松手即拆；宽度按
+  //    TREE_WIDTH_MIN/MAX 钳制，双击分隔条恢复默认 ──
+  const startTreeResize = (e: PointerEvent) => {
+    e.preventDefault();
+    document.body.classList.add('nresizing');
+    const sideLeft = treeSideRef?.getBoundingClientRect().left ?? 0;
+    const onMove = (ev: PointerEvent) => {
+      setTreeWidth(Math.min(TREE_WIDTH_MAX, Math.max(TREE_WIDTH_MIN, ev.clientX - sideLeft)));
+    };
+    const onUp = () => {
+      document.body.classList.remove('nresizing');
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
   const toggleDir = (node: TreeNode) => {
     setSelected(node);
     setExpanded((prev) => {
@@ -262,6 +357,11 @@ export const NotesManager: Component = () => {
       setContent(text);
       setDirty(false);
       setSaveStatus('已同步');
+      // 换文件后两侧视口归零（jumpToLine 的定位在其自身 rAF 里后到，不受影响）
+      requestAnimationFrame(() => {
+        if (textareaRef) textareaRef.scrollTop = 0;
+        if (previewRef) previewRef.scrollTop = 0;
+      });
       if (jumpLine) jumpToLine(jumpLine);
     } catch (err) {
       flash(`无法打开文件: ${err}`);
@@ -380,7 +480,23 @@ export const NotesManager: Component = () => {
         { key: 'reveal-system', label: '在系统中显示' },
       ];
     }
-    // 顺序对照需求：改名、移动、删除、复制名称、复制路径、刷新目录、在系统中打开、在系统中显示
+    if (node.kind === 'dir') {
+      // 子目录（任意层级）同样能右键新建：new-file/new-folder 的落点是**该目录
+      // 内部**（runMenuAction 走 parentDirOf，目录返回自身），其余动作与文件一致
+      return [
+        { key: 'new-file', label: '新建文件' },
+        { key: 'new-folder', label: '新建文件夹' },
+        { key: 'rename', label: '改名' },
+        { key: 'move', label: '移动…' },
+        { key: 'delete', label: '删除…', danger: true },
+        { key: 'copy-name', label: '复制名称' },
+        { key: 'copy-path', label: '复制路径' },
+        { key: 'refresh', label: '刷新目录' },
+        { key: 'open-system', label: '在系统中打开' },
+        { key: 'reveal-system', label: '在系统中显示' },
+      ];
+    }
+    // 顺序对照需求：改名、移动、删除、复制名称、复制路径、在系统中打开、在系统中显示
     const items: MenuItemDef[] = [
       { key: 'rename', label: '改名' },
       { key: 'move', label: '移动…' },
@@ -388,7 +504,6 @@ export const NotesManager: Component = () => {
       { key: 'copy-name', label: '复制名称' },
       { key: 'copy-path', label: '复制路径' },
     ];
-    if (node.kind === 'dir') items.push({ key: 'refresh', label: '刷新目录' });
     items.push({ key: 'open-system', label: '在系统中打开' });
     items.push({ key: 'reveal-system', label: '在系统中显示' });
     return items;
@@ -576,6 +691,37 @@ export const NotesManager: Component = () => {
     }
   };
 
+  /** 移动条目到目标目录：宿主 move_entry + 打开中文件重映射。
+   *  右键「移动…」弹窗与树拖拽共用同一条通道；返回结构化结果，调用方各自呈现错误。 */
+  const moveEntryTo = async (
+    path: string,
+    rel: string,
+    targetDir: string,
+  ): Promise<{ ok: true; res: RenameResult } | { ok: false; error: string }> => {
+    const oldOpen = openNode();
+    try {
+      const res = await ctx.call<RenameResult>('move_entry', { path, target_dir: targetDir });
+      await loadTree();
+      // 打开中的文件重映射：移动目录时按 rel 前缀迁后代（避免 save() 写回旧路径）
+      if (oldOpen) {
+        let newOpenRel: string | null = null;
+        if (oldOpen.rel === rel) {
+          newOpenRel = findNodeByPath(tree(), res.path)?.rel ?? null;
+        } else if (oldOpen.rel.startsWith(`${rel}/`)) {
+          const freshRoot = findNodeByPath(tree(), res.path);
+          if (freshRoot) newOpenRel = freshRoot.rel + oldOpen.rel.slice(rel.length);
+        }
+        if (newOpenRel !== null) {
+          const fresh = findNodeByRel(tree(), newOpenRel);
+          if (fresh) setOpenNode(fresh);
+        }
+      }
+      return { ok: true, res };
+    } catch (err: any) {
+      return { ok: false, error: String(err?.message || err) };
+    }
+  };
+
   const submitMove = async () => {
     const d = dialog();
     if (!d || d.kind !== 'move') return;
@@ -586,35 +732,49 @@ export const NotesManager: Component = () => {
     }
     setDialogBusy(true);
     setDialogError('');
-    try {
-      if (!isTauri()) {
-        flash('[预览] 移动');
-        setDialog(null);
-        return;
-      }
-      const oldOpen = openNode();
-      const res = await ctx.call<RenameResult>('move_entry', { path: d.path, target_dir: target });
-      await loadTree();
+    if (!isTauri()) {
+      flash('[预览] 移动');
       setDialog(null);
-      // 打开中的文件重映射：移动目录时按 rel 前缀迁后代（避免 save() 写回旧路径）
-      if (oldOpen) {
-        let newOpenRel: string | null = null;
-        if (oldOpen.rel === d.rel) {
-          newOpenRel = findNodeByPath(tree(), res.path)?.rel ?? null;
-        } else if (oldOpen.rel.startsWith(`${d.rel}/`)) {
-          const freshRoot = findNodeByPath(tree(), res.path);
-          if (freshRoot) newOpenRel = freshRoot.rel + oldOpen.rel.slice(d.rel.length);
-        }
-        if (newOpenRel !== null) {
-          const fresh = findNodeByRel(tree(), newOpenRel);
-          if (fresh) setOpenNode(fresh);
-        }
-      }
-      flash(`已移动「${res.name}」`);
-    } catch (err: any) {
-      setDialogError(String(err?.message || err));
-    } finally {
       setDialogBusy(false);
+      return;
+    }
+    const r = await moveEntryTo(d.path, d.rel, target);
+    setDialogBusy(false);
+    if (!r.ok) {
+      setDialogError(r.error);
+      return;
+    }
+    setDialog(null);
+    flash(`已移动「${r.res.name}」`);
+  };
+
+  /** 拖放落点：把拖动节点移入目标目录（与「移动…」弹窗同一 move_entry 通道） */
+  const handleDrop = async (target: TreeNode) => {
+    const dragged = dragging();
+    setDropTarget(null);
+    setDragging(null);
+    if (!dragged || !isTauri() || !canDropOn(dragged, target) || droppedInPlace(dragged, target)) return;
+    const r = await moveEntryTo(dragged.path, dragged.rel, target.path);
+    if (!r.ok) {
+      flash(`移动失败: ${r.error}`);
+      return;
+    }
+    flash(`已移动「${r.res.name}」`);
+    const newRel = findNodeByPath(tree(), r.res.path)?.rel ?? '';
+    if (newRel) expandTo(newRel);
+    // 目录拖动时迁移已展开状态的 rel 前缀，保持子树展开
+    if (dragged.kind === 'dir' && newRel) {
+      setExpanded((prev) => {
+        const next = new Set<string>();
+        for (const x of prev) {
+          next.add(
+            x === dragged.rel || x.startsWith(`${dragged.rel}/`)
+              ? newRel + x.slice(dragged.rel.length)
+              : x,
+          );
+        }
+        return next;
+      });
     }
   };
 
@@ -696,14 +856,46 @@ export const NotesManager: Component = () => {
       <div>
         <div
           class={`ntree-row ${isDir() ? 'dir' : 'file'}`}
-          classList={{ active: isActive(), selected: isSelected() && !isActive() }}
+          classList={{
+            active: isActive(),
+            selected: isSelected() && !isActive(),
+            'drop-target': dropTarget() === p.node.path,
+          }}
           style={{ 'padding-left': `${6 + p.depth * 14}px` }}
           title={p.node.rel}
+          draggable={!isRenaming()}
           onClick={() => (isDir() ? toggleDir(p.node) : openFile(p.node))}
           onContextMenu={(e) => {
             e.preventDefault();
             setSelected(p.node);
             setMenu({ x: e.clientX, y: e.clientY, node: p.node });
+          }}
+          onDragStart={(e) => {
+            setDragging(p.node);
+            if (!e.dataTransfer) return;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', p.node.path);
+          }}
+          onDragEnd={() => {
+            setDragging(null);
+            setDropTarget(null);
+          }}
+          onDragOver={(e) => {
+            // 文件行会被 canDropOn 拒掉，拖拽穿透到下层目录行
+            const d = dragging();
+            if (!d || !canDropOn(d, p.node)) return;
+            e.preventDefault();
+            if (!e.dataTransfer) return;
+            e.dataTransfer.dropEffect = 'move';
+            setDropTarget(p.node.path);
+          }}
+          onDragLeave={() => {
+            if (dropTarget() === p.node.path) setDropTarget(null);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            void handleDrop(p.node);
           }}
         >
           <Show
@@ -816,9 +1008,15 @@ export const NotesManager: Component = () => {
         </div>
       }
     >
-      <div class="nmanager-root">
+      {/* ll-popup-fill-fixed：内容根钉成窗口高（与设置窗同款），全局滚动由此消失——
+          左树 .ntree-body 与右栏各 pane 各自内部滚动 */}
+      <div class="nmanager-root ll-popup-fill-fixed">
         {/* ── 左栏：目录树 ── */}
-        <aside class="ntree-side">
+        <aside
+          ref={treeSideRef}
+          class="ntree-side"
+          style={{ width: `${treeWidth()}px` }}
+        >
           <div class="ntree-head">
             <span class="ntree-title">文件</span>
             <div class="ntree-tools">
@@ -849,12 +1047,31 @@ export const NotesManager: Component = () => {
                 <>
                   <div
                     class="ntree-row dir root"
-                    classList={{ active: selected()?.rel === '' }}
+                    classList={{
+                      active: selected()?.rel === '',
+                      'drop-target': dropTarget() === root().path,
+                    }}
                     onClick={() => setRootExpanded(!rootExpanded())}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       setSelected(root());
                       setMenu({ x: e.clientX, y: e.clientY, node: root() });
+                    }}
+                    onDragOver={(e) => {
+                      const d = dragging();
+                      if (!d || !canDropOn(d, root())) return;
+                      e.preventDefault();
+                      if (!e.dataTransfer) return;
+                      e.dataTransfer.dropEffect = 'move';
+                      setDropTarget(root().path);
+                    }}
+                    onDragLeave={() => {
+                      if (dropTarget() === root().path) setDropTarget(null);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void handleDrop(root());
                     }}
                     title={root().path}
                   >
@@ -880,6 +1097,14 @@ export const NotesManager: Component = () => {
             </Show>
           </div>
         </aside>
+
+        {/* ── 目录宽度拖拽条：拖动调宽，双击恢复默认 ── */}
+        <div
+          class="ntree-resizer"
+          title="拖动调整目录区宽度；双击恢复默认"
+          onPointerDown={startTreeResize}
+          onDblClick={() => setTreeWidth(DEFAULT_TREE_WIDTH)}
+        />
 
         {/* ── 右栏：工作区 ── */}
         <section class="nwork">
@@ -925,6 +1150,7 @@ export const NotesManager: Component = () => {
                       class="editor-textarea"
                       value={content()}
                       onInput={(e) => handleInput(e.currentTarget.value)}
+                      onScroll={onEditorScroll}
                       placeholder="在此编写 Markdown 笔记..."
                       spellcheck={false}
                     />
@@ -934,6 +1160,7 @@ export const NotesManager: Component = () => {
                   <div
                     ref={previewRef}
                     class="editor-pane preview-pane"
+                    onScroll={onPreviewScroll}
                   >
                     <div
                       class="markdown-rendered-content"
